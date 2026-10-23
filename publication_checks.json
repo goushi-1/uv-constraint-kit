@@ -68,6 +68,12 @@
       "status": "passed",
       "cases": 9,
       "scope": "Final CPU ZIP extracted and tested with the same selection regressions"
+    },
+    "readme_examples": {
+      "status": "passed",
+      "figures": 9,
+      "command": "blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python scripts/generate_examples.py",
+      "scope": "Actual synthetic operation outputs; SVGs rendered and visually checked; not a benchmark or UI screenshot"
     }
   },
   "package": {

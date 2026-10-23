@@ -9,7 +9,7 @@ import tomllib
 
 ROOT=Path(__file__).resolve().parents[1]
 IGNORED={'.git','build','dist','test-results','__pycache__','.venv'}
-ALLOWED={'.py','.cpp','.cu','.hpp','.toml','.md','.txt','.json','.yml','.yaml'}
+ALLOWED={'.py','.cpp','.cu','.hpp','.toml','.md','.txt','.json','.yml','.yaml','.svg'}
 PATTERNS={
     'private_machine_path':re.compile(r'(?i)\b[a-z]:[\\/](?:users|ai work|steamlibrary)'
                                      r'|/ho' r'me/[^/\s]+|/Us' r'ers/[^/\s]+'),

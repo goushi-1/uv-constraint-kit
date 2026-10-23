@@ -65,6 +65,18 @@ These commands create disposable synthetic meshes. They do not save a scene
 or preferences. They do not prove real mouse gesture or GUI undo/redo behavior;
 use [VALIDATION.md](VALIDATION.md) to distinguish those acceptance levels.
 
+## README examples / 说明图
+
+```sh
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python scripts/generate_examples.py
+```
+
+This regenerates `docs/images/*.svg` from actual add-on operations on synthetic
+meshes, with a shared before/after scale. It requires a factory background
+process with no input scene. The images explain behavior; they are not benchmarks.
+
+此命令会覆盖仓库内功能对照图，不保存场景或偏好；图中布局来自插件实际求解结果。
+
 ## Reproducibility / 可复现范围
 
 Source inputs, build scripts, metadata and artifact checksums are reproducible
