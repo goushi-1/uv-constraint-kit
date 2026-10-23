@@ -121,7 +121,7 @@ the constraints and pins are compatible.
 
 ![Rectangular boundary constraint: before and after](docs/images/rectangularize.svg)
 
-*Synthetic example: a selected closed loop receives a rectangular constraint.*
+*Synthetic example: the selected hole boundary is constrained to a square.*
 
 ### Quadrify an island
 
