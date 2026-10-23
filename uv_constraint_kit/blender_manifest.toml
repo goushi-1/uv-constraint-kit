@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+
+id = "uv_constraint_kit"
+version = "1.7.42"
+name = "UV Constraint Kit"
+tagline = "Edge and shape constraints for the UV editor"
+maintainer = "UV Constraint Kit"
+type = "add-on"
+
+blender_version_min = "5.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+tags = ["UV", "Mesh", "Modeling"]
+
+[build]
+paths_exclude_pattern = ["__pycache__/*", "*.pyc", "*.zip"]

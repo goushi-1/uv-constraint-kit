@@ -1,0 +1,87 @@
+{
+  "date": "2026-10-24",
+  "version": "1.7.42",
+  "track": "main",
+  "status": "SOURCE_PREVIEW",
+  "solver_baseline": "1.7.39 isolated development baseline",
+  "host": {
+    "blender": "5.2.3 LTS",
+    "build": "e13b728c6880",
+    "platform": "Windows x64"
+  },
+  "checks": {
+    "cpu_build": {
+      "status": "passed",
+      "abi": 1,
+      "engine_source_sha256": "44424e3d183778f5f0f5181b5d444572f14d40b3dac734cb09920e50985c004a"
+    },
+    "native_synthetic": {
+      "status": "passed",
+      "command": "python tests/test_native.py --engine-dir build/native/bin/windows-x64"
+    },
+    "quad_grid_host": {
+      "status": "passed",
+      "cases": 8,
+      "command": "blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_quad_grid_host.py"
+    },
+    "source_host": {
+      "status": "passed",
+      "cases": 5,
+      "native_required": false,
+      "scope": "Synthetic factory Blender checks using the Python fallback"
+    },
+    "packaged_host": {
+      "status": "passed",
+      "cases": 5,
+      "native_required": true,
+      "scope": "Extracted CPU preview ZIP with native engine required"
+    },
+    "public_source_audit": {
+      "status": "passed",
+      "command": "python scripts/check_public_tree.py",
+      "scope": "Source parsing, required notices, excluded files and private-path/credential patterns; not a legal guarantee"
+    },
+    "gpu_host_acceptance": {
+      "status": "not_run"
+    },
+    "gui_gestures_undo_redo": {
+      "status": "not_run"
+    },
+    "user_installed_version": {
+      "status": "not_modified_or_tested"
+    },
+    "selection_host": {
+      "status": "passed",
+      "cases": 9,
+      "scope": "Disconnected runs, actual mode when sync is enabled, invalid flags, face fallback, mark/clear and tint"
+    },
+    "live_selection_readonly": {
+      "status": "passed",
+      "original_edge_count": 19,
+      "fixed_edge_count": 18,
+      "false_gap_excluded": true,
+      "uv_and_selection_unchanged": true,
+      "installed_code_modified": false,
+      "scope": "Selector only; no live optimization acceptance"
+    },
+    "packaged_selection_host": {
+      "status": "passed",
+      "cases": 9,
+      "scope": "Final CPU ZIP extracted and tested with the same selection regressions"
+    }
+  },
+  "package": {
+    "name": "uv_constraint_kit-1.7.42-preview.zip",
+    "sha256": "f1226770f0a314902f493d3fa551250f806f677671ded18219b22f6c40e66d27",
+    "members": 37,
+    "engine": "CPU",
+    "release_kind": "preview"
+  },
+  "limitations": [
+    "Synthetic tests do not establish acceptance for every production mesh.",
+    "Independent quadrification supports compatible integer-grid quad charts.",
+    "GPU source is included, but GPU execution was not revalidated in this publication."
+  ],
+  "user_scene_saved": false,
+  "user_preferences_saved": false
+}
