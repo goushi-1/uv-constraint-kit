@@ -6,9 +6,10 @@ UV edge and shape constraints for Blender. Python owns the interface,
 selection, undo and overlays; a C++17 engine accelerates numeric solves.
 An optional CUDA Driver API engine is included as source.
 
-**Source preview, not a stable release.** The public 1.7.42 tree introduces
-independent quadrification. Historical isolated acceptance of the 1.7.39 solver
-does not constitute acceptance of every feature in this new tree. See
+**Experimental branch, 1.7.43.** This branch adds protected numeric-array
+trials to the main 1.7.42 source preview. It has not demonstrated a stable global
+performance gain. Use `main` for the default preview. Both branches include the
+independent grid tool and synchronized edge-selection fix. See
 [validation and version status](docs/VALIDATION.md).
 
 ## Features

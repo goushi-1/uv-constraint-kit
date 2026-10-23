@@ -1,9 +1,9 @@
 {
   "date": "2026-10-24",
-  "version": "1.7.42",
-  "track": "main",
-  "status": "SOURCE_PREVIEW",
-  "solver_baseline": "1.7.39 isolated development baseline",
+  "version": "1.7.43",
+  "track": "experimental/numeric-trials",
+  "status": "EXPERIMENTAL_NO_STABLE_GLOBAL_GAIN",
+  "solver_baseline": "1.7.41 isolated numeric-array experiment",
   "host": {
     "blender": "5.2.3 LTS",
     "build": "e13b728c6880",
@@ -13,7 +13,8 @@
     "cpu_build": {
       "status": "passed",
       "abi": 1,
-      "engine_source_sha256": "44424e3d183778f5f0f5181b5d444572f14d40b3dac734cb09920e50985c004a"
+      "engine_source_sha256": "44424e3d183778f5f0f5181b5d444572f14d40b3dac734cb09920e50985c004a",
+      "evidence": "Identical engine.cpp and CPU artifact as main; no native source changes in this branch"
     },
     "native_synthetic": {
       "status": "passed",
@@ -22,7 +23,8 @@
     "quad_grid_host": {
       "status": "passed",
       "cases": 8,
-      "command": "blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_quad_grid_host.py"
+      "command": "blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_quad_grid_host.py",
+      "evidence": "Reused from main: test and quad_grid.py are unchanged"
     },
     "source_host": {
       "status": "passed",
@@ -50,11 +52,6 @@
     "user_installed_version": {
       "status": "not_modified_or_tested"
     },
-    "selection_host": {
-      "status": "passed",
-      "cases": 9,
-      "scope": "Disconnected runs, actual mode when sync is enabled, invalid flags, face fallback, mark/clear and tint"
-    },
     "live_selection_readonly": {
       "status": "passed",
       "original_edge_count": 19,
@@ -67,15 +64,15 @@
     "packaged_selection_host": {
       "status": "passed",
       "cases": 9,
-      "scope": "Final CPU ZIP extracted and tested with the same selection regressions"
+      "scope": "Experimental CPU ZIP, including the shared synchronized-selection fix"
     }
   },
   "package": {
-    "name": "uv_constraint_kit-1.7.42-preview.zip",
-    "sha256": "f1226770f0a314902f493d3fa551250f806f677671ded18219b22f6c40e66d27",
+    "name": "uv_constraint_kit-1.7.43-experimental.zip",
+    "sha256": "fa58f1efcdee605c2ac7e924b255cf5cab4073a06333f0dc3db328776b7f04c7",
     "members": 37,
     "engine": "CPU",
-    "release_kind": "preview"
+    "release_kind": "experimental_local_check_only"
   },
   "limitations": [
     "Synthetic tests do not establish acceptance for every production mesh.",
@@ -83,5 +80,12 @@
     "GPU source is included, but GPU execution was not revalidated in this publication."
   ],
   "user_scene_saved": false,
-  "user_preferences_saved": false
+  "user_preferences_saved": false,
+  "historical_numeric_trial": {
+    "origin": "1.7.41 isolated experiment",
+    "complete_operations": 540,
+    "regression_groups": 15,
+    "warm_total_change_percent": 0.7,
+    "interpretation": "No stable global gain; not a benchmark of all features in this public tree"
+  }
 }
