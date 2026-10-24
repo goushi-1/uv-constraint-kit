@@ -23,7 +23,8 @@ def files():
     if (ROOT/'.git').exists():
         names=subprocess.check_output(['git','ls-files','--cached','-z'],cwd=ROOT).decode().split('\0')
         return [ROOT/name for name in names if name]
-    return [p for p in ROOT.rglob('*') if p.is_file() and not set(p.relative_to(ROOT).parts)&IGNORED]
+    return [p for p in ROOT.rglob('*') if p.is_file() and not set(p.relative_to(ROOT).parts)&IGNORED
+            and not p.is_relative_to(ROOT/'uv_constraint_kit/bin')]
 
 
 def main():
@@ -32,6 +33,8 @@ def main():
     assert paths,'No public files found'
     for p in paths:
         relative=p.relative_to(ROOT)
+        if relative.parts[:2]==('uv_constraint_kit','bin'):
+            errors.append((str(relative),'runtime artifacts belong in release assets'));continue
         if set(relative.parts)&IGNORED:
             errors.append((str(relative),'ignored directory tracked'));continue
         if p.is_symlink():errors.append((str(relative),'symlink'));continue

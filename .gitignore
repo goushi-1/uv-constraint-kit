@@ -3,10 +3,12 @@ __pycache__/
 .pytest_cache/
 .venv/
 build/
+/uv_constraint_kit/bin/
 dist/
 test-results/
 *.blend*
 *.dll
+*.pyd
 *.pdb
 *.obj
 *.lib

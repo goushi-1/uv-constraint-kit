@@ -18,7 +18,8 @@ def seed_key(core, topo, faces, positions, fixed, saved, pins, settings):
     options = (('mix', 1.), ('keep_metric', False), ('fill_holes', False),
                ('auto_iterations', True), ('optimize_iterations', 1),
                ('angle_distance_mix', 1.), ('use_density_map', True))
-    return dict(uv=tuple(saved), pins=tuple(pins), faces=frozenset(faces),
+    saved_key = tuple(map(tuple, saved.tolist())) if isinstance(saved, np.ndarray) else tuple(saved)
+    return dict(uv=saved_key, pins=tuple(pins), faces=frozenset(faces),
         marks=tuple((p, int(topo.loops[p][layer])) for p in sorted(positions)),
         fixed=frozenset(fixed), vertices=tuple(topo._loop_vertices.tolist()),
         following=tuple(topo.loop_next), groups=tuple(topo.loop_to_vgroup),
@@ -348,8 +349,9 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                                           allow_rotation=(method not in ('LOCAL', 'METRIC')), target_area=pose_area)
                     _, cross = _crosses(topo, island)
                     probe = safety.AcceptanceProbe(core, topo, island)
-                    health = probe.measure(topo)
-                    overlap = probe.check_overlaps(topo, include_existing=True)
+                    health = probe.measure(topo, coordinates=probe.reference)
+                    overlap = probe.check_overlaps(topo, include_existing=True,
+                                                   coordinates=probe.reference)
                     value = np.asarray([tuple(l[topo.uvl].uv) for l in topo.loops])
                     if (np.any(cross*chart['sign'] <= 2e-14) or not health['finite'] or
                             health['zero_edges'] or

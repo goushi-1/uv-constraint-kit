@@ -44,7 +44,7 @@ import bmesh
 import bpy
 import numpy as np
 from mathutils import Vector
-from . import native_engine
+from . import native_engine, mesh_reader
 
 from .const import (
     C_ALIGNED,
@@ -384,12 +384,23 @@ class UVTopology:
         self.bm = bm
         self.uvl = uvl
         prepare_bm(bm)
-        self.loops = loops_in_order(bm)
-        self.loop_pos = {loop: i for i, loop in enumerate(self.loops)}
+        captured = mesh_reader.capture(bm, uvl)
+        if captured is None:
+            self.loops = loops_in_order(bm)
+            self.loop_pos = {loop: i for i, loop in enumerate(self.loops)}
+            sizes = np.fromiter((len(face.loops) for face in bm.faces), dtype=np.int64)
+            coordinates = [tuple(loop[uvl].uv) for loop in self.loops]
+            self._loop_vertices = np.asarray([loop.vert.index for loop in self.loops], dtype=np.int64)
+        else:
+            self.loops, self.loop_pos, coordinates, face_sizes, vertices, offsets, radial = captured
+            sizes = np.asarray(face_sizes, dtype=np.int64)
+            self._loop_vertices = np.asarray(vertices, dtype=np.int64)
+            self._radial_connectivity = (np.asarray(offsets, dtype=np.int64),
+                                         np.asarray(radial, dtype=np.int64))
+            del captured, face_sizes, vertices, offsets, radial
         self.loop_count = len(self.loops)
         # Face-major loop order supplies exact face/next indices without
         # repeatedly reading wrapped BMesh links during numerical solves.
-        sizes = np.fromiter((len(face.loops) for face in bm.faces), dtype=np.int64)
         ends = np.cumsum(sizes)
         following = np.arange(1, self.loop_count+1, dtype=np.int64)
         if len(ends):
@@ -397,9 +408,7 @@ class UVTopology:
         self._loop_next_array = following
         self.loop_next = following.tolist()
         self.loop_faces = np.repeat(np.arange(len(bm.faces), dtype=np.int64), sizes)
-        coordinates = [tuple(loop[uvl].uv) for loop in self.loops]
         native_coordinates = np.asarray(coordinates, dtype=np.float64)
-        self._loop_vertices = np.asarray([loop.vert.index for loop in self.loops], dtype=np.int64)
         native_groups = native_engine.uv_groups(
             self._loop_vertices, native_coordinates, UV_EPS)
         if native_groups is None:
@@ -420,7 +429,7 @@ class UVTopology:
         The mesh, loop ordering and BMesh wrapper must be unchanged. Native
         unwrap, mesh edits, undo and subsequent operations need a new topology.
         """
-        coordinates = [tuple(loop[self.uvl].uv) for loop in self.loops]
+        coordinates = mesh_reader.read_uv(self.loops, self.uvl)
         native_coordinates = np.asarray(coordinates, dtype=np.float64)
         groups = native_engine.uv_groups(self._loop_vertices, native_coordinates, UV_EPS)
         if groups is None:
@@ -480,6 +489,10 @@ class UVTopology:
         # a vertex dominates small-island solves on a larger edit mesh.
         if coordinates is None:
             coordinates = [tuple(loop[uvl].uv) for loop in self.loops]
+        elif isinstance(coordinates, np.ndarray):
+            # The Python union uses coordinate equality and dictionary keys.
+            # Preserve its original tuple semantics when the engine falls back.
+            coordinates = list(map(tuple, coordinates.tolist()))
         by_vert = {}
         for position, loop in enumerate(self.loops):
             by_vert.setdefault(loop.vert.index, []).append(position)
@@ -2531,7 +2544,20 @@ def _checked_rebuild_islands(context, obj, faces, constraint_positions=(),
         bm = bmesh.from_edit_mesh(obj.data)
         prepare_bm(bm)
         layer, loops = uv_layer(bm), loops_in_order(bm)
-        if any(tuple(loops[p][layer].uv) != state['saved'][p] for p in state['outside']):
+        try:
+            if not state['outside']:
+                outside_moved = False
+            elif isinstance(state['saved'], np.ndarray):
+                current = mesh_reader.read_uv(map(loops.__getitem__, state['outside']), layer)
+                outside_moved = not np.array_equal(np.asarray(current), state['saved'][state['outside']])
+            else:
+                outside_moved = any(tuple(loops[p][layer].uv) != state['saved'][p] for p in state['outside'])
+        except BaseException:
+            for loop, xy in zip(loops, state['saved']):
+                loop[layer].uv = xy
+            bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+            raise
+        if outside_moved:
             for loop, xy in zip(loops, state['saved']):
                 loop[layer].uv = xy
             bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
@@ -2553,7 +2579,13 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     bm = bmesh.from_edit_mesh(obj.data)
     uvl = uv_layer(bm)
     topo = UVTopology(bm, uvl)
+    # Legacy numerical/safety consumers visit coordinates one at a time.
+    # Materialize Python tuples once here rather than allocating ndarray row
+    # views at every triangle/probe. Keep the packed snapshot for the outer
+    # fresh outside-UV guard and native topology arrays.
     saved = topo.initial_uv
+    if isinstance(saved, np.ndarray):
+        saved = list(map(tuple, saved.tolist()))
     triangle_positions = [tuple(topo.loop_pos[l] for l in tri)
                           for tri in topo.loop_triangles()
                           if tri[0].face.index in faces]
@@ -2567,7 +2599,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                        safety.folded_face_candidates(topo, triangle_positions, old_cross, saved))
     pins = [bool(loop[uvl].pin_uv) for loop in topo.loops]
     outside_positions = [p for p, loop in enumerate(topo.loops) if loop.face.index not in faces]
-    _outside_state.setdefault('saved', saved)
+    _outside_state.setdefault('saved', topo.initial_uv)
     _outside_state.setdefault('outside', outside_positions)
     # Only hole-fill unwrap changes UI flags here. Input recovery owns its
     # separate native selection/pin transaction. Pure numerical solves never
@@ -2746,11 +2778,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 reason = 'new_island_overlap'
         if reason is None and recovery_report is not None:
             for chart in recovery_report['repaired']:
-                repaired_probe = safety.AcceptanceProbe(module, topo, set(chart['faces']))
-                repaired_coordinates = (None if loop_coordinates is None else
-                                        repaired_probe.capture(topo, coordinates=loop_coordinates))
+                repaired_probe = safety.AcceptanceProbe(module, topo, set(chart['faces']),
+                                                        coordinates=loop_coordinates)
                 remaining = repaired_probe.check_overlaps(
-                    topo, include_existing=True, coordinates=repaired_coordinates)
+                    topo, include_existing=True, coordinates=repaired_probe.reference)
                 if remaining['self_overlaps']:
                     reason = 'input_recovery_failed'
                     break

@@ -5,26 +5,30 @@
 **Keep the UV edges you care about straight or shaped while the rest of the
 island adjusts around them, inside Blender.**
 
+> **Version 1.7.49 — Windows x64 CPU+GPU release with the native reader.**
+> [Release page](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.49)
+> · asset: **`uv_constraint_kit-1.7.49.zip`**.
+
 Select an edge run and give it a horizontal, vertical or straight-line
 constraint. Select a closed loop to make a circular opening or a rectangular
 cutout. With **Optimize after marking** enabled, the affected island updates
 when you add or remove a constraint. Constraints remain available for later
 optimization, rather than being a one-time alignment.
 
-[Download the Windows x64 CPU+GPU preview](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.2)
-— choose **`uv_constraint_kit-1.7.42-cpu-gpu-preview.zip`** in the release assets.
-Requires **Blender 5.2+**. This is a **preview, not a stable production release**;
-try it on a copy of your work. [Known issues](docs/KNOWN_ISSUES.md).
+[Download UV Constraint Kit 1.7.49 for Windows x64](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.49)
+— choose **`uv_constraint_kit-1.7.49.zip`** in the release assets. Requires
+**Blender 5.2+**. [Known issues](docs/KNOWN_ISSUES.md).
 Eligible large solves use the GPU automatically; small meshes and some special
 solve paths stay on the CPU. GPU use requires an NVIDIA GPU with compute
 capability 8.9+ and a driver supporting CUDA 12.4+. The prebuilt extension does
 not require the CUDA Toolkit. Other hardware and unsupported GPU setups use the
-CPU path. The earlier [CPU-only preview](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.1)
-remains available as **`uv_constraint_kit-1.7.42-preview.zip`**.
+CPU path. Previous preview builds remain in the [release history](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.2):
+the CPU+GPU preview is **`uv_constraint_kit-1.7.42-cpu-gpu-preview.zip`** and
+the CPU-only preview is **`uv_constraint_kit-1.7.42-preview.zip`**.
 
 ## Start with an existing UV layout
 
-1. Install the preview ZIP through **Preferences → Get Extensions → menu →
+1. Install the release ZIP through **Preferences → Get Extensions → menu →
    Install from Disk**, then enable the extension. GitHub's **Code → Download
    ZIP** is repository source, not an installable extension.
 2. Open an unwrapped mesh in **Edit Mode**. In the UV Editor, press **N** and
@@ -176,7 +180,7 @@ following later source edits.*
 - Constraint colors and line width are configurable. Colored overlays show
   stored constraints; selection highlighting identifies selected marks.
 - Conflicting constraints, pins or protection settings can leave UVs unchanged.
-  The preview is not guaranteed to solve every island.
+  Conflicting or unsupported islands can be rejected.
 
 This is an independent solver, not RizomUV's proprietary engine. Results,
 convergence and performance can differ. The project is not affiliated with
@@ -186,16 +190,25 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 ## Building from source
 
 Python handles Blender's interface, selection, undo and overlays; C++17 engines
-handle numeric solves. The preview ZIP includes CPU and optional CUDA engines.
-Native builds target **Windows x64 / MSVC**; publication host checks use
-Blender 5.2.3. Building the CUDA engine from source requires CUDA Toolkit / NVRTC
-12.4; the prebuilt ZIP needs only a supported NVIDIA driver.
+handle numeric solves. The 1.7.49 package includes CPU, optional CUDA, and the
+CPython stable-ABI mesh reader. Native builds target
+**Windows x64 / MSVC**; host checks used Blender 5.2.3. Building the CUDA engine
+from source requires CUDA Toolkit / NVRTC 12.4; the prebuilt ZIP needs only a
+supported NVIDIA driver. The reader uses Blender's bundled Python at runtime.
+Neither Python nor CUDA runtime files are distributed.
 
 ```sh
-python scripts/build_native.py --build-dir build/native_gpu --gpu --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
-python tests/test_native.py --engine-dir build/native_gpu/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu/bin/windows-x64 --require-gpu --output dist/uv_constraint_kit-1.7.42-cpu-gpu-preview.zip
+python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
+python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.49.zip
 ```
+
+`--reader` requires `--python-include` containing `Python.h` and
+`--python-library` pointing to the stable-ABI import library named
+`python3.lib`. Do not pass a versioned library such as `python313.lib`.
+`--require-reader` makes packaging fail if the reader binary or validated
+metadata is missing. The reader is optional for other builds; those packages
+retain the Python fallback.
 
 A Python-only ZIP can still be built without `--native-dir`, using the slower
 fallback. See [installation](docs/INSTALL.md) and [build instructions](docs/BUILD.md).
@@ -213,10 +226,12 @@ Use disposable Blender processes. Tests create synthetic meshes and do not
 save user scenes or preferences. CPU numerical tests need NumPy; Blender's
 bundled Python already supplies it.
 
-For the packaged GPU host check and its limits, see [build instructions](docs/BUILD.md)
-and [validation status](docs/VALIDATION.md). The nine host operations verify
-backend routing and result agreement; they are not a performance multiplier
-claim. Real user mouse interaction and undo behavior have not been validated.
+For packaged reader/GPU host checks and factory GUI acceptance, see [build
+instructions](docs/BUILD.md) and [validation status](docs/VALIDATION.md). The
+host checks verify backend routing and result agreement; they are not a
+performance multiplier claim. Factory GUI testing used queued mouse-move events
+to sample active G/R/S transforms and undo/redo. It does not cover manual mouse
+input or a user's installed Blender environment.
 
 Read [known issues](docs/KNOWN_ISSUES.md) before production use. Pole vertices,
 inconsistent quad cycles and mixed polygon charts may be rejected by the grid
@@ -224,8 +239,11 @@ tool. GPU execution is limited to eligible paths and does not guarantee a speedu
 
 ## Versions
 
-- `main`: 1.7.42 preview, with independent quadrification and the disconnected-edge
-  selection fix.
+- `main`: 1.7.49 Windows x64 release, integrating the 1.7.48 safety-check and
+  native-reader work with CPU+GPU packaging.
+- Previous previews: 1.7.42 CPU-only and CPU+GPU builds remain in the release
+  history. The earlier 9.8% comparison used 1.7.42 as its baseline; it is not a
+  1.7.49-versus-1.7.47 improvement claim.
 - `experimental/numeric-trials`: separately marked 1.7.43 experiment, retaining
   intermediate protected solver coordinates in arrays. No stable global
   performance gain has been demonstrated.

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Final UV acceptance, including triangle intersections and degenerate edges."""
 import math
+import numpy as np
 from mathutils import Vector
 
 from .const import C_HORIZONTAL, C_VERTICAL
@@ -161,6 +162,35 @@ def measure(core, topo, faces=None):
                 finite=all(math.isfinite(v) for _,p,_ in triangles for xy in p for v in xy))
 
 
+def _triangle_health(triangles):
+    """Batch the exact three-term shoelace sum used by _area, in its order."""
+    if not len(triangles):
+        return 0, 0, True
+    values = np.asarray(triangles)
+    if values.dtype != np.float64:
+        # Internal UV snapshots are doubles. Preserve the old arithmetic for
+        # explicit lower precision or integer values passed by other callers.
+        flips = degenerate = 0
+        finite = True
+        for points in triangles:
+            finite &= all(math.isfinite(v) for xy in points for v in xy)
+            area = _area(points)
+            flips += area < -1e-12
+            degenerate += abs(area) < 1e-14
+        return flips, degenerate, finite
+    p, q, r = values[:, 0], values[:, 1], values[:, 2]
+    # Match Python float arithmetic without changing a caller's NumPy error
+    # policy or producing new console warnings for damaged input UVs.
+    with np.errstate(invalid='ignore', over='ignore', under='ignore'):
+        area = p[:, 0]*q[:, 1] - q[:, 0]*p[:, 1]
+        area += q[:, 0]*r[:, 1] - r[:, 0]*q[:, 1]
+        area += r[:, 0]*p[:, 1] - p[:, 0]*r[:, 1]
+        area *= 0.5
+    return (int(np.count_nonzero(area < -1e-12)),
+            int(np.count_nonzero(np.abs(area) < 1e-14)),
+            bool(np.isfinite(values).all()))
+
+
 class AcceptanceProbe:
     """Per-operation safety check for changed faces and their relevant peers."""
     def __init__(self, core, topo, faces, check_other_islands=False, *, triangles=None,
@@ -198,16 +228,8 @@ class AcceptanceProbe:
     def measure(self, topo, *, coordinates=None, loop_coordinates=None):
         coordinates = (self.capture(topo, coordinates=loop_coordinates)
                        if coordinates is None else coordinates)
-        triangles = []
-        for fi, pos, root in self.target:
-            triangles.append((fi, pos, root, coordinates[pos]))
-        flips = degenerate = 0
-        finite = True
-        for _, _, _, p in triangles:
-            finite &= all(math.isfinite(v) for xy in p for v in xy)
-            area = _area(p)
-            flips += area < -1e-12
-            degenerate += abs(area) < 1e-14
+        flips, degenerate, finite = _triangle_health(
+            [coordinates[pos] for _, pos, _ in self.target])
         zero, deviation = 0, 0.0
         layer = self.core.constraint_layer(topo.bm)
         for pos in self.positions:

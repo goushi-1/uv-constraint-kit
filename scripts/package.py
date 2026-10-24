@@ -15,12 +15,39 @@ ADDON = ROOT / "uv_constraint_kit"
 RUNTIME = """__init__.py blender_manifest.toml circle_ops.py circle.py const.py core.py
 i18n.py LICENSE live_symmetry.py metric.py native_engine.py ops.py overlay.py prefs.py
 proxy.py quad_grid.py quadrify.py recovery.py rectangle.py refine.py safety.py shape_constraints.py
-shape_ops.py symmetry.py terms_zh.py ui.py untangle.py""".split()
-NATIVE_SOURCE = "CMakeLists.txt build_gpu.py engine.cpp engine_gpu.cpp gpu_driver.hpp gpu_metric.cu".split()
+shape_ops.py symmetry.py terms_zh.py ui.py untangle.py mesh_reader.py""".split()
+NATIVE_SOURCE = "CMakeLists.txt build_gpu.py engine.cpp engine_gpu.cpp gpu_driver.hpp gpu_metric.cu mesh_reader.cpp".split()
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def reader_members(folder: Path) -> dict[str, Path]:
+    metadata = folder / "reader.json"
+    if not metadata.exists() and not metadata.is_symlink():
+        return {}
+    if metadata.is_symlink() or metadata.resolve().parent != folder.resolve():
+        raise ValueError("Reader metadata must be a regular file inside its native directory")
+    identity = json.loads(metadata.read_text(encoding="utf8"))
+    if (not isinstance(identity, dict) or identity.get("api") != 2
+            or identity.get("minimum_python") != "3.11"
+            or identity.get("stable_abi") != "0x030B0000"):
+        raise ValueError("Unsupported reader API or stable ABI metadata")
+    if identity.get("source_sha256") != sha256(ADDON / "native_source" / "mesh_reader.cpp"):
+        raise ValueError("Reader was built from a different mesh_reader.cpp")
+    name = identity.get("library")
+    if (not isinstance(name, str) or Path(name).name != name
+            or not name.startswith("uvck_reader_") or not name.endswith(".pyd")):
+        raise ValueError("Invalid reader filename")
+    artifact = folder / name
+    if (artifact.is_symlink() or not artifact.is_file()
+            or artifact.resolve().parent != folder.resolve()):
+        raise ValueError("Reader artifact must be a regular file inside its directory")
+    if sha256(artifact) != identity.get("sha256"):
+        raise ValueError(f"Reader checksum mismatch: {name}")
+    return {"bin/windows-x64/reader.json": metadata,
+            f"bin/windows-x64/{name}": artifact}
 
 
 def native_members(folder: Path) -> dict[str, Path]:
@@ -56,6 +83,7 @@ def native_members(folder: Path) -> dict[str, Path]:
             if sha256(artifact) != identity[checksum]:
                 raise ValueError(f"Engine checksum mismatch: {name}")
             result[f"bin/windows-x64/{name}"] = artifact
+    result.update(reader_members(folder))
     return result
 
 
@@ -66,9 +94,13 @@ def main() -> None:
                         help="Engine directory produced by build_native.py; omit for Python-only ZIP")
     parser.add_argument("--require-gpu", action="store_true",
                         help="Require a validated GPU DLL and PTX in the package")
+    parser.add_argument("--require-reader", action="store_true",
+                        help="Require a validated stable-ABI reader in the package")
     args = parser.parse_args()
     if args.require_gpu and args.native_dir is None:
         parser.error("--require-gpu requires --native-dir")
+    if args.require_reader and args.native_dir is None:
+        parser.error("--require-reader requires --native-dir")
     members = {name: ADDON / name for name in RUNTIME}
     members.update({f"native_source/{name}": ADDON / "native_source" / name for name in NATIVE_SOURCE})
     for name in ("THIRD_PARTY_NOTICES.md", "NOTICE"):
@@ -87,6 +119,11 @@ def main() -> None:
                 or not any(name.startswith(gpu_prefix) and name.endswith(".dll") for name in members)
                 or not any(name.startswith(gpu_prefix) and name.endswith(".ptx") for name in members)):
             parser.error("--require-gpu needs a validated GPU DLL and PTX in --native-dir")
+    if args.require_reader:
+        reader_prefix = "bin/windows-x64/uvck_reader_"
+        if ("bin/windows-x64/reader.json" not in members
+                or not any(name.startswith(reader_prefix) and name.endswith(".pyd") for name in members)):
+            parser.error("--require-reader needs a validated reader module in --native-dir")
     for name, path in members.items():
         if not path.is_file() or path.is_symlink():
             raise FileNotFoundError(f"Required regular source file missing: {name}")
