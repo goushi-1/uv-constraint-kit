@@ -11,10 +11,16 @@ cutout. With **Optimize after marking** enabled, the affected island updates
 when you add or remove a constraint. Constraints remain available for later
 optimization, rather than being a one-time alignment.
 
-[Download the Windows x64 CPU preview](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.1)
-— choose **`uv_constraint_kit-1.7.42-preview.zip`** in the release assets.
+[Download the Windows x64 CPU+GPU preview](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.2)
+— choose **`uv_constraint_kit-1.7.42-cpu-gpu-preview.zip`** in the release assets.
 Requires **Blender 5.2+**. This is a **preview, not a stable production release**;
 try it on a copy of your work. [Known issues](docs/KNOWN_ISSUES.md).
+Eligible large solves use the GPU automatically; small meshes and some special
+solve paths stay on the CPU. GPU use requires an NVIDIA GPU with compute
+capability 8.9+ and a driver supporting CUDA 12.4+. The prebuilt extension does
+not require the CUDA Toolkit. Other hardware and unsupported GPU setups use the
+CPU path. The earlier [CPU-only preview](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.1)
+remains available as **`uv_constraint_kit-1.7.42-preview.zip`**.
 
 ## Start with an existing UV layout
 
@@ -179,19 +185,20 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 
 ## Building from source
 
-Python handles Blender's interface, selection, undo and overlays; a C++17 engine
-handles numeric solves. Optional CUDA Driver API engine source is included.
-The downloadable preview above includes the **CPU engine**, not a GPU build.
+Python handles Blender's interface, selection, undo and overlays; C++17 engines
+handle numeric solves. The preview ZIP includes CPU and optional CUDA engines.
 Native builds target **Windows x64 / MSVC**; publication host checks use
-Blender 5.2.3.
+Blender 5.2.3. Building the CUDA engine from source requires CUDA Toolkit / NVRTC
+12.4; the prebuilt ZIP needs only a supported NVIDIA driver.
 
 ```sh
-python scripts/build_native.py
-python scripts/package.py --native-dir build/native/bin/windows-x64 --output dist/uv_constraint_kit.zip
+python scripts/build_native.py --build-dir build/native_gpu --gpu --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
+python tests/test_native.py --engine-dir build/native_gpu/bin/windows-x64 --gpu
+python scripts/package.py --native-dir build/native_gpu/bin/windows-x64 --require-gpu --output dist/uv_constraint_kit-1.7.42-cpu-gpu-preview.zip
 ```
 
-A Python-only ZIP can be built without `--native-dir`, using the slower fallback.
-See [installation](docs/INSTALL.md) and [build instructions](docs/BUILD.md).
+A Python-only ZIP can still be built without `--native-dir`, using the slower
+fallback. See [installation](docs/INSTALL.md) and [build instructions](docs/BUILD.md).
 
 ## Tests and limitations
 
@@ -206,10 +213,14 @@ Use disposable Blender processes. Tests create synthetic meshes and do not
 save user scenes or preferences. CPU numerical tests need NumPy; Blender's
 bundled Python already supplies it.
 
+For the packaged GPU host check and its limits, see [build instructions](docs/BUILD.md)
+and [validation status](docs/VALIDATION.md). The nine host operations verify
+backend routing and result agreement; they are not a performance multiplier
+claim. Real user mouse interaction and undo behavior have not been validated.
+
 Read [known issues](docs/KNOWN_ISSUES.md) before production use. Pole vertices,
 inconsistent quad cycles and mixed polygon charts may be rejected by the grid
-tool. Optional GPU execution does not accelerate every operation and is not a
-replacement for end-to-end benchmarks.
+tool. GPU execution is limited to eligible paths and does not guarantee a speedup.
 
 ## Versions
 

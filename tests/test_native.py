@@ -25,8 +25,12 @@ def fixture(side: int):
     y, x = np.mgrid[:side + 1, :side + 1] / side
     uv = np.column_stack((x.ravel(), y.ravel()))
     u, v = uv[:, 0].copy(), uv[:, 1].copy()
-    uv[:, 0] += .025 * np.sin(v * np.pi * 2) * (.3 + np.sin(u * np.pi))
-    uv[:, 1] += .018 * np.sin(u * np.pi * 2) * (.3 + np.sin(v * np.pi))
+    # Keep the boundary displacement below a cell width at high resolutions.
+    # Otherwise hard-projecting the boundary itself folds the initial triangles,
+    # so prevent_flips correctly rejects before either backend can optimize.
+    scale = min(1., 16. / side)
+    uv[:, 0] += scale * .025 * np.sin(v * np.pi * 2) * (.3 + np.sin(u * np.pi))
+    uv[:, 1] += scale * .018 * np.sin(u * np.pi * 2) * (.3 + np.sin(v * np.pi))
     a = (np.arange(side)[:, None] * (side + 1) + np.arange(side)).ravel()
     b, d = a + 1, a + side + 1
     c = d + 1
@@ -101,9 +105,34 @@ def main() -> None:
                 assert expected_stats[key] == actual_stats[key], f"CPU/GPU decision mismatch: {key}"
             native.shutdown_gpu()
             assert not native.diagnostics()["gpu"]["loaded"], "GPU shutdown did not release the session"
+            # An actual driver/PTX failure must restart the CPU solve using the
+            # original buffers, then skip GPU on the next solve in this session.
+            failed = load_native(ROOT / "uv_constraint_kit" / "native_engine.py")
+            failed.__file__ = native.__file__
+            missing = folder / "intentionally_missing_test.ptx"
+            assert not missing.exists()
+            try:
+                with failed._gpu_lock:
+                    lib = failed._load_gpu()
+                    assert lib is not None
+                    assert lib.uvck_gpu_configure(str(missing).encode('utf8'), 1) == 0
+                for repeat in range(2):
+                    uv, tri, inverse, weights, chains = large
+                    before = uv.copy()
+                    result = failed.solve(uv, tri, inverse, weights, chains, {}, [], [],
+                                          1., .3, None, 1., 0., 50, False, True, False)
+                    assert result is not None and result[0] == 0
+                    assert np.array_equal(result[1], expected) and np.array_equal(uv, before)
+                    state = failed.diagnostics()["gpu"]
+                    assert state["disabled"] and state["last_backend"] == "CPU"
+                    assert state["calls"] == state["fallbacks"] == 1, state
+                    assert "PTX" in state["reason"], state
+            finally:
+                failed.shutdown_gpu()
     finally:
         native.shutdown_gpu()
     print(json.dumps({"passed": True, "cpu": True, "gpu_required_and_executed": args.gpu,
+                      "real_gpu_failure_cpu_retry": args.gpu,
                       "scope": "synthetic native buffer checks; not Blender UI acceptance"}, indent=2))
 
 

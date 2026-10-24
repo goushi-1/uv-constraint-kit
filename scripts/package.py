@@ -64,7 +64,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--native-dir", type=Path,
                         help="Engine directory produced by build_native.py; omit for Python-only ZIP")
+    parser.add_argument("--require-gpu", action="store_true",
+                        help="Require a validated GPU DLL and PTX in the package")
     args = parser.parse_args()
+    if args.require_gpu and args.native_dir is None:
+        parser.error("--require-gpu requires --native-dir")
     members = {name: ADDON / name for name in RUNTIME}
     members.update({f"native_source/{name}": ADDON / "native_source" / name for name in NATIVE_SOURCE})
     for name in ("THIRD_PARTY_NOTICES.md", "NOTICE"):
@@ -77,6 +81,12 @@ def main() -> None:
                 members[f"LICENSES/{path.name}"] = path
     if args.native_dir is not None:
         members.update(native_members(args.native_dir.resolve()))
+    if args.require_gpu:
+        gpu_prefix = "bin/windows-x64/uvck_gpu_"
+        if ("bin/windows-x64/gpu.json" not in members
+                or not any(name.startswith(gpu_prefix) and name.endswith(".dll") for name in members)
+                or not any(name.startswith(gpu_prefix) and name.endswith(".ptx") for name in members)):
+            parser.error("--require-gpu needs a validated GPU DLL and PTX in --native-dir")
     for name, path in members.items():
         if not path.is_file() or path.is_symlink():
             raise FileNotFoundError(f"Required regular source file missing: {name}")

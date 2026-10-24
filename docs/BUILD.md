@@ -5,9 +5,11 @@
 - Python 3.11+ for the repository scripts; NumPy for numerical tests.
 - CMake 3.20+, Visual Studio 2022 with C++ desktop tools and Windows SDK.
 - Blender 5.2+ for host tests; Blender's bundled Python already includes NumPy.
-- Optional GPU: CUDA Toolkit / NVRTC **12.4**, separately installed by you.
-  The current kernel target is `compute_89`; the loader requires NVIDIA compute
-  capability 8.9+ and a driver advertising CUDA 12.4+.
+- GPU build from source: CUDA Toolkit / NVRTC **12.4**, installed separately.
+  The current kernel target is `compute_89`; runtime GPU use requires an NVIDIA
+  GPU with compute capability 8.9+ and a driver supporting CUDA 12.4+.
+- The prebuilt CPU+GPU extension does not require the CUDA Toolkit. Unsupported
+  hardware or GPU initialization failures use the CPU path.
 
 当前原生构建只支持 Windows x64 / MSVC。CUDA/NVRTC、SDK 头文件和驱动不随仓库提供。
 其它操作系统的 Python 回退存在，但未作为支持平台验收。
@@ -30,14 +32,16 @@ extension folder does not satisfy these checks.
 构建只写 `build/`；不修改用户 Blender 安装。安装包把 `blender_manifest.toml`
 放在 ZIP 根，使用明确白名单，排除缓存、日志、测试和构建来源记录。
 
-## Optional CUDA / 可选 CUDA
+## CPU+GPU preview / CPU+GPU 预览包
 
-With `CUDA_PATH` pointing to your Toolkit, or explicit directories:
+Build the CPU and GPU engines in a separate directory so the existing CPU build
+remains intact. Set `CUDA_PATH` to your Toolkit, or pass the include and NVRTC
+directories explicitly:
 
 ```sh
-python scripts/build_native.py --gpu --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
-python tests/test_native.py --engine-dir build/native/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native/bin/windows-x64 --output dist/uv_constraint_kit_gpu.zip
+python scripts/build_native.py --build-dir build/native_gpu --gpu --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
+python tests/test_native.py --engine-dir build/native_gpu/bin/windows-x64 --gpu
+python scripts/package.py --native-dir build/native_gpu/bin/windows-x64 --require-gpu --output dist/uv_constraint_kit-1.7.42-cpu-gpu-preview.zip
 ```
 
 In PowerShell, environment references use `$env:CUDA_PATH`; in cmd use
@@ -46,12 +50,13 @@ In PowerShell, environment references use `$env:CUDA_PATH`; in cmd use
 The GPU builder uses NVRTC with C++17, disabled FMA/FTZ and precise division
 and square root; the host library dynamically loads the installed NVIDIA
 driver. Its generated `gpu.json` identifies the DLL, PTX, source and build
-key. Do not distribute CUDA Toolkit headers, NVRTC DLLs, or system driver DLLs
-as if they were this project's GPL source.
+key. `--require-gpu` fails packaging unless both GPU binaries and the metadata
+have passed the package checks. Do not distribute CUDA Toolkit headers, NVRTC
+DLLs, or system driver DLLs as if they were this project's GPL source.
 
-GPU 构建使用 NVRTC 12.4；运行时通过系统 Driver API 加载。自动分派门槛目前为
-32,768 个三角形，且自动迭代开启或迭代预算至少 50。部分接触求解只走 CPU。
-失败会从原始输入回退，不保证 GPU 对每个场景都更快。
+GPU 构建使用 NVRTC 12.4；运行时通过系统 Driver API 加载。符合条件的大网格会自动分派
+到 GPU；小网格、部分特殊求解和 GPU 不可用时使用 CPU。GPU 失败会从原始输入回退。
+预构建扩展无需安装 Toolkit；其它硬件走 CPU 路径。
 
 ## Host tests / 宿主测试
 
@@ -64,6 +69,21 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 These commands create disposable synthetic meshes. They do not save a scene
 or preferences. They do not prove real mouse gesture or GUI undo/redo behavior;
 use [VALIDATION.md](VALIDATION.md) to distinguish those acceptance levels.
+
+Run the GPU host check against the extracted final extension ZIP on a supported
+NVIDIA system. This deliberately uses Blender's factory **GUI** process (no
+`--background`) and exercises natural backend dispatch:
+
+```sh
+blender --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_gpu_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/gpu-host.json
+```
+
+The test covers three small CPU operations, three large CPU operations and
+three naturally dispatched GPU operations. CPU/GPU paired results differ by at
+most `2e-6` in the checked cases. A bad-PTX case confirms fallback to CPU. These
+nine operations validate routing and results; they are not a performance
+multiplier benchmark. The factory GUI test exited normally. Real user gestures
+and undo behavior remain unverified.
 
 ## README examples / 说明图
 

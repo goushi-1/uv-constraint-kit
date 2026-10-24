@@ -12,6 +12,11 @@
 5. Select UV edges, mark a constraint, and use Optimize. F9 adjusts the previous
    operation. Auto optimize can be toggled beside Optimize.
 
+The [CPU+GPU preview](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.2)
+contains both engines in one ZIP. Eligible large solves use NVIDIA compute
+capability 8.9+ / CUDA driver 12.4+ automatically; unsupported hardware uses CPU.
+Installing the prebuilt ZIP does not require the CUDA Toolkit.
+
 For a seam-side selection, disable UV Selection Sync and select the desired
 UV edge copy. Visibility and selection affect the operation's scope.
 
@@ -31,6 +36,10 @@ runtime solver selector.
 3. 偏好设置 → 获取扩展 → 菜单 → 从磁盘安装，选择 ZIP 后启用。
 4. 进入带 UV 贴图网格的编辑模式，打开 UV 编辑器 N 面板 → UV Constraint。
 5. 选边并标记约束，执行优化。F9 调整上次操作参数；优化旁的开关控制自动优化。
+
+[CPU+GPU 预览包](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.2)
+在同一个 ZIP 内包含两套引擎。符合条件的大型求解自动使用 NVIDIA 计算能力 8.9+、
+支持 CUDA 12.4+ 驱动的 GPU；其它硬件使用 CPU。安装预构建包无需 CUDA Toolkit。
 
 只处理接缝一侧时，关闭 UV 选择同步，再选择目标 UV 边。可见性与选区决定作用范围。
 

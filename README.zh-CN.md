@@ -8,10 +8,15 @@
 或把边界整理成长方形。开启「标记后自动优化」时，添加或解除约束后，相关 UV 岛会随之
 优化。约束会保留下来，供后续优化继续使用，而不只是当次把选区对齐。
 
-[下载 Windows x64 CPU 预览版](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.1)
-—— 在 Release 附件中选择 **`uv_constraint_kit-1.7.42-preview.zip`**。
+[下载 Windows x64 CPU+GPU 预览版](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.2)
+—— 在 Release 附件中选择 **`uv_constraint_kit-1.7.42-cpu-gpu-preview.zip`**。
 需要 **Blender 5.2+**。当前是**预览版，并非稳定发行版**，请先在工作副本上使用。
 [查看已知问题](docs/KNOWN_ISSUES.md)。
+符合条件的大型求解会自动使用 GPU；小网格和部分特殊求解仍使用 CPU。GPU 需要
+NVIDIA 计算能力 8.9+ 显卡及支持 CUDA 12.4+ 的驱动。预构建扩展不需要另装 CUDA
+Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。较早的
+[CPU-only 预览版](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.42-preview.1)
+仍可在附件中选择 **`uv_constraint_kit-1.7.42-preview.zip`**。
 
 ## 从已有 UV 开始
 
@@ -149,16 +154,17 @@
 
 ## 从源码构建
 
-Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算；仓库包含可选的
-CUDA Driver API 引擎源码。上面的下载包包含 **CPU 引擎**，并不是 GPU 版本。
-原生构建目前面向 **Windows x64 / MSVC**，本次公开版宿主验证使用 Blender 5.2.3。
+Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。上面的预览包
+同时包含 CPU 与可选 CUDA 引擎。原生构建面向 **Windows x64 / MSVC**；公开版宿主验证
+使用 Blender 5.2.3。从源码构建 CUDA 引擎需要 CUDA Toolkit / NVRTC 12.4；预构建包只需要兼容驱动。
 
 ```sh
-python scripts/build_native.py
-python scripts/package.py --native-dir build/native/bin/windows-x64 --output dist/uv_constraint_kit.zip
+python scripts/build_native.py --build-dir build/native_gpu --gpu --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
+python tests/test_native.py --engine-dir build/native_gpu/bin/windows-x64 --gpu
+python scripts/package.py --native-dir build/native_gpu/bin/windows-x64 --require-gpu --output dist/uv_constraint_kit-1.7.42-cpu-gpu-preview.zip
 ```
 
-不传 `--native-dir` 可生成仅 Python 的安装包，使用速度较慢的回退路径。
+不传 `--native-dir` 仍可生成仅 Python 的安装包，使用速度较慢的回退路径。
 详见[安装说明](docs/INSTALL.md)和[构建说明](docs/BUILD.md)。
 
 ## 测试与限制
@@ -173,9 +179,11 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 测试只生成合成网格，请在独立工厂配置进程中运行；不保存用户场景或偏好。
 原生数值测试需要 NumPy，可使用 Blender 自带 Python。
 
+打包 GPU 宿主检查及其验收范围见[构建说明](docs/BUILD.md)和[验收记录](docs/VALIDATION.md)。
+9 次宿主操作用于核对后端分派和结果一致性，不代表性能倍数承诺。真实鼠标操作及撤回行为尚未验收。
+
 使用前请阅读[已知问题](docs/KNOWN_ISSUES.md)。新四边形化对极点、不一致拓扑
-闭环和混合多边形可能安全拒绝。GPU 并不加速所有步骤，不能用局部引擎计时
-代替完整操作计时。
+闭环和混合多边形可能安全拒绝。GPU 只用于符合条件的求解路径，不保证提速。
 
 ## 版本区分
 
