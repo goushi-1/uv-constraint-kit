@@ -1,7 +1,10 @@
 # Known issues / 已知问题
 
-This document describes release 1.7.54. Candidate 1.7.53 evidence and the final
-1.7.54 package/integration checks are recorded in [VALIDATION.md](VALIDATION.md).
+This document describes release 1.7.55. Its recovery precheck
+reuses the operation's captured UV input while unchanged; all existing checks,
+fresh reads after seeding and rollback remain. Final GPU, GUI and modal package
+checks passed. Release evidence and previous 1.7.54 checks are
+recorded in [VALIDATION.md](VALIDATION.md).
 Factory-GUI checks inject Blender
 events; they are not manual OS mouse or user-install acceptance.
 
@@ -25,14 +28,15 @@ events; they are not manual OS mouse or user-install acceptance.
   incompatible anchors can still be rejected or restored unchanged. 折叠或重叠输入仍可能安全拒绝；
   合成恢复用例不等于旧用户案例已普遍修复。
 - **Performance varies.** Mesh extraction, topology, recovery, safety checks,
-  overlays and solver iterations contribute to complete operation time. The
-  accepted 1.7.53-versus-1.7.51 comparison observed about 2.0% lower total time
-  over 540 paired complete operations; the separate dense ABBA comparison
-  observed about 1.8% lower time over 18 pairs. These use candidate 1.7.51 as
-  their baseline, not published 1.7.49, and cannot be added to earlier timing
-  percentages. They are observations, not a deadline or portable speed claim.
-  GPU checks verify routing and results, not a performance guarantee.
-  这些记录以 1.7.51 候选为基线，不可与更早的百分比相加；不得把 C++／GPU 内核计时当作完整操作承诺。
+  overlays and solver iterations contribute to complete operation time. In the
+  recorded local comparison, 540 pairs of complete operations took 67.8708471 s on
+  1.7.54 and 67.1553843 s on 1.7.55 (-1.054%; two rounds: -0.903%
+  and -1.205%). A separate dense 18-pair ABBA comparison took 14.499352 s and
+  13.7531216 s (-5.147%; rounds: -4.429% and -5.856%). These are limited
+  observations, not additive to earlier candidate results, not portable, and
+  not a sub-second promise. GPU checks
+  verify routing and results, not a performance guarantee.
+  这些是特定本机用例观测，不能与历史百分比相加，也不承诺低于一秒或通用提速。
 - **Temporary memory.** CPU scratch survives until its solve ends; prepared
   island geometry survives until the current protected strength loop ends.
   A 131,072-triangle CPU probe observed about 2.1 MiB more peak working set in
@@ -47,7 +51,9 @@ events; they are not manual OS mouse or user-install acceptance.
   hardware and some special solve paths use CPU. Native numerical checks,
   including an actual GPU route and invalid-PTX CPU fallback, passed for the
   accepted candidate and the final 1.7.54 package. The final packaged-host run
-  also exercised three natural GPU operations. This does not cover
+  also exercised three natural GPU operations. Final 1.7.55 package checks
+  passed nine host operations, including three natural GPU operations with
+  CPU/GPU UV delta 0. This does not cover
   every GPU model, driver, mesh or Blender workflow. GPU 路径已按验收记录检查，
   但不代表所有显卡、驱动、网格或工作流都已通过。
 - **Native reader compatibility.** The package includes a Windows x64 CPython
@@ -69,7 +75,9 @@ events; they are not manual OS mouse or user-install acceptance.
   OS mouse was moved. Manual interaction, third-party add-on interactions and
   persistent user preferences in an installed environment remain unverified.
   Four additional synthetic integration groups also passed. These are bounded
-  functional cases, not many-island stress coverage.
+  functional cases, not many-island stress coverage. Final 1.7.55 native-reader
+  and Python-reader modal runs each passed 24 gestures and 144 move samples;
+  active drawing reported no errors and confirmed operations covered undo/redo.
   工厂 GUI 通过了事件注入式 modal 验收，不能代替人工鼠标或用户安装环境验收。
 
 Report a minimal reproduction with Blender version, extension commit, native

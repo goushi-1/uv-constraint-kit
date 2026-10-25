@@ -2,6 +2,9 @@ UV Constraint Kit
 Copyright (C) 2026 UV Constraint Kit contributors.
 Licensed under GNU GPL version 3 or any later version; no warranty.
 
+Release 1.7.55 reuses the unchanged input UV values during recovery preflight.
+Winding, overlap, outside-scope and rollback checks remain in place.
+
 Release 1.7.54 integrates the independently implemented integer-grid
 quadrification, CPU/CUDA solver, native mesh reader, and portable build/test
 tooling. Operation-local geometry and CPU workspace reuse preserve the

@@ -2927,7 +2927,9 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         if context.edit_object == obj and len(context.objects_in_mode_unique_data) == 1:
             recalled = recovery.recall(module, topo, faces, constraint_positions,
                                       fixed_positions, saved, pins, settings, _recovered)
-            recovery_plan = None if recalled else recovery.plan(module, topo, faces, settings)
+            # The input has not been written since the saved snapshot.
+            recovery_plan = None if recalled else recovery.plan(
+                module, topo, faces, settings, _coordinates=saved)
             clean_relaxation = bool(
                 recovery_plan is not None and faces.issubset(recovery_plan['clean_faces'])
                 and before['max_deviation'] <= .05 and not before['zero_edges']

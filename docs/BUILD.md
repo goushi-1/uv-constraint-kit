@@ -1,11 +1,13 @@
 # Build from source / 从源码构建
 
-The 1.7.54 Windows x64 release integrates CPU and GPU engines plus
-the CPython stable-ABI reader. Its final archive identity and recorded
-checks are bound in [`release_checks.json`](../release_checks.json).
+The 1.7.55 Windows x64 release reuses the source-matched CPU,
+GPU and CPython stable-ABI reader artifacts from 1.7.54. This release changes
+only recovery precheck input reuse; C++, CUDA and reader sources and binaries
+are unchanged. All eight final package jobs passed. The release archive
+identity is recorded in [`release_checks.json`](../release_checks.json).
 
-1.7.54 整合包复用已验收且与当前源码哈希匹配的 CPU、
-Reader 和 GPU 制品；以下命令提供从源码完整重建的方式。重新编译后的制品需重新记录身份。
+1.7.55 发行包复用与源码哈希匹配的 CPU、GPU 和 CPython stable ABI 读取器制品。
+以下命令是独立的完整重建方法，此发行包并未使用重编译制品。任何重新编译的制品都需重新验收并记录身份。
 
 ## Requirements / 工具
 
@@ -85,7 +87,7 @@ stable-ABI import library named exactly `python3.lib`:
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.54.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.55.zip
 ```
 
 `--reader` requires both `--python-include` and `--python-library`; the latter
@@ -141,8 +143,10 @@ blender --factory-startup --disable-autoexec --python-exit-code 1 --python tests
 The historical reader-enabled packaged-host report covered nine operations,
 including natural GPU dispatch, on the recorded Blender 5.2.3 host. The accepted
 1.7.53 candidate's native numerical checks also exercised real GPU execution and
-bad-PTX fallback to CPU. The final 1.7.54 package also passed these numerical
-and nine packaged-host checks; see [VALIDATION.md](VALIDATION.md).
+bad-PTX fallback to CPU. The final 1.7.54 package passed these numerical and
+nine packaged-host checks. The final 1.7.55 GPU package check also passed nine
+operations, including three natural GPU operations, with CPU/GPU UV delta 0.
+See [VALIDATION.md](VALIDATION.md).
 These synthetic checks verify routing and outputs; they are not a performance
 multiplier benchmark and do not cover every host.
 
@@ -173,6 +177,11 @@ canceled gestures were checked for restoration. These are automated factory
 window events, not hand-operated mouse tests or validation of a user's installed
 Blender environment. No user scene or preferences are saved.
 
+The final 1.7.55 native-reader and Python-reader modal runs each passed 24
+gestures and 144 move samples, including undo/redo; active drawing reported no
+errors. Manual mouse interaction and installed user environments remain outside
+this automated check.
+
 ## Prepared-geometry integration / 几何准备整合检查
 
 ```sh
@@ -185,6 +194,24 @@ an annulus with an actual Blender unwrap, and an actual shared-UV fit. It checks
 scope, pins, selection, constraints, topology and new flips. It does not register
 the add-on, measure performance, or load private asset fixtures; the separate
 GUI tests above cover registered operator behavior.
+
+## Recovery precheck input reuse / 恢复预检查输入复用
+
+Run the recovery-input host check against the extracted release package in a
+disposable background factory process. It requires the native mesh reader but
+does not require the GPU. `--require-native` requires the reader; NaN inputs may
+use the existing Python topology fallback, so this is not an all-native-solve test:
+
+```sh
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_recovery_input_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/recovery-input.json --require-native
+```
+
+The final 1.7.55 run passed 384 cases. It compares live BMesh input with supplied
+numeric input using the existing cross oracle; it does not use a private 1.7.54
+baseline. The separate 576 private recovery-plan comparisons directly compared
+1.7.54 with 1.7.55. Both checks retain the default fresh-read path after seeding.
+
+最终 1.7.55 检查通过 384 项。该测试需要原生读取器，不需要 GPU；`--require-native` 只要求读取器。含 NaN 的输入可能使用现有 Python topology fallback，因此不代表所有求解都由原生代码执行。它使用 live BMesh 与给定数字输入及既有 cross oracle 比较，不含私有 1.7.54 基线；另有 576 项私有 1.7.54 对 1.7.55 直接对照。两项均保留 seed 后的新鲜读取路径。
 
 ## README examples / 说明图
 

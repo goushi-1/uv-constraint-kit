@@ -59,17 +59,19 @@ def recall(core, topo, faces, positions, fixed, saved, pins, settings, state):
     return dict(seed=state['seed'], report=deepcopy(state['report']))
 
 
-def _crosses(topo, faces, triangles=None):
+def _crosses(topo, faces, triangles=None, *, coordinates=None):
     positions = [tuple(topo.loop_pos[l] for l in tri)
                  for tri in (topo.loop_triangles() if triangles is None else triangles)
                  if tri[0].face.index in faces]
-    uv = np.asarray([[tuple(topo.loops[p][topo.uvl].uv) for p in tri] for tri in positions])
+    uv = (np.asarray([[tuple(topo.loops[p][topo.uvl].uv) for p in tri] for tri in positions])
+          if coordinates is None else
+          np.asarray([[coordinates[p] for p in tri] for tri in positions], dtype=float))
     edges = uv[:, 1:]-uv[:, :1]
     return positions, edges[:, 0, 0]*edges[:, 1, 1]-edges[:, 0, 1]*edges[:, 1, 0]
 
 
-def plan(core, topo, faces, settings):
-    """Find damaged charts using topology, winding and actual intersections."""
+def plan(core, topo, faces, settings, *, _coordinates=None):
+    """Find damaged charts; optional coordinates are this unchanged input."""
     result = dict(charts=[], skipped=[], clean_faces=[])
     if settings.get('mix', 1.) != 1.:
         return result
@@ -82,7 +84,7 @@ def plan(core, topo, faces, settings):
             triangles[root].append(tri)
     for root, island in islands.items():
         island = set(island)
-        positions, cross = _crosses(topo, island, triangles[root])
+        positions, cross = _crosses(topo, island, triangles[root], coordinates=_coordinates)
         if not len(cross) or not np.all(np.isfinite(cross)):
             continue
         mixed = np.any(cross > 2e-14) and np.any(cross < -2e-14)
@@ -90,7 +92,8 @@ def plan(core, topo, faces, settings):
         if not mixed and not degenerate:
             if len(island) == 1:
                 continue
-            probe = safety.AcceptanceProbe(core, topo, island, triangles=triangles[root])
+            probe = safety.AcceptanceProbe(core, topo, island, triangles=triangles[root],
+                                           coordinates=_coordinates)
             # No UV writes occur between this probe's construction and the
             # existing-overlap check; reuse its exact current input values.
             overlap = probe.check_overlaps(topo, include_existing=True,

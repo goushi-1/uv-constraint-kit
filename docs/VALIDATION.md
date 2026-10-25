@@ -2,10 +2,11 @@
 
 | Track | Meaning / 含义 |
 | --- | --- |
-| Previous published 1.7.49 | CPU, optional CUDA engine and stable-ABI reader release. Its package and factory-GUI checks remain historical. 上一公开基线。 |
+| Earlier published 1.7.49 | CPU, optional CUDA engine and stable-ABI reader release. Its package and factory-GUI checks remain historical. 更早的公开版本。 |
 | Accepted candidate 1.7.51 | Native loop collection and sparse constraint-record reading. Baseline for the 53 comparisons below; not a separately published release. 已验收候选，是本页 53 性能对照基线。 |
 | Accepted candidate 1.7.53 | Operation-local geometry and CPU workspace reuse. Exact-output, CPU/GPU, dense host and memory observations are recorded below. 已验收性能对照候选。 |
-| This source tree, 1.7.54 | Integrated release with its final archive, factory-GUI and four additional integration groups checked separately. 当前整合发行版，最终包检查见下表。 |
+| Previous published 1.7.54 | Integrated CPU, optional GPU and native reader release; its final package checks remain recorded below as prior-release evidence. 上一已发布整合版。 |
+| Current release, 1.7.55 | Reuses unchanged source-matched native artifacts; only recovery precheck input reuse changed. Final package, GPU, GUI and modal checks passed. 当前发行版，仅复用恢复预检查输入；最终安装包、GPU、GUI 与 modal 检查均已通过。 |
 | Earlier previews and `experimental/numeric-trials` | Historical or experimental tracks; their reports do not validate the current package and are not cumulative speed claims. 历史／实验路径，单独保留证据边界。 |
 
 Historical timing values are observations on a particular machine, not a
@@ -31,20 +32,57 @@ included. 旧数据只用于说明开发状态，不替代本仓库的可复跑�
 - `test_geometry_host.py`: independent synthetic multi-island continuation,
   fixed boundaries, actual fill-holes unwrap and actual shared-UV fitting;
   requires the native CPU engine and a disposable factory GUI.
+- `test_recovery_input_host.py`: live-BMesh versus supplied-numeric-input
+  recovery comparison with the existing cross oracle; see [`BUILD.md`](BUILD.md).
 - `check_public_tree.py`: source parsing, packaging metadata, private-path/
   credential-pattern scan, absent excluded adaptation, and required notices.
 
 Historical CPU and CPU+GPU summaries are retained in
 [`publication_checks.json`](../publication_checks.json) and
 [`gpu_publication_checks.json`](../gpu_publication_checks.json); they describe
-1.7.42, not 1.7.54. Current version, final artifact identity and gates are
-recorded in [`release_checks.json`](../release_checks.json).
+1.7.42, not the 1.7.55 release. Archive identity and release gates
+are recorded in [`release_checks.json`](../release_checks.json).
 These summaries omit machine paths and raw logs.
 A passed automated check is not user acceptance of every GUI transformation or
 production mesh.
 
 公开验收只标记实际运行过的项目。GPU 路由和结果只对记录中的构建、主机和用例成立，
 不代表所有显卡、驱动、网格或工作流均已通过。原用户安装、资产和场景均未由这些测试修改。
+
+## 1.7.55 final release / 1.7.55 最终发行版
+
+The only source change reuses the UV input already captured by the current
+operation during recovery planning, while that snapshot is unchanged. Existing
+checks, overlap validation, default fresh reads after seeding and rollback are
+retained. C++, CUDA, mesh-reader source and native binaries are unchanged; the
+release reuses source-matched artifacts from 1.7.54 without a fresh rebuild.
+
+| Final release evidence | Status |
+| --- | --- |
+| Final ZIP | Passed, 44 members, 535,534 bytes |
+| Final ZIP SHA-256 | `715445ec4669823c815086b87faa4933290600e3f41058e8b8605d802441448c` |
+| Eight package jobs | Passed: standalone CPU+GPU and bad-PTX CPU retry; host (5); selection (9); GPU (9, including 3 natural GPU, CPU/GPU UV delta 0); GUI native/Python (7 groups each); modal native/Python (24 gestures and 144 samples each) |
+| Modal drawing and undo/redo | Passed; active drawing had no errors, confirmed operations covered undo/redo |
+| Public `test_recovery_input_host.py` | Passed, 384 cases with required native reader; GPU not required |
+| Private recovery-plan comparison | Passed, 576 direct 1.7.54-versus-1.7.55 comparisons |
+| Frozen dense native inputs | Passed, 3 inputs; outputs and solver statistics matched exactly |
+| Additional final integration groups | Passed, 4 groups; matched baseline 1.7.54 |
+| Complete-operation comparison | 540 pairs: 67.8708471 s (1.7.54) → 67.1553843 s (1.7.55), -1.054%; rounds -0.903% and -1.205% |
+| Dense ABBA comparison | 18 pairs: 14.499352 s → 13.7531216 s, -5.147%; rounds -4.429% and -5.856% |
+
+The public 384-case recovery test compares live BMesh input with supplied
+numeric input using the existing cross oracle; it does not use a private
+1.7.54 baseline. `--require-native` requires the mesh reader, not a native solve
+for every case; NaN topology inputs may use the existing Python fallback. The
+576-case private comparison is a separate direct 1.7.54-versus-1.7.55 check.
+
+Timing values are observations from limited cases on the recorded machine, not
+a portable speed claim or a sub-second promise. They are a direct 1.7.54 to
+1.7.55 comparison and are not added to the historical 1.7.53-versus-1.7.51
+results below. Package checks passed for the listed hosts and cases; this does
+not establish acceptance for every machine, asset or workflow.
+
+公开恢复输入测试的 384 项是 live BMesh 与给定数字输入、沿用旧 cross oracle 的比较，不使用私有 1.7.54 基线；`--require-native` 要求读取器，但含 NaN 的 topology 用例允许现有 Python fallback。另有独立的 576 项私有 1.7.54 对 1.7.55 直接对照。性能数据是特定机器和有限用例的观测，不承诺通用提速或低于一秒；这些数据与下方历史 1.7.53 对 1.7.51 结果分开，不相加。检查结果仅覆盖所列主机和用例，不代表所有机器、资产或工作流。
 
 ## Accepted 1.7.53 candidate / 已验收的 1.7.53 候选
 
@@ -99,12 +137,13 @@ earlier percentages. No fixed speed multiplier or operation deadline is promised
 以上是特定构建和用例的完整操作观测，不能把内核计时替代完整耗时，也不能与更早基线的
 百分比相加。54 最终包另行核对了身份和整合行为。
 
-## 1.7.54 final automated acceptance / 1.7.54 最终包自动化验收
+## Previous release: 1.7.54 final automated acceptance / 上一发行版最终包验收
 
-Final archive: `uv_constraint_kit-1.7.54.zip`, 535,387 bytes, 44 members.
+Previous release archive: `uv_constraint_kit-1.7.54.zip`, 535,387 bytes, 44 members.
 SHA-256: `625fd5b813c2d16d166bb99460ee8428a3a8dcda1c51e66a38f2a8537a64cee5`.
-The source/test identities and gates are bound in
-[`release_checks.json`](../release_checks.json). The checks below ran against
+The source/test identities and gates are bound in the
+[1.7.54 tagged release_checks.json](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.54/release_checks.json).
+The checks below ran against
 the extracted final ZIP using Blender 5.2.3 LTS, build `e13b728c6880`.
 
 | Final check | Status |

@@ -4,31 +4,34 @@
 
 **在 Blender 中，把需要控制的 UV 边保持为直线、圆形或方形，让岛屿其余部分围绕这些约束调整。**
 
-> **1.7.54 Windows x64 CPU+GPU 版，附原生读取器。**
-> [下载安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.54/uv_constraint_kit-1.7.54.zip)
+> **1.7.55 Windows x64 CPU+GPU 版，附原生读取器。**
+> [下载安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.55/uv_constraint_kit-1.7.55.zip)
 > · [查看验收范围](docs/VALIDATION.md)。
 
 选中一段边，可以添加水平、垂直或直线约束；选中一个完整闭合环，可以把开孔变圆，
 或把边界整理成长方形。开启「标记后自动优化」时，添加或解除约束后，相关 UV 岛会随之
 优化。约束会保留下来，供后续优化继续使用，而不只是当次把选区对齐。
 
-[1.7.54 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.54)
-—— 安装附件为 **`uv_constraint_kit-1.7.54.zip`**。需要
-**Blender 5.2+**。[查看已知问题](docs/KNOWN_ISSUES.md)。
+[1.7.55 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.55)
+提供 **`uv_constraint_kit-1.7.55.zip`**。需要 **Blender 5.2+**。
+[查看已知问题](docs/KNOWN_ISSUES.md)。
 符合条件的大型求解会自动使用 GPU；小网格和部分特殊求解仍使用 CPU。GPU 需要
 NVIDIA 计算能力 8.9+ 显卡及支持 CUDA 12.4+ 的驱动。预构建扩展不需要另装 CUDA
 Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 已发布的版本见[历史发行版](https://github.com/goushi-1/uv-constraint-kit/releases)。
 
-## 1.7.54 更新了什么
+## 1.7.55 更新了什么
 
-CPU 准备阶段通过原生读取器收集角点和稀疏约束记录；同一轮强度试算复用岛屿不变的
-几何数据，C++ 求解器在单次求解中复用临时数组。现有工具及 CPU／GPU 分派规则保持。
+恢复预检查会复用本次操作已捕获、且尚未修改的 UV 输入；现有检查、seed 后的新鲜读取和
+回滚均保留。此版本不修改 C++、CUDA、读取器源码或原生二进制，而是复用与源码匹配的
+1.7.54 制品。
 
-已验收的 1.7.53 候选相对 1.7.51，在保留用例的完整操作对照中总耗时约减少 **2.0%**，
-单独的密集网格对照约减少 **1.8%**。这是这些用例的观测，不是 1.7.54 相比 1.7.49 的
-测试，也不代表固定提速。1.7.54 最终安装包已通过记录中的安装包、CPU/GPU 和工厂
-GUI 检查，以及多岛、固定边界、填孔与共享 UV 整合检查；剩余限制详见[验收记录](docs/VALIDATION.md)。
+本机有限用例中，540 对完整操作从正式版 1.7.54 的 67.8708471 秒变为 1.7.55 的
+67.1553843 秒（-1.054%；两轮分别为 -0.903%、-1.205%）。另一个密集网格 18 对 ABBA
+比较从 14.499352 秒变为 13.7531216 秒（-5.147%；两轮分别为 -4.429%、-5.856%）。
+这些是指定机器和用例的有限观测，不是通用提速承诺，也不保证低于一秒。冻结的密集输入
+产生完全相同的输出与求解统计；576 个私有 recovery-plan 对照及 384 个公开恢复输入用例通过。
+8 个安装包作业、最终 GPU/GUI/modal 检查及 4 个整合组也全部通过；详见[验收记录](docs/VALIDATION.md)。
 
 ## 从已有 UV 开始
 
@@ -166,16 +169,17 @@ GUI 检查，以及多岛、固定边界、填孔与共享 UV 整合检查；剩
 
 ## 从源码构建
 
-Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。计划中的 1.7.54
-包含 CPU、可选 CUDA 引擎和 CPython stable ABI 网格读取器。原生构建面向
+Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.7.55 发行版复用
+1.7.54 中与源码匹配的 CPU、可选 CUDA 引擎和 CPython stable ABI 网格读取器；此版本不重编译这些制品。原生构建面向
 **Windows x64 / MSVC**；宿主检查使用 Blender 5.2.3。从源码构建 CUDA 引擎需要
 CUDA Toolkit / NVRTC 12.4；预构建包只需要兼容 NVIDIA 驱动。读取器运行时使用
 Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
+以下命令是独立的完整重建示例，并未用于生成此发行包。
 
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.54.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.55.zip
 ```
 
 `--reader` 必须同时提供 `--python-include`（其中有 `Python.h`）和
@@ -201,16 +205,15 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 打包读取器／GPU 宿主检查和工厂 GUI 验收范围见[构建说明](docs/BUILD.md)和
 [验收记录](docs/VALIDATION.md)。宿主检查用于核对后端分派和结果一致性，不代表性能倍数承诺。
 工厂 GUI 检查通过排队的鼠标移动事件检查活动中的 G/R/S 变换及撤回／重做；
-不包含人工鼠标输入或用户安装环境。1.7.54 最终包检查在验收记录中单列。
+不包含人工鼠标输入或用户安装环境。1.7.55 最终包检查和验收范围见验收记录。
 
 使用前请阅读[已知问题](docs/KNOWN_ISSUES.md)。新四边形化对极点、不一致拓扑
 闭环和混合多边形可能安全拒绝。GPU 只用于符合条件的求解路径，不保证提速。
 
 ## 版本区分
 
-- 当前源码：1.7.54，整合已验收的 1.7.51 原生收集和 1.7.53 几何／工作数组复用，
-  并完成最终安装包的自动化检查。
-- 上一已发布基线：1.7.49。本页候选性能数据使用 1.7.51 作为基线，不能与更早的百分比相加。
+- 当前发行版：1.7.55。唯一源码变化是在恢复预检查中复用未改动的 UV 输入；最终安装包检查已通过。
+- 上一已发布版本：1.7.54。1.7.53 对 1.7.51 的数据属于历史独立比较，不与上文 1.7.54 对 1.7.55 的观测相加。
 - `experimental/numeric-trials`：1.7.43 实验分支，受保护求解的中间坐标留在
   数组中，尚未证明稳定的整体提速。
 - 历史本地正式版本与隔离基线见[验收记录](docs/VALIDATION.md)，原始资产、

@@ -5,8 +5,8 @@
 **Keep the UV edges you care about straight or shaped while the rest of the
 island adjusts around them, inside Blender.**
 
-> **Version 1.7.54 — Windows x64 CPU+GPU with the native reader.**
-> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.54/uv_constraint_kit-1.7.54.zip)
+> **Version 1.7.55 — Windows x64 CPU+GPU with the native reader.**
+> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.55/uv_constraint_kit-1.7.55.zip)
 > · [Validation scope](docs/VALIDATION.md).
 
 Select an edge run and give it a horizontal, vertical or straight-line
@@ -15,10 +15,9 @@ cutout. With **Optimize after marking** enabled, the affected island updates
 when you add or remove a constraint. Constraints remain available for later
 optimization, rather than being a one-time alignment.
 
-[1.7.54 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.54)
-— install the attached
-**`uv_constraint_kit-1.7.54.zip`**. Requires
-**Blender 5.2+**. [Known issues](docs/KNOWN_ISSUES.md).
+The [1.7.55 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.55)
+provides **`uv_constraint_kit-1.7.55.zip`**. Requires **Blender 5.2+**.
+[Known issues](docs/KNOWN_ISSUES.md).
 Eligible large solves use the GPU automatically; small meshes and some special
 solve paths stay on the CPU. GPU use requires an NVIDIA GPU with compute
 capability 8.9+ and a driver supporting CUDA 12.4+. The prebuilt extension does
@@ -26,20 +25,22 @@ not require the CUDA Toolkit. Other hardware and unsupported GPU setups use the
 CPU path. Published builds remain in the
 [release history](https://github.com/goushi-1/uv-constraint-kit/releases).
 
-## What changed in 1.7.54
+## What changed in 1.7.55
 
-CPU preparation now uses the native reader for loop collection and sparse
-constraint records. Repeated strength trials reuse an island's unchanged
-geometry, and the C++ solver reuses temporary buffers within one solve.
-These changes preserve the existing tools and CPU/GPU dispatch rules.
+Recovery prechecks now reuse the operation's already captured UV input while
+that input is still unchanged. Existing checks, fresh reads after seeding and
+rollback remain in place. This release changes no C++, CUDA, reader source or
+native binary; it reuses source-matched artifacts from 1.7.54.
 
-The accepted 1.7.53 candidate recorded about **2.0% less complete-operation time**
-than candidate 1.7.51 across the retained comparison, and about **1.8% less** in
-the separate dense comparison. These are observations for those cases, not a
-1.7.54-versus-1.7.49 measurement or a portable speed guarantee. The final 1.7.54
-archive passed the recorded package, CPU/GPU and factory-GUI checks, including
-multi-island, fixed-boundary, fill-holes and shared-UV integration.
-See [validation](docs/VALIDATION.md) for remaining limits.
+In local comparisons, 540 pairs of complete operations took 67.8708471 s on
+1.7.54 and 67.1553843 s on 1.7.55 (-1.054%; two rounds: -0.903% and -1.205%). A
+separate dense 18-pair ABBA comparison took 14.499352 s and 13.7531216 s
+(-5.147%; two rounds: -4.429% and -5.856%). These are limited observations on
+the recorded machine and cases, not a universal speed claim or a sub-second
+promise. Frozen dense inputs produced identical outputs and solver statistics;
+576 private recovery-plan comparisons and 384 public recovery-input cases passed.
+All eight package jobs, final GPU/GUI/modal checks and four integration groups
+also passed; see [validation](docs/VALIDATION.md).
 
 ## Start with an existing UV layout
 
@@ -205,17 +206,20 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 ## Building from source
 
 Python handles Blender's interface, selection, undo and overlays; C++17 engines
-handle numeric solves. The planned 1.7.54 package includes CPU, optional CUDA, and the
-CPython stable-ABI mesh reader. Native builds target
+handle numeric solves. The 1.7.55 release reuses the source-matched CPU,
+optional CUDA and CPython stable-ABI mesh reader artifacts from 1.7.54; these
+native sources and binaries were not rebuilt or changed. Native builds target
 **Windows x64 / MSVC**; host checks used Blender 5.2.3. Building the CUDA engine
 from source requires CUDA Toolkit / NVRTC 12.4; the prebuilt ZIP needs only a
 supported NVIDIA driver. The reader uses Blender's bundled Python at runtime.
 Neither Python nor CUDA runtime files are distributed.
+The commands below are a separate full-rebuild recipe; they were not used to
+produce this release.
 
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.54.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.55.zip
 ```
 
 `--reader` requires `--python-include` containing `Python.h` and
@@ -246,8 +250,8 @@ instructions](docs/BUILD.md) and [validation status](docs/VALIDATION.md). The
 host checks verify backend routing and result agreement; they are not a
 performance multiplier claim. Factory GUI testing used queued mouse-move events
 to sample active G/R/S transforms and undo/redo. It does not cover manual mouse
-input or a user's installed Blender environment. Final 1.7.54 package checks
-are listed separately in the validation record.
+input or a user's installed Blender environment. The 1.7.55 package checks and
+their scope are listed in the validation record.
 
 Read [known issues](docs/KNOWN_ISSUES.md) before production use. Pole vertices,
 inconsistent quad cycles and mixed polygon charts may be rejected by the grid
@@ -255,10 +259,10 @@ tool. GPU execution is limited to eligible paths and does not guarantee a speedu
 
 ## Versions
 
-- This source tree: 1.7.54, integrating accepted 1.7.51 native collection and
-  1.7.53 geometry/workspace reuse, with final-package automated checks.
-- Previous published baseline: 1.7.49. Candidate timings above use 1.7.51 as their
-  baseline and cannot be added to earlier timing percentages.
+- Current release: 1.7.55. Its only source change reuses an unchanged captured
+  UV input during recovery prechecks; final package checks passed.
+- Previous published release: 1.7.54. The 1.7.53-versus-1.7.51 results are
+  historical and separate from the 1.7.54-versus-1.7.55 observations above.
 - `experimental/numeric-trials`: separately marked 1.7.43 experiment, retaining
   intermediate protected solver coordinates in arrays. No stable global
   performance gain has been demonstrated.
