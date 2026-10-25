@@ -1,8 +1,11 @@
 # Build from source / 从源码构建
 
-The 1.7.49 Windows x64 package includes CPU and GPU engines plus the CPython
-stable-ABI reader. Its recorded package SHA-256 is
-`4a5116593650ab6d69e29ed55fdd4d25d47002561cca61f7d868444be3031784` (44 files).
+The 1.7.54 Windows x64 release integrates CPU and GPU engines plus
+the CPython stable-ABI reader. Its final archive identity and recorded
+checks are bound in [`release_checks.json`](../release_checks.json).
+
+1.7.54 整合包复用已验收且与当前源码哈希匹配的 CPU、
+Reader 和 GPU 制品；以下命令提供从源码完整重建的方式。重新编译后的制品需重新记录身份。
 
 ## Requirements / 工具
 
@@ -39,7 +42,7 @@ extension folder does not satisfy these checks.
 构建只写 `build/`；不修改用户 Blender 安装。安装包把 `blender_manifest.toml`
 放在 ZIP 根，使用明确白名单，排除缓存、日志、测试和构建来源记录。
 
-## CPU+GPU package / CPU+GPU 正式包
+## CPU+GPU package / CPU+GPU 安装包
 
 Build the CPU and GPU engines in a separate directory so the existing CPU build
 remains intact. Set `CUDA_PATH` to your Toolkit, or pass the include and NVRTC
@@ -82,7 +85,7 @@ stable-ABI import library named exactly `python3.lib`:
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.49.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.54.zip
 ```
 
 `--reader` requires both `--python-include` and `--python-library`; the latter
@@ -92,6 +95,13 @@ validated `reader.json` metadata and a matching `.pyd`, preventing a release
 package from silently omitting the reader. `--require-gpu` and
 `--require-reader` check package presence and metadata; they do not prove
 compatibility with every Blender build or machine.
+
+Reader API 2 includes optional `collect_loops` and `constraint_records` methods.
+The Python adapter checks for each method and retains its Python path when an
+older API 2 reader lacks it. An error from an available method is propagated;
+it is not silently retried. CPU geometry preparation is reused only inside one
+strength continuation, and CPU workspace is owned by one solve. SDK, ABI and
+source checks remain required even when reusing an accepted binary.
 
 PowerShell uses `$env:PYTHON_INCLUDE`, `$env:PYTHON_LIBRARY`, and
 `$env:CUDA_PATH`; cmd uses `%PYTHON_INCLUDE%`, `%PYTHON_LIBRARY%`, and
@@ -128,9 +138,11 @@ deliberately uses Blender's factory **GUI** process (no
 blender --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_gpu_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/gpu-host.json
 ```
 
-The reader-enabled packaged-host report covers nine operations, including
-natural GPU dispatch, and passed on the recorded Blender 5.2.3 host. Native
-numerical checks also exercised real GPU execution and bad-PTX fallback to CPU.
+The historical reader-enabled packaged-host report covered nine operations,
+including natural GPU dispatch, on the recorded Blender 5.2.3 host. The accepted
+1.7.53 candidate's native numerical checks also exercised real GPU execution and
+bad-PTX fallback to CPU. The final 1.7.54 package also passed these numerical
+and nine packaged-host checks; see [VALIDATION.md](VALIDATION.md).
 These synthetic checks verify routing and outputs; they are not a performance
 multiplier benchmark and do not cover every host.
 
@@ -154,12 +166,25 @@ blender --enable-event-simulate --factory-startup --disable-autoexec --python-ex
 blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/modal-python.json --reader python
 ```
 
-The accepted run covered 24 gesture combinations per route: UV sync on/off,
+The final 1.7.54 run covered 24 gesture combinations per route: UV sync on/off,
 whole/partial selection, G/R/S, and confirm/cancel. Each gesture sampled six
 mouse-move events. Confirmed gestures were checked through undo and redo;
 canceled gestures were checked for restoration. These are automated factory
 window events, not hand-operated mouse tests or validation of a user's installed
 Blender environment. No user scene or preferences are saved.
+
+## Prepared-geometry integration / 几何准备整合检查
+
+```sh
+blender --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_geometry_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/geometry.json
+```
+
+This CPU-only synthetic test requires the native CPU engine. It checks two
+islands across four strength trials, feasible and conflicting fixed boundaries,
+an annulus with an actual Blender unwrap, and an actual shared-UV fit. It checks
+scope, pins, selection, constraints, topology and new flips. It does not register
+the add-on, measure performance, or load private asset fixtures; the separate
+GUI tests above cover registered operator behavior.
 
 ## README examples / 说明图
 

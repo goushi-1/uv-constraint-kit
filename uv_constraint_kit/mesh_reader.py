@@ -17,6 +17,8 @@ _attempted = False
 _error = None
 _captures = 0
 _reads = 0
+_loop_collects = 0
+_record_reads = 0
 
 
 def _load():
@@ -90,10 +92,37 @@ def read_uv(loops, layer):
     return value
 
 
+def collect_loops(bm):
+    """Fresh face-major handles, or None when the optional method is absent."""
+    global _loop_collects
+    module = _load()
+    function = getattr(module, 'collect_loops', None)
+    if function is None:
+        return None
+    _main_thread()
+    value = function(bm)
+    _loop_collects += 1
+    return value
+
+
+def constraint_records(bm, layer):
+    """Read current marks without retaining handles or updating mesh indices."""
+    global _record_reads
+    module = _load()
+    function = getattr(module, 'constraint_records', None)
+    if function is None:
+        return None
+    _main_thread()
+    value = function(bm, layer)
+    _record_reads += 1
+    return value
+
+
 def diagnostics(reset=False):
-    global _captures, _reads
+    global _captures, _reads, _loop_collects, _record_reads
     value = dict(attempted=_attempted, loaded=_module is not None, error=_error,
-                 captures=_captures, reads=_reads)
+                 captures=_captures, reads=_reads, loop_collects=_loop_collects,
+                 record_reads=_record_reads)
     if reset:
-        _captures = _reads = 0
+        _captures = _reads = _loop_collects = _record_reads = 0
     return value

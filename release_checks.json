@@ -1,14 +1,14 @@
 {
-  "version": "1.7.49",
-  "release_track": "Windows x64 workflow release",
+  "version": "1.7.54",
+  "release_track": "Windows x64 CPU + GPU + native reader",
   "date": "2026-10-25",
   "package": {
-    "filename": "uv_constraint_kit-1.7.49.zip",
-    "sha256": "4a5116593650ab6d69e29ed55fdd4d25d47002561cca61f7d868444be3031784",
-    "bytes": 530865,
+    "filename": "uv_constraint_kit-1.7.54.zip",
+    "sha256": "625fd5b813c2d16d166bb99460ee8428a3a8dcda1c51e66a38f2a8537a64cee5",
+    "bytes": 535387,
     "members": 44
   },
-  "baseline_public_commit": "94c8fe193a9db16667c550dc82b1b0bee5321528",
+  "baseline_public_commit": "77037be52fd5ee15cd7436a146902a8ea719e5ea",
   "blender": "5.2.3 LTS",
   "blender_build": "e13b728c6880",
   "gates": {
@@ -16,17 +16,22 @@
       "status": "passed",
       "members": 44,
       "crc": true,
-      "extracted_matches": true
+      "source_and_extracted_match": true,
+      "sensitive_pattern_scan": true,
+      "scan_is_not_security_audit": true
     },
-    "native_builds": {
+    "native_source_identity": {
       "status": "passed",
       "components": [
         "CPU",
         "CUDA GPU",
-        "CPython stable-ABI reader"
+        "stable-ABI reader"
       ],
-      "rebuild_from_source": true,
-      "build_feature_metadata_selection": true
+      "reused_validated_artifacts": true,
+      "unified_fresh_rebuild": false,
+      "cpu_from_candidate": "1.7.53",
+      "reader_from_candidate": "1.7.51",
+      "gpu_from_release": "1.7.49"
     },
     "native_numeric": {
       "status": "passed",
@@ -43,7 +48,7 @@
     "safety_numeric": {
       "status": "passed",
       "cases": 18,
-      "global_numpy_error_policy_preserved": true
+      "numpy_error_policy_preserved": true
     },
     "blender_gpu_host": {
       "status": "passed",
@@ -62,6 +67,14 @@
       "status": "passed",
       "cases": 9,
       "reader_required": true
+    },
+    "confirmed_gui_native": {
+      "status": "passed",
+      "groups": 7
+    },
+    "confirmed_gui_python": {
+      "status": "passed",
+      "groups": 7
     },
     "mouse_modal_native": {
       "status": "passed",
@@ -85,9 +98,7 @@
         "cancel"
       ],
       "confirmation_undo_redo": true,
-      "draw_calls": 410,
       "modal_draw_calls": 312,
-      "observer_no_new_bmesh_wrappers_during_gesture": true,
       "os_mouse_moved": false
     },
     "mouse_modal_python": {
@@ -112,58 +123,72 @@
         "cancel"
       ],
       "confirmation_undo_redo": true,
-      "draw_calls": 410,
       "modal_draw_calls": 312,
-      "observer_no_new_bmesh_wrappers_during_gesture": true,
       "os_mouse_moved": false
     },
-    "rebuilt_operation_equivalence": {
+    "geometry_host_integration": {
       "status": "passed",
-      "paired_operations": 270,
-      "recorded_fields": 22,
-      "reference": "sealed 1.7.48",
+      "groups": 4,
+      "baseline": "sealed candidate 1.7.51",
       "exact": true,
-      "timing_is_diagnostic": true,
-      "observed_operations_over_one_second": 0
+      "cases": [
+        "multi_island",
+        "fixed_boundary",
+        "actual_fill_holes",
+        "actual_shared_stack"
+      ],
+      "actual_builtin_unwrap": true,
+      "actual_solver": true,
+      "source_and_package_unchanged": true,
+      "public_synthetic_regression_passed": true,
+      "lifecycle_registration_covered_separately": true
     },
-    "historical_fold_assessment": {
+    "sealed53_evidence_reuse": {
       "status": "passed",
-      "cases": 3,
-      "passed_cases": 1,
-      "known_unresolved_cases": 2,
-      "unexpected_rejections": 0,
-      "source_assets_read_only": true
+      "identical_runtime_except": [
+        "blender_manifest.toml",
+        "NOTICE"
+      ],
+      "paired_complete_operations": 540,
+      "recorded_exact_fields": 22,
+      "dense_paired_operations": 18,
+      "comparison_baseline": "candidate 1.7.51",
+      "performance_observation_not_new54_benchmark": true,
+      "complete_operation_aggregate_change_percent": -1.9964,
+      "dense_aggregate_change_percent": -1.7593,
+      "native_131072_triangle_peak_working_set_change_mib": 2.09765625,
+      "memory_observation_not_bound_or_leak_proof": true
     }
   },
   "runtime_sha256": {
     "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-    "NOTICE": "82d50a4afa16966b46d0b1149bb8f7cbfbcf07dd2424400bdb6c582e222b0468",
+    "NOTICE": "95d517e846dcc43e1f297608643acff3bc4e98c75f6553de70539b79a2f041e6",
     "THIRD_PARTY_NOTICES.md": "202c611c2ef7397f31a02b561f23fa948d1787c6ef9f21045a5bd389985614b8",
     "__init__.py": "5bf3566728a1d8c33674c9016f27c19631ce2434463f5e8bac66c35cc1199d62",
-    "bin/windows-x64/engine.json": "8ee9c2a90a49765326520ff1f6312ff3a8b996b61379d20e20f7b0c9e52c2a55",
+    "bin/windows-x64/engine.json": "fc4b5ddb4ebc93b7c4f07f8655bc7d2a4fd919fe4951731c4c827cd08f47192e",
     "bin/windows-x64/gpu.json": "483be60fcf9c70a8e4917f0aa81476630668f4395cac0d3e3a19c75d7181d72c",
-    "bin/windows-x64/reader.json": "187efa27ef5a829cc32f1c4396a18c23836aeef175e6246241cc2906d4230167",
-    "bin/windows-x64/uvck_engine_d9973e87b3d3ea72.dll": "d9973e87b3d3ea7230324d9bb31590cfa4d3c3d62708671082fad4e12863e780",
+    "bin/windows-x64/reader.json": "6d4805fac7ce6c7716941522bf1fbaf201ecfe715c18973152c0942bf9d831e9",
+    "bin/windows-x64/uvck_engine_e0f6c967d47f3fd8.dll": "e0f6c967d47f3fd810f341b249367dc1f501ed4b35eac288052f0f011fbf4d20",
     "bin/windows-x64/uvck_gpu_79935224145298e7.dll": "79935224145298e7b34621251bc000ad718f19edb6624a2b394ed2350e7bf473",
     "bin/windows-x64/uvck_gpu_9cc973ed423fa3b2.ptx": "9cc973ed423fa3b25d0039c12fd28447ca22168a65ee5ce4fde57154ae08c825",
-    "bin/windows-x64/uvck_reader_68076b677042fb9d.pyd": "68076b677042fb9dfb8f839d31111ad7b567d9fd303844caed65a8659c3f5ad6",
-    "blender_manifest.toml": "c39a9cdc9a6a593cf0d1a2cb60470fc433a7eb32f852d141aa41c49d5ceaf5e1",
+    "bin/windows-x64/uvck_reader_560500bfe5fde8d8.pyd": "560500bfe5fde8d8db16bf32477a8afff1cd46f9661b399dd653c1943968b806",
+    "blender_manifest.toml": "580827471ca5b69647f8cd217f89c15fb2bf9317b0ed5b6e83c31ce3a433774e",
     "circle.py": "0afc4fca63185d97a317aeca31d66a09d6b6a56fb6f03545f69b5989c8872b39",
     "circle_ops.py": "b3aa8529fb60bf527d5dacee82cc113e9505270952bda2391c1242c777c7e81a",
     "const.py": "fec58634525ec9d88e07111cc1a9566beae3fbcf0f0bb3393b3caa6c7945d18b",
-    "core.py": "55de7c33d3bd48785e70536c8ea02313107005b64ade81fa84f43c603fe8469a",
+    "core.py": "b2d94403c4c02432e403a1858bf55239e6ca36df9d6518d394fec1c803607d2d",
     "i18n.py": "40f2c3a755a6a2bb7b6275b9fde0658b29f12ad6b2fac03e23aa6a4f51dc7768",
     "live_symmetry.py": "3946c570b2cfb682af2f9813afc9dbacf73535a4d735eba3386734c24bd965e7",
-    "mesh_reader.py": "320f088c1a7ae34cc86962cf5b2277071da09d79fb8a0cb1ab057fc097dee7e7",
+    "mesh_reader.py": "e46fb56b888809fbf776b6bdf9c19c6af369eccbc2fc7823c9ba0f914bd1836d",
     "metric.py": "91e0116ad49ccabe7ed865206da0f27192db516b1c7e6b579310851bc0601ca3",
     "native_engine.py": "8a41732c95fca607589649bd7214687bb21621adaa5939bc49c0031daef79906",
     "native_source/CMakeLists.txt": "b01a8187ff27912441ea334a52c69f3f5953236fea37126658b45d80f2495e70",
     "native_source/build_gpu.py": "a3092b5e7347476db6a1e51b16a37ce7a3d0335d803f08bf0f914ad344dc0271",
-    "native_source/engine.cpp": "44424e3d183778f5f0f5181b5d444572f14d40b3dac734cb09920e50985c004a",
+    "native_source/engine.cpp": "7736d6e725422ad1163d961979417c93c499b5d23ed806ac032bf38713e31197",
     "native_source/engine_gpu.cpp": "fb62e8886eb82c0911686bdcf33e4826dc7f15331f16c83710b90d0abfb6f5ea",
     "native_source/gpu_driver.hpp": "e552b318744fcfae3b9b12cda0caa7ed1fd2b5a910ee2d0fb7fd13dc2559f5ac",
     "native_source/gpu_metric.cu": "788b9d7930130366015b67b7ad05b30c74021127f6f929ca1adc12665b4f345a",
-    "native_source/mesh_reader.cpp": "325893410ed97a77cb4b04063e349037f63493c1652b53add3d3a1a0a1eef03b",
+    "native_source/mesh_reader.cpp": "d59afb1bd080b01b9d5a2eaa3ea6cb8041b3bf32a6fd8aa4fe26e8b7e331ad1e",
     "ops.py": "f9fc5a7a484169e7b563fd5d608474708fa3f7e12bfa94694b1ea3d8d19553bb",
     "overlay.py": "087143b5b7b9b1277890302c73fb2a81df8acd3cf5d15621a786c6b153c94be8",
     "prefs.py": "a968b181335a1db31751b5bb500282e625c2de4d40c99ff5c1d29b70ecb82561",
@@ -182,20 +207,27 @@
     "untangle.py": "9f5f89e3abe0acd2725771e0db5f03c1624c690cf0888dddda730d1193fe76fd"
   },
   "source_test_sha256": {
-    "tests/test_modal_host.py": "465ed1d9077473d25459b4b9282bb9a67e55574810ae4f4882074e442a56188f",
+    "tests/test_geometry_host.py": "d78a9038a1d13f2a784e25bc9ed80c546a74db770fcc19cb7b1b1e59bcf96a4d",
+    "tests/test_gpu_host.py": "1eb997b4a5a148266b5030027cd193904c24d9791fdc7acdf11454576810c85e",
     "tests/test_gui_host.py": "4e8e2ef33e34be2237468ba4601a9c535bacd4e8aacb2b8f1e72e77aa079c4a2",
-    "tests/test_safety.py": "86d6ff6ddecc56003d50173d562204ed0778678b7d8e8d590504d2b39b52eb7e",
-    "tests/test_package.py": "271ad8eebc3c2dcea3f38c2058affa510c1c8308b5a68eff793fe3a026ab4c00",
+    "tests/test_host.py": "2960a0c8fac3a08430c7d33d517c34aa7b60f0b728fac057581894099c242bcc",
+    "tests/test_modal_host.py": "465ed1d9077473d25459b4b9282bb9a67e55574810ae4f4882074e442a56188f",
     "tests/test_native.py": "7b37845d3ffed6127c8e24bfcda32c333a702b95c9e11eaa46fd87ae6433f4a7",
+    "tests/test_package.py": "271ad8eebc3c2dcea3f38c2058affa510c1c8308b5a68eff793fe3a026ab4c00",
+    "tests/test_quad_grid_host.py": "ea21cb5cf3d38aba951827a5d3c5c518e918d2c17cc02dbf9484fb43d8633de2",
+    "tests/test_safety.py": "86d6ff6ddecc56003d50173d562204ed0778678b7d8e8d590504d2b39b52eb7e",
+    "tests/test_selection_host.py": "98707cf4500ad927cbef2ec65fcafa5828d456f1c8cde24cfc23ac9a7c80d70d",
     "scripts/build_native.py": "545c54e05b2b11ee8e2997666bc97b768dd24203eb747947822695a4ad67e19b",
-    "scripts/package.py": "b2aac2b2faba435d8a17079a8855691cdddca04173d66a70949cb84401427c56",
-    "scripts/check_public_tree.py": "60ebeeb9d4a25812ffcb1d55de9c9f3ac0662075b0f2a4cb498eca1aa40c5671"
+    "scripts/check_public_tree.py": "60ebeeb9d4a25812ffcb1d55de9c9f3ac0662075b0f2a4cb498eca1aa40c5671",
+    "scripts/generate_examples.py": "f37c442988da937898e86d55f4f20ee28d18830b55088d1fc99d7a045760d1ab",
+    "scripts/package.py": "b2aac2b2faba435d8a17079a8855691cdddca04173d66a70949cb84401427c56"
   },
   "scope": [
-    "Factory GUI queued mouse events, not human or user-installed tests.",
-    "Third-party add-on interactions and all Blender/GPU variants are unverified.",
-    "Two historical triangle/constraint conflicts remain safely rejected.",
-    "1.7.48 performance observations are not new 1.7.49 versus 1.7.47 claims."
+    "Factory GUI queued events are automated, not manual OS mouse or user-installed tests.",
+    "Third-party add-ons, all Blender/GPU variants, and multi-island memory pressure remain unverified.",
+    "Two historical constraint_triangle_conflict cases remain safely rejected; not repaired here.",
+    "53-versus-51 timing is retained evidence, not a fresh 54-versus-49 or additive speedup claim.",
+    "Validated source-matched native artifacts were reused; no unified fresh rebuild is asserted."
   ],
   "user_install_modified": false,
   "user_scene_saved": false,

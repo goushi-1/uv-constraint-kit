@@ -85,6 +85,9 @@ def loops_in_order(bm):
     nothing here trusts it; the returned list's position *is* the index used
     everywhere else.
     """
+    captured = mesh_reader.collect_loops(bm)
+    if captured is not None:
+        return captured
     out = []
     for face in bm.faces:
         out.extend(face.loops)
@@ -204,6 +207,9 @@ def _store_records(bm):
     if layer is None:
         return []
     prepare_bm(bm)
+    captured = mesh_reader.constraint_records(bm, layer)
+    if captured is not None:
+        return captured
     out = []
     for position, loop in enumerate(loops_in_order(bm)):
         kind = loop[layer]
@@ -1360,12 +1366,17 @@ def fit_constraint_boundary(topo, faces, runs, held, angle_length=1.0,
     saved = _loop_uv_snapshot(topo, faces)
     shared = (stacked_uv_groups(topo, faces) if shared_uv_groups is None else shared_uv_groups)
     probe = safety.AcceptanceProbe(module, topo, faces)
+    # This loop writes only UV coordinates; the group partition stays fixed.
+    # Shared variables retain their existing independent preparation path.
+    geometry = (metric._UNPREPARED if shared else
+                metric._prepare_geometry(module, topo, set(faces)))
     for strength in (1., 10., 100., 1e3, 1e4, 1e5, 1e6, 1e7, 1e8):
         n, _ = metric.solve(module, topo, faces, held, runs, max(1, int(iterations)),
                            angle_length=angle_length, auto=False,
                            constraint_strength=strength, shared_uv_groups=shared,
                            use_density_map=use_density_map, prevent_flips=prevent_flips,
-                           prevent_overlap=prevent_overlap, overlap_space=overlap_space)
+                           prevent_overlap=prevent_overlap, overlap_space=overlap_space,
+                           _geometry=geometry)
         health = probe.measure(topo)
         if health['finite'] and health['zero_edges'] == 0 and health['max_deviation'] <= .02:
             return n
@@ -2435,7 +2446,8 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
                     overlap_space=0., fill_holes=False, free_selection_borders=False,
                     respect_uv_selection=True, _topo=None, _constraint_strength=None,
                     _recovery_orientation=None, _recovery_guarded_faces=(),
-                    _quality_before=None, _quality_after=True, _contact_faces=()):
+                    _quality_before=None, _quality_after=True, _contact_faces=(),
+                    _geometry_cache=None):
     """Optimize the current parameterization, without resetting its solution."""
     from . import metric
     topo = _topo
@@ -2471,7 +2483,18 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
                 rotate_faces_uv(topo,island,estimate_axis_rotation(topo,axis),
                                 center=next(iter(held.values())) if held else None)
                 land_uv_groups(topo,held,island)
-        geometry=metric._prepare_geometry(__import__(__name__,fromlist=['']),topo,island)
+        if _geometry_cache is None or fill_holes:
+            geometry=metric._prepare_geometry(__import__(__name__,fromlist=['']),topo,island)
+        else:
+            key = frozenset(island)
+            entry = _geometry_cache.get(key)
+            if (entry is None or entry[0] is not topo
+                    or entry[1] is not topo.loop_to_vgroup
+                    or entry[2] is not topo.initial_uv):
+                geometry=metric._prepare_geometry(__import__(__name__,fromlist=['']),topo,island)
+                _geometry_cache[key] = (topo, topo.loop_to_vgroup, topo.initial_uv, geometry)
+            else:
+                geometry = entry[3]
         if runs and _constraint_strength is None:
             for _ in range(1 if auto_iterations else unfold_iterations):
                 feasible_constraint_boundary(topo,island,runs,held,angle_distance_mix,
@@ -2855,12 +2878,15 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
 
     def protected_trials(initial_deviation):
         best_values, best_result, best_deviation = None, None, initial_deviation
+        # Owned by this strength continuation only, before any native unwrap.
+        prepared_geometry = None if settings.get('fill_holes') else {}
         strengths = ((1., 100., 1e4, 1e6) if settings.get('auto_iterations', True)
                      else (1e6,))
         for strength in strengths:
             guarded = _rebuild_islands(context, obj, faces, constraint_positions,
                 _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
-                _quality_after=False, **dict(settings, _contact_faces=contact_faces))
+                _quality_after=False, _geometry_cache=prepared_geometry,
+                **dict(settings, _contact_faces=contact_faces))
             coordinates = probe.capture(topo)
             health = probe.measure(topo, coordinates=coordinates)
             accepted = valid(topo, health, coordinates) and health['max_deviation'] < best_deviation

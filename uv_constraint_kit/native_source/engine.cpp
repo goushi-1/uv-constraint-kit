@@ -52,7 +52,7 @@ struct Problem {
     std::vector<I> contact_vertices;
     bool soft, axes_only=true, reciprocal=false;
     std::vector<AxisSet> sets;
-    Vec jacobian;
+    Vec jacobian, gradient_terms;
     I evaluations=0;
     explicit Problem(const Input& in):p(in),soft(in.strength>=0),jacobian(4*in.nt) {
         for(I r=0;r<p.nr;++r) if(p.kinds[r]!=1 && p.kinds[r]!=2) axes_only=false;
@@ -343,8 +343,10 @@ struct Problem {
         if(p.prevent_overlap==2) {double contact_energy=contact(x,nullptr);if(!std::isfinite(contact_energy)) return INF;e+=contact_energy;}
         penalty(x,&e,nullptr);return std::isfinite(e)?e:INF;
     }
-    Vec gradient(const Vec& x) const {
-        Vec gu(4*p.nt),g(2*p.n,0);
+    void gradient(const Vec& x, Vec& g) {
+        // Every triangle term is overwritten; only the vertex accumulation
+        // needs resetting. Scratch storage belongs to this solve alone.
+        Vec& gu=gradient_terms;gu.resize(4*p.nt);g.assign(2*p.n,0);
         for(I t=0;t<p.nt;++t) {
             const double* j=&jacobian[4*t];const double* inv=&p.inverse[4*t];
             double det=j[0]*j[3]-j[1]*j[2],norm=j[0]*j[0]+j[1]*j[1]+j[2]*j[2]+j[3]*j[3];
@@ -380,7 +382,6 @@ struct Problem {
             }
         } else penalty(x,nullptr,&g);
         for(I i=0;i<p.n;++i) if(p.fixed[i]) {g[2*i]=0;g[2*i+1]=0;}
-        return g;
     }
 };
 static bool valid_input(const Input& p) {
@@ -410,29 +411,30 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
         for(I t=0;t<p.nt;++t) {const double* j=&problem.jacobian[4*t];double d=j[0]*j[3]-j[1]*j[2];if(!std::isfinite(d) || d<=1e-6) problem.reciprocal=false;}
         double e=problem.energy(x);*stats={0,problem.evaluations,problem.reciprocal,0,e,INF};
         if(!std::isfinite(e)) return 1; // Do not publish even the initial projection.
-        Vec g=problem.gradient(x);
+        Vec g;problem.gradient(x,g);
         struct History {Vec s,y;double rho;};std::vector<History> history;
+        Vec q,direction,candidate,next_g;std::vector<double> coefficients;
         I limit=p.automatic?1000:std::max<I>(1,p.iterations);
         for(I iteration=0;iteration<limit;++iteration) {
             if(p.automatic && max_abs(g)<1e-6) break;
-            Vec q=g;std::vector<double> coefficients;
+            q=g;coefficients.clear();
             for(auto i=history.rbegin();i!=history.rend();++i) {double alpha=i->rho*dot(i->s,q);coefficients.push_back(alpha);for(std::size_t k=0;k<q.size();++k) q[k]-=alpha*i->y[k];}
             double scale=history.empty()?std::max(p.density*p.density,1e-6)*.05:dot(history.back().s,history.back().y)/std::max(dot(history.back().y,history.back().y),1e-20);
             for(double& v:q) v*=scale;
             for(std::size_t i=0;i<history.size();++i) {double v=coefficients[history.size()-i-1]-history[i].rho*dot(history[i].y,q);for(std::size_t k=0;k<q.size();++k) q[k]+=history[i].s[k]*v;}
-            Vec direction=q;for(double& v:direction) v=-v;double slope=dot(g,direction);
+            direction=q;for(double& v:direction) v=-v;double slope=dot(g,direction);
             if(slope>=0) {for(std::size_t k=0;k<g.size();++k) direction[k]=-g[k];slope=-dot(g,g);history.clear();}
-            double step=1,next_e=INF;Vec candidate(x.size());bool accepted=false;
+            double step=1,next_e=INF;candidate.resize(x.size());bool accepted=false;
             for(int search=0;search<32;++search) {
                 for(std::size_t k=0;k<x.size();++k) candidate[k]=x[k]+step*direction[k];
                 problem.project(candidate);next_e=problem.energy(candidate);
                 if(next_e<=e+1e-4*step*slope) {accepted=true;break;}step*=.5;
             }
             if(!accepted) break;
-            Vec next_g=problem.gradient(candidate),change(x.size()),y(x.size());
+            problem.gradient(candidate,next_g);Vec change(x.size()),y(x.size());
             for(std::size_t k=0;k<x.size();++k) {change[k]=candidate[k]-x[k];y[k]=next_g[k]-g[k];}
             double sy=dot(change,y);if(sy>1e-14) {history.push_back({std::move(change),std::move(y),1/sy});if(history.size()>8) history.erase(history.begin());}
-            double improvement=e-next_e;x=std::move(candidate);e=next_e;g=std::move(next_g);++stats->accepted;
+            double improvement=e-next_e;x.swap(candidate);e=next_e;g.swap(next_g);++stats->accepted;
             if(p.automatic && improvement<=1e-10*std::max(1.,std::abs(e))) break;
         }
         for(double v:x) if(!std::isfinite(v)) return -2;
@@ -443,7 +445,7 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
 API int uvck_evaluate(const Input* input,I reciprocal,double* energy,double* gradient) noexcept {
     try {if(!input || !energy || !gradient || !valid_input(*input)) return -1;
         Problem p(*input);p.reciprocal=reciprocal!=0;Vec x(input->uv,input->uv+2*input->n);
-        *energy=p.energy(x);if(!std::isfinite(*energy)) return 1;Vec g=p.gradient(x);std::copy(g.begin(),g.end(),gradient);return 0;
+        *energy=p.energy(x);if(!std::isfinite(*energy)) return 1;Vec g;p.gradient(x,g);std::copy(g.begin(),g.end(),gradient);return 0;
     }catch(...){return -3;}
 }
 API int uvck_deform(I n,I ne,const I* edges,const double* weights,const double* degree,const std::uint8_t* fixed,double* displacement) noexcept {

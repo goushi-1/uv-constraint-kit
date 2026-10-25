@@ -55,6 +55,67 @@ template<class T> Ref bytes(const std::vector<T>& values) {
     return checked(PyBytes_FromStringAndSize(reinterpret_cast<const char*>(values.data()),
                     static_cast<Py_ssize_t>(values.size() * sizeof(T))));
 }
+PyObject* collect_loops(PyObject*, PyObject* bm) {
+    try {
+        Ref faces_name = name("faces"), loops_name = name("loops"), extend_name = name("extend");
+        Ref loops = checked(PyList_New(0));
+        Ref extend = attr(loops.get(), extend_name);
+        Ref faces = attr(bm, faces_name);
+        each(faces.get(), [&](PyObject* face) {
+            Ref corners = attr(face, loops_name);
+            Ref result = checked(PyObject_CallFunctionObjArgs(extend.get(), corners.get(), nullptr));
+        });
+        return loops.release();
+    } catch (const PythonError&) { return nullptr; }
+    catch (const std::bad_alloc&) { return PyErr_NoMemory(); }
+    catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "native loop collection failed");
+        return nullptr;
+    }
+}
+PyObject* constraint_records(PyObject*, PyObject* arguments) {
+    PyObject *bm, *layer;
+    if (!PyArg_ParseTuple(arguments, "OO:constraint_records", &bm, &layer)) return nullptr;
+    try {
+        Ref faces_name = name("faces"), loops_name = name("loops"), edge_name = name("edge");
+        Ref vertices_name = name("verts"), index_name = name("index");
+        Ref records = checked(PyList_New(0)), zero = checked(PyLong_FromLong(0));
+        Ref faces = attr(bm, faces_name);
+        Py_ssize_t position = 0;
+        each(faces.get(), [&](PyObject* face) {
+            Ref corners = attr(face, loops_name);
+            each(corners.get(), [&](PyObject* loop) {
+                Ref kind = checked(PyObject_GetItem(loop, layer));
+                int unmarked = PyObject_RichCompareBool(kind.get(), zero.get(), Py_EQ);
+                if (unmarked < 0) throw PythonError{};
+                if (!unmarked) {
+                    Ref edge = attr(loop, edge_name);
+                    Ref vertices = attr(edge.get(), vertices_name);
+                    Ref first = checked(PySequence_GetItem(vertices.get(), 0));
+                    Ref second = checked(PySequence_GetItem(vertices.get(), 1));
+                    Ref first_index = attr(first.get(), index_name);
+                    Ref second_index = attr(second.get(), index_name);
+                    Ref at = checked(PyLong_FromSsize_t(position));
+                    appended(records.get(), at.get());
+                    appended(records.get(), first_index.get());
+                    appended(records.get(), second_index.get());
+                    appended(records.get(), kind.get());
+                }
+                if (position == PY_SSIZE_T_MAX) {
+                    PyErr_SetString(PyExc_OverflowError, "mesh loop position exceeds Python size limit");
+                    throw PythonError{};
+                }
+                ++position;
+            });
+        });
+        return records.release();
+    } catch (const PythonError&) { return nullptr; }
+    catch (const std::bad_alloc&) { return PyErr_NoMemory(); }
+    catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "native constraint record read failed");
+        return nullptr;
+    }
+}
 PyObject* capture(PyObject*, PyObject* arguments) {
     PyObject *bm, *layer;
     if (!PyArg_ParseTuple(arguments, "OO:capture", &bm, &layer)) return nullptr;
@@ -141,6 +202,8 @@ PyObject* read_uv(PyObject*, PyObject* arguments) {
 }
 PyObject* version(PyObject*, PyObject*) { return PyLong_FromLong(2); }
 PyMethodDef methods[] = {
+    {"collect_loops", collect_loops, METH_O, "Collect a fresh face-major loop list without reading UVs or changing the mesh."},
+    {"constraint_records", constraint_records, METH_VARARGS, "Read sparse face-major constraint records using the caller's current vertex indices."},
     {"capture", capture, METH_VARARGS, "Read BMesh slots through public Python APIs, without writes."},
     {"read_uv", read_uv, METH_VARARGS, "Read current UVs from a live loop sequence, without writes."},
     {"version", version, METH_NOARGS, "Reader API version."},

@@ -2,8 +2,10 @@ UV Constraint Kit
 Copyright (C) 2026 UV Constraint Kit contributors.
 Licensed under GNU GPL version 3 or any later version; no warranty.
 
-This source preview was prepared on 2026-10-23. It introduces an independent
-integer-grid quadrification implementation and portable build/test tooling.
-Historical solver acceptance does not constitute full preview acceptance.
+Release 1.7.54 integrates the independently implemented integer-grid
+quadrification, CPU/CUDA solver, native mesh reader, and portable build/test
+tooling. Operation-local geometry and CPU workspace reuse preserve the
+recorded solve inputs and decisions. Validation scope and remaining limits
+are documented in docs/VALIDATION.md and docs/KNOWN_ISSUES.md.
 The symmetry adaptation retains the UniV authors' notices; see
 THIRD_PARTY_NOTICES.md and uv_constraint_kit/symmetry.py.
