@@ -89,16 +89,27 @@ def _prepare_geometry(core, topo, faces, shared_uv_groups=None):
         index = {g: original_index.get(shared_uv_groups.get(g, g), original_index[g])
                  for g in groups}
     xyz = core.vgroup_positions3d(topo, groups)
-    frames, tri, group_triangles = [], [], []
-    for a,b,c in triangles:
-        p = core._triangle_local2d((xyz[a],xyz[b],xyz[c]))
-        if p is None:
-            continue
-        frames.append(p)
-        tri.append((index[a],index[b],index[c]))
-        # UV variables may be shared; each triangle keeps its own 3D frame
-        # and face for the density layer.
-        group_triangles.append((a,b,c))
+    spatial_index = original_index if shared_uv_groups else index
+    prepared = native_engine.triangle_frames(
+        [xyz[g] for g in groups],
+        [(spatial_index[a], spatial_index[b], spatial_index[c]) for a,b,c in triangles])
+    if prepared is None:
+        frames, tri, group_triangles = [], [], []
+        for a,b,c in triangles:
+            p = core._triangle_local2d((xyz[a],xyz[b],xyz[c]))
+            if p is None:
+                continue
+            frames.append(p)
+            tri.append((index[a],index[b],index[c]))
+            group_triangles.append((a,b,c))
+    else:
+        frames, eligible = prepared
+        del prepared
+        if not np.all(eligible):
+            frames = frames[eligible]
+        group_triangles = [row for row, keep in zip(triangles, eligible) if keep]
+        # Geometry uses each triangle's own vertices even when UVs are shared.
+        tri = [(index[a],index[b],index[c]) for a,b,c in group_triangles]
     if not tri:
         return None
     frames = np.asarray(frames)

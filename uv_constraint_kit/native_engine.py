@@ -21,7 +21,7 @@ _required = False  # Differential tests may require every native call to succeed
 _library = None
 _attempted = False
 _error = None
-_calls = dict(solve=0, deform=0, uv_groups=0, islands=0, overlaps=0, intersections=0)
+_calls = dict(solve=0, deform=0, uv_groups=0, islands=0, overlaps=0, intersections=0, frames=0)
 _fallbacks = {}
 _last_solve = {}
 _last_overlap = {}
@@ -90,6 +90,9 @@ def _load():
             lib.uvck_check_overlaps.restype = ct.c_int
             lib.uvck_intersections.argtypes = [ct.c_int64] + [ct.c_void_p]*3
             lib.uvck_intersections.restype = ct.c_int
+            if hasattr(lib, 'uvck_triangle_frames'):
+                lib.uvck_triangle_frames.argtypes = [ct.c_int64, ct.c_int64] + [ct.c_void_p]*4
+                lib.uvck_triangle_frames.restype = ct.c_int
             _library = lib
         except (OSError, AttributeError, ValueError, KeyError, TypeError) as exc:
             _error = str(exc)
@@ -261,6 +264,7 @@ def diagnostics(reset=False):
                   deform_calls=_calls['deform'], topology_calls=_calls['uv_groups'],
                   island_calls=_calls['islands'], overlap_calls=_calls['overlaps'],
                   intersection_calls=_calls['intersections'],
+                  frame_calls=_calls['frames'],
                   fallbacks=sum(_fallbacks.values()), reasons=dict(_fallbacks),
                   last_solve=dict(_last_solve), last_overlap=dict(_last_overlap),
                   gpu=_gpu_diagnostics(reset))
@@ -501,3 +505,27 @@ def intersections(a, b):
         return _fallback('intersections_status_' + str(status))
     _calls['intersections'] += 1
     return output
+
+
+def triangle_frames(points, triangles):
+    """Optional read-only geometry batch, with the old Python path as fallback."""
+    lib = _load()
+    if lib is None or not hasattr(lib, 'uvck_triangle_frames'):
+        return None
+    xyz = _array(points, np.float32)
+    ids = _array(triangles, np.int64)
+    if xyz.ndim != 2 or xyz.shape[1] != 3 or ids.ndim != 2 or ids.shape[1] != 3:
+        raise ValueError('Invalid native triangle-frame buffer dimensions')
+    # Damaged nonfinite inputs retain the original Python warning/error path.
+    if not np.isfinite(xyz).all():
+        return None
+    frames = np.empty((len(ids), 3, 2), dtype=np.float64)
+    eligible = np.empty(len(ids), dtype=np.uint8)
+    status = lib.uvck_triangle_frames(len(xyz), len(ids), xyz.ctypes.data,
+                                    ids.ctypes.data, frames.ctypes.data, eligible.ctypes.data)
+    if status:
+        return _fallback('triangle_frames_status_' + str(status))
+    _calls['frames'] += 1
+    if not np.isfinite(frames).all():
+        return None
+    return frames, eligible.astype(bool)

@@ -1,9 +1,9 @@
 # Known issues / 已知问题
 
-This document describes release 1.7.55. Its recovery precheck
-reuses the operation's captured UV input while unchanged; all existing checks,
-fresh reads after seeding and rollback remain. Final GPU, GUI and modal package
-checks passed. Release evidence and previous 1.7.54 checks are
+The current release is 1.7.57. Its CPU frame batching does not change solver
+equations. The previous 1.7.55 release reused the operation's captured UV
+input during recovery prechecks while unchanged, retaining all checks, fresh
+reads after seeding and rollback. Current and historical release evidence is
 recorded in [VALIDATION.md](VALIDATION.md).
 Factory-GUI checks inject Blender
 events; they are not manual OS mouse or user-install acceptance.
@@ -37,6 +37,17 @@ events; they are not manual OS mouse or user-install acceptance.
   not a sub-second promise. GPU checks
   verify routing and results, not a performance guarantee.
   这些是特定本机用例观测，不能与历史百分比相加，也不承诺低于一秒或通用提速。
+- **1.7.57 measurements are limited.** The CPU frame-batch release measured
+  -2.4166% over 540 complete-operation pairs and -5.4344%
+  over 18 dense ABBA pairs, with regressions in some small groups. These results
+  apply only to the recorded machine and cases. Geometry arrays matched byte
+  for byte in two independent 131,072-triangle processes; observed peak working
+  set fell by 38.496 MiB and private bytes by 45.148 MiB. This is not a memory
+  bound or leak proof. The release passed its eight final package jobs. Float behavior was checked only with Blender
+  5.2.3. Older native libraries without the optional frame-batch symbol use
+  the Python fallback.
+  1.7.57 正式版的计时和内存结果仅适用于记录的有限用例；部分小组变慢，不能视为通用承诺。
+  浮点行为仅在 Blender 5.2.3 检查，缺少可选符号的旧库会回退 Python；最终包检查已通过。
 - **Temporary memory.** CPU scratch survives until its solve ends; prepared
   island geometry survives until the current protected strength loop ends.
   A 131,072-triangle CPU probe observed about 2.1 MiB more peak working set in

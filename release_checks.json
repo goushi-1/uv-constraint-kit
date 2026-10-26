@@ -1,14 +1,14 @@
 {
-  "version": "1.7.55",
+  "version": "1.7.57",
   "release_track": "Windows x64 CPU + GPU + native reader",
-  "date": "2026-10-25",
+  "date": "2026-10-26",
   "package": {
-    "filename": "uv_constraint_kit-1.7.55.zip",
-    "sha256": "715445ec4669823c815086b87faa4933290600e3f41058e8b8605d802441448c",
-    "bytes": 535534,
+    "filename": "uv_constraint_kit-1.7.57.zip",
+    "sha256": "afde872538beada4be471d8088c02fb5fbb7f095d056d57bd0a3ce92d2c27297",
+    "bytes": 537086,
     "members": 44
   },
-  "baseline_public_commit": "29649ab07584350faaab06e5bdc710302b59a482",
+  "baseline_public_commit": "513d0341fb9c2012c1e0a78fece492edc0c3e855",
   "blender": "5.2.3 LTS",
   "blender_build": "e13b728c6880",
   "gates": {
@@ -27,11 +27,15 @@
         "CUDA GPU",
         "stable-ABI reader"
       ],
-      "reused_validated_artifacts": true,
-      "unified_fresh_rebuild": false,
-      "cpu_from_candidate": "1.7.53",
-      "reader_from_candidate": "1.7.51",
-      "gpu_from_release": "1.7.49"
+      "rebuilt_components": [
+        "CPU"
+      ],
+      "reused_source_matched_components": [
+        "CUDA GPU",
+        "stable-ABI reader"
+      ],
+      "cpu_solve_formulas_unchanged": true,
+      "unified_fresh_rebuild": false
     },
     "native_numeric": {
       "status": "passed",
@@ -129,7 +133,7 @@
     "actual_host_integration": {
       "status": "passed",
       "groups": 4,
-      "baseline": "published 1.7.54",
+      "baseline": "published 1.7.55",
       "exact": true,
       "cases": [
         "multi_island",
@@ -137,32 +141,30 @@
         "actual_fill_holes",
         "actual_shared_stack"
       ],
-      "actual_builtin_unwrap": true
+      "public_geometry_groups": 4
     },
-    "public_recovery_input": {
+    "public_native_frames": {
       "status": "passed",
-      "cases": 384,
-      "reader_required": true,
-      "live_versus_supplied_input": true,
-      "fresh_default_reads_after_writes": true,
-      "numpy_error_policy_preserved": true
+      "mathutils_cases": 104,
+      "mesh_faces": 4,
+      "abi_sentinels": 2,
+      "shared_uv": true,
+      "nonfinite_and_overflow_fallback": true,
+      "missing_symbol_fallback": true,
+      "native_frames_required": true,
+      "input_unchanged": true
     },
-    "recovery_plan_equivalence": {
+    "native_frame_differential": {
       "status": "passed",
-      "cases": 576,
-      "reference": "published 1.7.54",
+      "mathutils_cases": 1288,
+      "unsupported_reference_cases": 130,
+      "finite_overflow_fallback_batch": 128,
+      "geometry_cases": 128,
+      "abi_boundary_cases": 6,
+      "cpu_solve_cases": 8,
+      "cpu_evaluate_cases": 8,
       "exact": true,
-      "covered": [
-        "native and Python paths",
-        "normal and mirrored",
-        "UDIM",
-        "folded",
-        "collapsed",
-        "nonfinite",
-        "default/list/float64 array",
-        "fresh after UV writes",
-        "warn and raise NumPy modes"
-      ]
+      "numpy_error_policy_preserved": true
     },
     "frozen_actual_cpu_inputs": {
       "status": "passed",
@@ -172,7 +174,6 @@
       "statistics_exact": true,
       "mark_accepted": 543,
       "mark_evaluations": 556,
-      "native_solve_calls_per_action": 1,
       "profile_timings_diagnostic_only": true
     },
     "complete_operation_comparison": {
@@ -180,12 +181,12 @@
       "paired_operations": 540,
       "exact_fields": 22,
       "exact": true,
-      "baseline": "published 1.7.54",
+      "baseline": "published 1.7.55",
       "reader_required_and_recorded_on_both": true,
       "first_process_operations_retained": true,
-      "baseline_seconds": 67.87084710006457,
-      "candidate_seconds": 67.15538429990556,
-      "change_percent": -1.0541533378891965
+      "baseline_seconds": 67.85816200002228,
+      "candidate_seconds": 66.21830580001006,
+      "change_percent": -2.4165938947943832
     },
     "dense_complete_operation_comparison": {
       "status": "passed",
@@ -195,24 +196,34 @@
       "triangles": 18432,
       "order": "ABBA",
       "natural_backend": "CPU",
-      "baseline_seconds": 14.499351999991632,
-      "candidate_seconds": 13.753121600013401,
-      "change_percent": -5.1466465534367405
+      "new_read_only_frame_counter_recorded_separately": true,
+      "baseline_seconds": 14.479992000002312,
+      "candidate_seconds": 13.693087599998762,
+      "change_percent": -5.434425654402464
+    },
+    "geometry_memory_observation": {
+      "status": "passed",
+      "triangles": 131072,
+      "arrays_exact": true,
+      "peak_working_set_change_mib": -38.49609375,
+      "private_usage_change_mib": -45.1484375,
+      "limited_per_process_observation": true,
+      "not_leak_or_bound_proof": true
     }
   },
   "runtime_sha256": {
     "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-    "NOTICE": "055362f017da76878399028773c4aea87229dc35a39ffc85bdae1274eb323257",
+    "NOTICE": "8a1fabeb3017c1febdbecbf9c9c1a01c6def4126a4a911ff3cd6531636426446",
     "THIRD_PARTY_NOTICES.md": "202c611c2ef7397f31a02b561f23fa948d1787c6ef9f21045a5bd389985614b8",
     "__init__.py": "5bf3566728a1d8c33674c9016f27c19631ce2434463f5e8bac66c35cc1199d62",
-    "bin/windows-x64/engine.json": "fc4b5ddb4ebc93b7c4f07f8655bc7d2a4fd919fe4951731c4c827cd08f47192e",
+    "bin/windows-x64/engine.json": "642900f52a7aea8919eeb931d10d32ea4e773974600a48c4150e56516c2ad6a1",
     "bin/windows-x64/gpu.json": "483be60fcf9c70a8e4917f0aa81476630668f4395cac0d3e3a19c75d7181d72c",
     "bin/windows-x64/reader.json": "6d4805fac7ce6c7716941522bf1fbaf201ecfe715c18973152c0942bf9d831e9",
-    "bin/windows-x64/uvck_engine_e0f6c967d47f3fd8.dll": "e0f6c967d47f3fd810f341b249367dc1f501ed4b35eac288052f0f011fbf4d20",
+    "bin/windows-x64/uvck_engine_f9a89db0ea4f2781.dll": "f9a89db0ea4f27817e366a6dc3aa82f58c9c7e87639cea63b79b5d4eda71ad7b",
     "bin/windows-x64/uvck_gpu_79935224145298e7.dll": "79935224145298e7b34621251bc000ad718f19edb6624a2b394ed2350e7bf473",
     "bin/windows-x64/uvck_gpu_9cc973ed423fa3b2.ptx": "9cc973ed423fa3b25d0039c12fd28447ca22168a65ee5ce4fde57154ae08c825",
     "bin/windows-x64/uvck_reader_560500bfe5fde8d8.pyd": "560500bfe5fde8d8db16bf32477a8afff1cd46f9661b399dd653c1943968b806",
-    "blender_manifest.toml": "b40094df87429ee36348c326adddbf9a033ef157d26c74eae972b8b78d89177a",
+    "blender_manifest.toml": "85eee3fccf7cbd7d17adb5644c699ee7dff17ae84f94ce1abb0148b853f96e57",
     "circle.py": "0afc4fca63185d97a317aeca31d66a09d6b6a56fb6f03545f69b5989c8872b39",
     "circle_ops.py": "b3aa8529fb60bf527d5dacee82cc113e9505270952bda2391c1242c777c7e81a",
     "const.py": "fec58634525ec9d88e07111cc1a9566beae3fbcf0f0bb3393b3caa6c7945d18b",
@@ -220,11 +231,11 @@
     "i18n.py": "40f2c3a755a6a2bb7b6275b9fde0658b29f12ad6b2fac03e23aa6a4f51dc7768",
     "live_symmetry.py": "3946c570b2cfb682af2f9813afc9dbacf73535a4d735eba3386734c24bd965e7",
     "mesh_reader.py": "e46fb56b888809fbf776b6bdf9c19c6af369eccbc2fc7823c9ba0f914bd1836d",
-    "metric.py": "91e0116ad49ccabe7ed865206da0f27192db516b1c7e6b579310851bc0601ca3",
-    "native_engine.py": "8a41732c95fca607589649bd7214687bb21621adaa5939bc49c0031daef79906",
+    "metric.py": "35327ac9388c8dcaf532f88de5c6c7a887af0e7d24e1a98f00c544f1335e5682",
+    "native_engine.py": "b905f5d5278c6b072bc61b8d383cfb03d2f490777576be52dda02a36c82e4171",
     "native_source/CMakeLists.txt": "b01a8187ff27912441ea334a52c69f3f5953236fea37126658b45d80f2495e70",
     "native_source/build_gpu.py": "a3092b5e7347476db6a1e51b16a37ce7a3d0335d803f08bf0f914ad344dc0271",
-    "native_source/engine.cpp": "7736d6e725422ad1163d961979417c93c499b5d23ed806ac032bf38713e31197",
+    "native_source/engine.cpp": "da8409ae19667f55c046c581adb9c8c4fc63f4ff26bf2bf248a0228997e42323",
     "native_source/engine_gpu.cpp": "fb62e8886eb82c0911686bdcf33e4826dc7f15331f16c83710b90d0abfb6f5ea",
     "native_source/gpu_driver.hpp": "e552b318744fcfae3b9b12cda0caa7ed1fd2b5a910ee2d0fb7fd13dc2559f5ac",
     "native_source/gpu_metric.cu": "788b9d7930130366015b67b7ad05b30c74021127f6f929ca1adc12665b4f345a",
@@ -258,18 +269,21 @@
     "tests/test_recovery_input_host.py": "ef99d1c0ce38cddf535c0a7b82af61e40a57a96382f038804b4a9a6592f74f57",
     "tests/test_safety.py": "86d6ff6ddecc56003d50173d562204ed0778678b7d8e8d590504d2b39b52eb7e",
     "tests/test_selection_host.py": "98707cf4500ad927cbef2ec65fcafa5828d456f1c8cde24cfc23ac9a7c80d70d",
+    "tests/test_triangle_frames_host.py": "6e9b4ad5e62f08ae5760735efe9288a3f812bd2f96d35e41c14587c5070f35aa",
     "scripts/build_native.py": "545c54e05b2b11ee8e2997666bc97b768dd24203eb747947822695a4ad67e19b",
     "scripts/check_public_tree.py": "60ebeeb9d4a25812ffcb1d55de9c9f3ac0662075b0f2a4cb498eca1aa40c5671",
     "scripts/generate_examples.py": "f37c442988da937898e86d55f4f20ee28d18830b55088d1fc99d7a045760d1ab",
     "scripts/package.py": "b2aac2b2faba435d8a17079a8855691cdddca04173d66a70949cb84401427c56"
   },
   "scope": [
-    "Only recovery planning reuses the unchanged operation input; seed-time and later reads stay fresh.",
-    "C++, CUDA, mesh-reader sources and native binaries are unchanged from 1.7.54; no fresh rebuild claimed.",
-    "Performance figures are limited observations, not fixed speed or sub-second guarantees.",
-    "Two historical constraint_triangle_conflict inputs remain unresolved; their protection was not weakened.",
-    "Factory queued mouse events are not manual/user-installed/third-party acceptance.",
-    "All GPUs, Blender versions and large multi-island memory pressure remain unverified."
+    "New optional read-only CPU frame preparation; CPU solve formulas and iterations are unchanged.",
+    "CPU rebuilt; source-matched CUDA GPU and stable-ABI reader artifacts reused from 1.7.55.",
+    "Bitwise mathutils precision verified only on Blender 5.2.3; other versions remain unverified.",
+    "Some small mesh groups regress; no universal speed or sub-second guarantee; no additive historical gain claim.",
+    "Memory is a one-process-per-variant geometry-preparation observation, not a bound or leak proof.",
+    "Two historical constraint_triangle_conflict cases remain unresolved; protections were not weakened.",
+    "Factory queued events are not manual/user-installed/third-party acceptance.",
+    "All GPUs, Blender versions and many-island memory pressure remain unverified."
   ],
   "user_install_modified": false,
   "user_scene_saved": false,

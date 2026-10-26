@@ -1,13 +1,18 @@
 # Build from source / 从源码构建
 
-The 1.7.55 Windows x64 release reuses the source-matched CPU,
-GPU and CPython stable-ABI reader artifacts from 1.7.54. This release changes
-only recovery precheck input reuse; C++, CUDA and reader sources and binaries
-are unchanged. All eight final package jobs passed. The release archive
-identity is recorded in [`release_checks.json`](../release_checks.json).
+The 1.7.57 Windows x64 release adds CPU native batching for reference-triangle
+frames. Its CPU library was newly compiled; solver equations are unchanged.
+GPU and CPython stable-ABI reader source and binaries are reused from 1.7.55.
+All final checks passed, and the three rejected 1.7.56 candidates are excluded.
+The current archive identity is recorded in [`release_checks.json`](../release_checks.json).
+The previous 1.7.55 archive checks are retained at the
+[v1.7.55 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.55/release_checks.json).
 
-1.7.55 发行包复用与源码哈希匹配的 CPU、GPU 和 CPython stable ABI 读取器制品。
-以下命令是独立的完整重建方法，此发行包并未使用重编译制品。任何重新编译的制品都需重新验收并记录身份。
+1.7.57 Windows x64 发行版新增 CPU 原生参考三角帧批处理。CPU 原生库为新编译，求解公式不变；
+GPU 与 CPython stable ABI 读取器源码和二进制沿用 1.7.55。全部最终检查已通过，三个已淘汰的
+1.7.56 候选均未纳入。当前包身份见 [`release_checks.json`](../release_checks.json)，
+上一版 1.7.55 包记录见 [v1.7.55 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.55/release_checks.json)。
+以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
 
 ## Requirements / 工具
 
@@ -87,7 +92,7 @@ stable-ABI import library named exactly `python3.lib`:
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.55.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.57.zip
 ```
 
 `--reader` requires both `--python-include` and `--python-library`; the latter
@@ -212,6 +217,29 @@ baseline. The separate 576 private recovery-plan comparisons directly compared
 1.7.54 with 1.7.55. Both checks retain the default fresh-read path after seeding.
 
 最终 1.7.55 检查通过 384 项。该测试需要原生读取器，不需要 GPU；`--require-native` 只要求读取器。含 NaN 的输入可能使用现有 Python topology fallback，因此不代表所有求解都由原生代码执行。它使用 live BMesh 与给定数字输入及既有 cross oracle 比较，不含私有 1.7.54 基线；另有 576 项私有 1.7.54 对 1.7.55 直接对照。两项均保留 seed 后的新鲜读取路径。
+
+## Native reference-frame batch / 原生参考帧批处理
+
+Run the public regression against an extracted candidate package in a disposable
+factory background process:
+
+```sh
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_triangle_frames_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/triangle-frames.json --require-native
+```
+
+The test checks the independent mathutils oracle, non-finite/overflow fallback,
+geometry preparation and ABI failure sentinels. `--require-native` requires the
+optional native frame-batch capability for this test; older libraries without
+the symbol retain the Python fallback in normal use. The recorded Blender
+5.2.3 run passed 104 numeric cases, one four-face geometry fixture (seven
+triangles, shared-UV parity, Python and missing-symbol fallback), and two ABI
+sentinel cases. It did not run a solver. No scene or preferences were saved.
+
+公开测试命令使用临时工厂后台进程，不保存场景或偏好。该项核对 mathutils 数值 oracle、
+非有限值／溢出回退、几何准备和 ABI 失败哨兵。`--require-native` 要求此测试使用可选帧批处理能力；
+正常运行时，缺少符号的旧库仍会回退 Python。记录中的 Blender 5.2.3 测试通过 104 个数值用例、
+一个四面几何夹具（七个三角形，含共享 UV 对照、Python 回退和缺少符号回退）及两个 ABI 哨兵用例；
+它未运行求解器，也未保存场景或偏好。
 
 ## README examples / 说明图
 

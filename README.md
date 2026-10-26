@@ -5,8 +5,8 @@
 **Keep the UV edges you care about straight or shaped while the rest of the
 island adjusts around them, inside Blender.**
 
-> **Version 1.7.55 — Windows x64 CPU+GPU with the native reader.**
-> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.55/uv_constraint_kit-1.7.55.zip)
+> **Version 1.7.57 — Windows x64 CPU+GPU with the native reader.**
+> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.57/uv_constraint_kit-1.7.57.zip)
 > · [Validation scope](docs/VALIDATION.md).
 
 Select an edge run and give it a horizontal, vertical or straight-line
@@ -15,8 +15,9 @@ cutout. With **Optimize after marking** enabled, the affected island updates
 when you add or remove a constraint. Constraints remain available for later
 optimization, rather than being a one-time alignment.
 
-The [1.7.55 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.55)
-provides **`uv_constraint_kit-1.7.55.zip`**. Requires **Blender 5.2+**.
+The [1.7.57 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.57)
+provides **`uv_constraint_kit-1.7.57.zip`**. Requires **Blender 5.2+**.
+[Package identity](release_checks.json).
 [Known issues](docs/KNOWN_ISSUES.md).
 Eligible large solves use the GPU automatically; small meshes and some special
 solve paths stay on the CPU. GPU use requires an NVIDIA GPU with compute
@@ -25,22 +26,37 @@ not require the CUDA Toolkit. Other hardware and unsupported GPU setups use the
 CPU path. Published builds remain in the
 [release history](https://github.com/goushi-1/uv-constraint-kit/releases).
 
-## What changed in 1.7.55
+## What changed in 1.7.57
 
-Recovery prechecks now reuse the operation's already captured UV input while
-that input is still unchanged. Existing checks, fresh reads after seeding and
-rollback remain in place. This release changes no C++, CUDA, reader source or
-native binary; it reuses source-matched artifacts from 1.7.54.
+The 1.7.57 release batches CPU reference-triangle frame preparation.
+The CPU native library was newly compiled; solver equations are unchanged.
+GPU and mesh-reader source and binaries are reused from 1.7.55. The three
+three unpublished and rejected 1.7.56 candidates are not included. Final acceptance passed. The
+release ZIP has 44 members, is 537,086 bytes, and has SHA-256
+`afde872538beada4be471d8088c02fb5fbb7f095d056d57bd0a3ce92d2c27297`.
 
-In local comparisons, 540 pairs of complete operations took 67.8708471 s on
-1.7.54 and 67.1553843 s on 1.7.55 (-1.054%; two rounds: -0.903% and -1.205%). A
-separate dense 18-pair ABBA comparison took 14.499352 s and 13.7531216 s
-(-5.147%; two rounds: -4.429% and -5.856%). These are limited observations on
-the recorded machine and cases, not a universal speed claim or a sub-second
-promise. Frozen dense inputs produced identical outputs and solver statistics;
-576 private recovery-plan comparisons and 384 public recovery-input cases passed.
-All eight package jobs, final GPU/GUI/modal checks and four integration groups
-also passed; see [validation](docs/VALIDATION.md).
+In limited local measurements, 540 pairs of complete operations took
+67.858162 s on 1.7.55 and 66.2183058 s on 1.7.57 (-2.4166%; rounds
+-4.081% and -0.691%). A separate dense 18-pair ABBA comparison took
+14.479992 s and 13.6930876 s (-5.4344%; rounds -9.555% and -1.030%). Some
+small groups regressed; these results are not a general speed guarantee or a
+promise of sub-second operations. For 131,072 triangles, two isolated
+processes produced byte-identical geometry arrays; observed peak working set
+fell by 38.496 MiB and private bytes by 45.148 MiB. This is a bounded
+observation, not a memory ceiling or leak proof.
+
+The public test passed 104 numeric cases, a four-face BMesh geometry fixture,
+and two ABI sentinel cases. All eight final package jobs, four integration
+groups and four public-geometry groups passed. Float behavior was verified only
+with Blender 5.2.3; other Blender versions are unverified. Older native libraries without
+the optional frame-batch symbol use the existing Python path. See
+[validation](docs/VALIDATION.md) for the package status and test scope.
+
+## Previous release: 1.7.55
+
+Version 1.7.55 reused its source-matched native artifacts and added recovery
+precheck input reuse. Its release record is retained in the
+[v1.7.55 release_checks.json](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.55/release_checks.json).
 
 ## Start with an existing UV layout
 
@@ -206,9 +222,9 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 ## Building from source
 
 Python handles Blender's interface, selection, undo and overlays; C++17 engines
-handle numeric solves. The 1.7.55 release reuses the source-matched CPU,
-optional CUDA and CPython stable-ABI mesh reader artifacts from 1.7.54; these
-native sources and binaries were not rebuilt or changed. Native builds target
+handle numeric solves. Version 1.7.57 newly compiles the CPU frame-batching
+library; solver equations are unchanged. Its optional CUDA engine and CPython
+stable-ABI mesh reader source and binaries are reused from 1.7.55. Native builds target
 **Windows x64 / MSVC**; host checks used Blender 5.2.3. Building the CUDA engine
 from source requires CUDA Toolkit / NVRTC 12.4; the prebuilt ZIP needs only a
 supported NVIDIA driver. The reader uses Blender's bundled Python at runtime.
@@ -219,7 +235,7 @@ produce this release.
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.55.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.57.zip
 ```
 
 `--reader` requires `--python-include` containing `Python.h` and
@@ -259,10 +275,14 @@ tool. GPU execution is limited to eligible paths and does not guarantee a speedu
 
 ## Versions
 
-- Current release: 1.7.55. Its only source change reuses an unchanged captured
-  UV input during recovery prechecks; final package checks passed.
-- Previous published release: 1.7.54. The 1.7.53-versus-1.7.51 results are
-  historical and separate from the 1.7.54-versus-1.7.55 observations above.
+- Current release: 1.7.57. CPU reference-triangle frame batching uses a newly
+  compiled CPU library; solver equations are unchanged. GPU and reader
+  source/binaries are reused from 1.7.55.
+- Previous published release: 1.7.55. Its recovery-precheck input reuse and
+  measurements remain historical and separate from the 1.7.55-versus-1.7.57
+  observations above.
+- Earlier published release: 1.7.54. The 1.7.53-versus-1.7.51 results remain
+  historical and separate from both later comparisons.
 - `experimental/numeric-trials`: separately marked 1.7.43 experiment, retaining
   intermediate protected solver coordinates in arrays. No stable global
   performance gain has been demonstrated.

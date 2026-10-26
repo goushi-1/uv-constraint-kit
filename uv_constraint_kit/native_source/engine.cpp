@@ -626,3 +626,39 @@ API int uvck_check_overlaps(I n,const I* faces,const I* roots,const std::uint8_t
         output[0]=kind;output[1]=tested;return 0;
     }catch(...){return -3;}
 }
+
+// Read-only reference frames. Match mathutils float component subtraction,
+// float products and reverse double accumulation; solve arithmetic is untouched.
+// Precision verified against Blender v5.2.3 mathutils_Vector.cc/math_vector.cc.
+API int uvck_triangle_frames(I n,I nt,const float* xyz,const I* triangles,
+                             double* frames,std::uint8_t* eligible) noexcept {
+    try {
+        if(n<0 || nt<0 || n>10000000 || nt>20000000 || !xyz || !triangles || !frames || !eligible) return -1;
+        for(I k=0;k<3*nt;++k) if(triangles[k]<0 || triangles[k]>=n) return -1;
+        for(I t=0;t<nt;++t) {
+            double* frame=frames+6*t;
+            std::fill_n(frame,6,0.);
+            eligible[t]=0;
+            const float* origin=xyz+3*triangles[3*t];
+            const float* first=xyz+3*triangles[3*t+1];
+            const float* second=xyz+3*triangles[3*t+2];
+            float edge[3],other[3];
+            for(int k=0;k<3;++k) {edge[k]=first[k]-origin[k];other[k]=second[k]-origin[k];}
+            double first_squared=0.,second_squared=0.,product=0.;
+            for(int k=2;k>=0;--k) {
+                const float a=edge[k]*edge[k],b=other[k]*other[k],c=other[k]*edge[k];
+                first_squared+=static_cast<double>(a);
+                second_squared+=static_cast<double>(b);
+                product+=static_cast<double>(c);
+            }
+            const double length=std::sqrt(first_squared);
+            if(length<1e-12) continue;
+            const double x=product/length;
+            const double height_squared=second_squared-x*x;
+            if(height_squared<=1e-24) continue;
+            frame[2]=length;frame[4]=x;frame[5]=std::sqrt(height_squared);
+            eligible[t]=1;
+        }
+        return 0;
+    }catch(...){return -3;}
+}
