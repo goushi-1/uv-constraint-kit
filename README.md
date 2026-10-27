@@ -5,8 +5,8 @@
 **Keep the UV edges you care about straight or shaped while the rest of the
 island adjusts around them, inside Blender.**
 
-> **Version 1.7.57 — Windows x64 CPU+GPU with the native reader.**
-> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.57/uv_constraint_kit-1.7.57.zip)
+> **Version 1.7.58 — Windows x64 CPU+GPU with native reader.**
+> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.58/uv_constraint_kit-1.7.58.zip)
 > · [Validation scope](docs/VALIDATION.md).
 
 Select an edge run and give it a horizontal, vertical or straight-line
@@ -15,8 +15,8 @@ cutout. With **Optimize after marking** enabled, the affected island updates
 when you add or remove a constraint. Constraints remain available for later
 optimization, rather than being a one-time alignment.
 
-The [1.7.57 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.57)
-provides **`uv_constraint_kit-1.7.57.zip`**. Requires **Blender 5.2+**.
+The [1.7.58 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.58)
+provides **`uv_constraint_kit-1.7.58.zip`**. Requires **Blender 5.2+**.
 [Package identity](release_checks.json).
 [Known issues](docs/KNOWN_ISSUES.md).
 Eligible large solves use the GPU automatically; small meshes and some special
@@ -26,37 +26,11 @@ not require the CUDA Toolkit. Other hardware and unsupported GPU setups use the
 CPU path. Published builds remain in the
 [release history](https://github.com/goushi-1/uv-constraint-kit/releases).
 
-## What changed in 1.7.57
+## What changed in 1.7.58
 
-The 1.7.57 release batches CPU reference-triangle frame preparation.
-The CPU native library was newly compiled; solver equations are unchanged.
-GPU and mesh-reader source and binaries are reused from 1.7.55. The three
-three unpublished and rejected 1.7.56 candidates are not included. Final acceptance passed. The
-release ZIP has 44 members, is 537,086 bytes, and has SHA-256
-`afde872538beada4be471d8088c02fb5fbb7f095d056d57bd0a3ce92d2c27297`.
+The stable-ABI reader adds optional live per-face UV area calculation. Core and safety share the initial numeric UV input and each candidate triangle array. Solver formulas and order remain unchanged, and no checks were removed. CPU and GPU binaries are unchanged from published 1.7.57; the reader was rebuilt. Older readers without the method retain the Python fallback. No new user-facing features are introduced.
 
-In limited local measurements, 540 pairs of complete operations took
-67.858162 s on 1.7.55 and 66.2183058 s on 1.7.57 (-2.4166%; rounds
--4.081% and -0.691%). A separate dense 18-pair ABBA comparison took
-14.479992 s and 13.6930876 s (-5.4344%; rounds -9.555% and -1.030%). Some
-small groups regressed; these results are not a general speed guarantee or a
-promise of sub-second operations. For 131,072 triangles, two isolated
-processes produced byte-identical geometry arrays; observed peak working set
-fell by 38.496 MiB and private bytes by 45.148 MiB. This is a bounded
-observation, not a memory ceiling or leak proof.
-
-The public test passed 104 numeric cases, a four-face BMesh geometry fixture,
-and two ABI sentinel cases. All eight final package jobs, four integration
-groups and four public-geometry groups passed. Float behavior was verified only
-with Blender 5.2.3; other Blender versions are unverified. Older native libraries without
-the optional frame-batch symbol use the existing Python path. See
-[validation](docs/VALIDATION.md) for the package status and test scope.
-
-## Previous release: 1.7.55
-
-Version 1.7.55 reused its source-matched native artifacts and added recovery
-precheck input reuse. Its release record is retained in the
-[v1.7.55 release_checks.json](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.55/release_checks.json).
+The final package passed 21 gates. In direct local comparisons against 1.7.57, 540 complete-operation pairs took 5.587% less time and 18 dense pairs took 7.092% less. Some small cases regressed; these limited observations are not a general speed or sub-second guarantee. See [validation](docs/VALIDATION.md).
 
 ## Start with an existing UV layout
 
@@ -222,9 +196,7 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 ## Building from source
 
 Python handles Blender's interface, selection, undo and overlays; C++17 engines
-handle numeric solves. Version 1.7.57 newly compiles the CPU frame-batching
-library; solver equations are unchanged. Its optional CUDA engine and CPython
-stable-ABI mesh reader source and binaries are reused from 1.7.55. Native builds target
+handle numeric solves. Version 1.7.58 rebuilds the CPython stable-ABI reader; CPU and GPU binaries are unchanged from 1.7.57. Native builds target
 **Windows x64 / MSVC**; host checks used Blender 5.2.3. Building the CUDA engine
 from source requires CUDA Toolkit / NVRTC 12.4; the prebuilt ZIP needs only a
 supported NVIDIA driver. The reader uses Blender's bundled Python at runtime.
@@ -235,7 +207,7 @@ produce this release.
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.57.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.58.zip
 ```
 
 `--reader` requires `--python-include` containing `Python.h` and
@@ -275,19 +247,9 @@ tool. GPU execution is limited to eligible paths and does not guarantee a speedu
 
 ## Versions
 
-- Current release: 1.7.57. CPU reference-triangle frame batching uses a newly
-  compiled CPU library; solver equations are unchanged. GPU and reader
-  source/binaries are reused from 1.7.55.
-- Previous published release: 1.7.55. Its recovery-precheck input reuse and
-  measurements remain historical and separate from the 1.7.55-versus-1.7.57
-  observations above.
-- Earlier published release: 1.7.54. The 1.7.53-versus-1.7.51 results remain
-  historical and separate from both later comparisons.
-- `experimental/numeric-trials`: separately marked 1.7.43 experiment, retaining
-  intermediate protected solver coordinates in arrays. No stable global
-  performance gain has been demonstrated.
-- Historical local releases and benchmarks are described in
-  [validation](docs/VALIDATION.md); private assets and test dumps are excluded.
+- 1.7.58 is the current release; final package checks passed.
+- 1.7.57 is the previous release; its record is at the [v1.7.57 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.57/release_checks.json).
+- Earlier results are recorded separately in [validation](docs/VALIDATION.md).
 
 ## License
 

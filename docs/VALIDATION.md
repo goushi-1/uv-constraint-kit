@@ -6,7 +6,8 @@
 | Accepted candidate 1.7.51 | Native loop collection and sparse constraint-record reading. Baseline for the 53 comparisons below; not a separately published release. 已验收候选，是本页 53 性能对照基线。 |
 | Accepted candidate 1.7.53 | Operation-local geometry and CPU workspace reuse. Exact-output, CPU/GPU, dense host and memory observations are recorded below. 已验收性能对照候选。 |
 | Previous published 1.7.55 | Recovery precheck input reuse; final package, GPU, GUI and modal checks passed. 上一已发布版，验收记录见下文。 |
-| Current release, 1.7.57 | CPU native reference-frame batching; solver equations unchanged. Final package, numeric, integration, GPU, GUI and modal checks passed. 当前发行版，列出的最终验收均已通过。 |
+| Previous published release, 1.7.57 | CPU native reference-frame batching; solver equations unchanged. Final package, numeric, integration, GPU, GUI and modal checks passed. 已发布版，列出的最终验收均已通过。 |
+| Current release, 1.7.58 | Final ZIP and 21 gates passed. 当前正式版，最终包与 21 项验收通过。 |
 | Earlier previews and `experimental/numeric-trials` | Historical or experimental tracks; their reports do not validate the current package and are not cumulative speed claims. 历史／实验路径，单独保留证据边界。 |
 
 Historical timing values are observations on a particular machine, not a
@@ -34,6 +35,7 @@ included. 旧数据只用于说明开发状态，不替代本仓库的可复跑�
   requires the native CPU engine and a disposable factory GUI.
 - `test_recovery_input_host.py`: live-BMesh versus supplied-numeric-input
   recovery comparison with the existing cross oracle; see [`BUILD.md`](BUILD.md).
+- `test_uv_area_host.py` and `test_transaction_state_host.py`: live/numeric area, fallback and transaction rollback checks; see [BUILD.md](BUILD.md).
 - `test_triangle_frames_host.py`: mathutils numeric oracle, triangle-frame
   geometry preparation and ABI failure sentinels; see [`BUILD.md`](BUILD.md).
 - `check_public_tree.py`: source parsing, packaging metadata, private-path/
@@ -42,8 +44,7 @@ included. 旧数据只用于说明开发状态，不替代本仓库的可复跑�
 Historical CPU and CPU+GPU summaries are retained in
 [`publication_checks.json`](../publication_checks.json) and
 [`gpu_publication_checks.json`](../gpu_publication_checks.json); they describe
-1.7.42, not the 1.7.57 release. Current archive identity and release gates
-are recorded in [`release_checks.json`](../release_checks.json).
+1.7.42, not the 1.7.57 release. The 1.7.58 final archive identity and gates are recorded in [release_checks.json](../release_checks.json).
 These summaries omit machine paths and raw logs.
 A passed automated check is not user acceptance of every GUI transformation or
 production mesh.
@@ -88,14 +89,33 @@ not establish acceptance for every machine, asset or workflow.
 
 公开恢复输入测试的 384 项是 live BMesh 与给定数字输入、沿用旧 cross oracle 的比较，不使用私有 1.7.54 基线；`--require-native` 要求读取器，但含 NaN 的 topology 用例允许现有 Python fallback。另有独立的 576 项私有 1.7.54 对 1.7.55 直接对照。性能数据是特定机器和有限用例的观测，不承诺通用提速或低于一秒；这些数据与下方历史 1.7.53 对 1.7.51 结果分开，不相加。检查结果仅覆盖所列主机和用例，不代表所有机器、资产或工作流。
 
-## Current release: 1.7.57 / 当前发行版：1.7.57
+## Current release: 1.7.58 / 当前发行版
+
+The rebuilt stable-ABI reader adds optional live per-face UV area calculation; old readers without the method retain Python fallback. CPU and GPU binaries are source-matched artifacts from 1.7.57. Core and safety share initial numeric UV input and each candidate triangle array. Solver formulas, ordering and checks remain unchanged.
+
+| Evidence | Status |
+| --- | --- |
+| Final ZIP | Passed 21 gates; 44 members, 538,881 bytes; SHA-256 `09f1ae1a5994d9e746538b87fbec650cf2530a1aabf6a121ba849404ce43d23a` |
+| Final package jobs | Eight passed: CPU/GPU and bad-PTX retry, host, selection, GPU, GUI native/Python and modal native/Python |
+| Factory modal | Each reader: 24 gestures, 144 injected move samples; no manual OS mouse or user-install acceptance |
+| Public tests | Six groups passed; area 698 cases plus 16 fallback cases (thread, error and bad index); transaction 12 checks; triangle frames 104 numeric, four-face geometry and two ABI sentinels; recovery 384; geometry four groups |
+| Direct 1.7.57 → exact final 1.7.58 | 540 complete-operation pairs, 22 exact fields and 918 exact native events: 66.1200718 → 62.4257842 s, -5.58724%; phases -5.61249% and -5.56219% |
+| Direct dense ABBA | 18 pairs: 13.1601646 → 12.2268262 s, -7.092148%; both phases faster |
+| Source-stage memory | Compared to area58 source, not public57: 32,768 triangles, CPU/AUTO peak working set +1.03/+1.91 MiB, private bytes -1.59/-10.98 MiB; single process pair per backend, not a bound or leak proof |
+
+The direct timings are limited local observations, not a portable speed or sub-second guarantee; some small cases regressed. The two existing partial-mix safe rejections in transaction checks are not completed alignments. Two actual same-axis three-corner conflicts remain safely rejected. Factory GUI events are injected; manual interaction in a user installation was not tested.
+
+最终包通过 21 项验收。直接对照已发布 1.7.57 与最终 1.7.58：540 对完整操作耗时下降 5.58724%，18 对密集 ABBA 下降 7.092148%；两阶段均改善，但部分小用例变慢，不承诺通用提速或低于一秒。内存观察使用 area58 源码基线，不是 1.7.57 对比或内存上限。两项已有半强度安全拒绝不计为完成对齐；两例实际同轴三角冲突仍安全拒绝。
+
+See [BUILD.md](BUILD.md) for the public area and transaction test commands.
+
+## Previous release: 1.7.57 / 上一发行版：1.7.57
 
 The release batches read-only CPU reference-triangle frame preparation. The
 CPU native library was newly compiled; solver equations and solver behavior
 are unchanged. GPU and reader source and binaries are reused from 1.7.55. The
 three rejected 1.7.56 candidates are excluded. All final checks passed. The
-current archive identity and release gates are recorded in
-[`release_checks.json`](../release_checks.json).
+historical archive identity and release gates are recorded at the [v1.7.57 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.57/release_checks.json).
 
 | Final release evidence | Status |
 | --- | --- |
@@ -119,7 +139,7 @@ native libraries without the optional frame-batch symbol use the existing
 Python fallback. The public test does not run a solver. The 1.7.56 candidates
 were rejected and are not part of this package.
 
-1.7.57 正式版批量准备只读 CPU 参考三角帧；CPU 原生库为新编译，求解公式和行为未变。GPU 与读取器源码、二进制沿用 1.7.55。三个已淘汰的 1.7.56 候选均未纳入。当前包身份见 `release_checks.json`，1.7.55 历史包记录见 v1.7.55 标签。计时是本机有限用例观测，部分小组变慢，不承诺通用提速或低于一秒。内存测量不是上限或无泄漏证明。浮点行为仅在 Blender 5.2.3 验证；旧原生库缺少可选符号时会回退 Python。公开测试不运行求解器。
+1.7.57 正式版批量准备只读 CPU 参考三角帧；CPU 原生库为新编译，求解公式和行为未变。GPU 与读取器源码、二进制沿用 1.7.55。三个已淘汰的 1.7.56 候选均未纳入。该包身份见 v1.7.57 标签，1.7.55 历史包记录见 v1.7.55 标签。计时是本机有限用例观测，部分小组变慢，不承诺通用提速或低于一秒。内存测量不是上限或无泄漏证明。浮点行为仅在 Blender 5.2.3 验证；旧原生库缺少可选符号时会回退 Python。公开测试不运行求解器。
 
 ## Accepted 1.7.53 candidate / 已验收的 1.7.53 候选
 

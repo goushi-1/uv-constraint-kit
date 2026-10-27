@@ -1,14 +1,15 @@
 {
-  "version": "1.7.57",
+  "version": "1.7.58",
+  "status": "passed",
   "release_track": "Windows x64 CPU + GPU + native reader",
-  "date": "2026-10-26",
+  "date": "2026-10-27",
   "package": {
-    "filename": "uv_constraint_kit-1.7.57.zip",
-    "sha256": "afde872538beada4be471d8088c02fb5fbb7f095d056d57bd0a3ce92d2c27297",
-    "bytes": 537086,
+    "filename": "uv_constraint_kit-1.7.58.zip",
+    "sha256": "09f1ae1a5994d9e746538b87fbec650cf2530a1aabf6a121ba849404ce43d23a",
+    "bytes": 538881,
     "members": 44
   },
-  "baseline_public_commit": "513d0341fb9c2012c1e0a78fece492edc0c3e855",
+  "baseline_public_commit": "d3b40a8b8f3f0cae202ca9a7e57dbdbd113aca0a",
   "blender": "5.2.3 LTS",
   "blender_build": "e13b728c6880",
   "gates": {
@@ -27,15 +28,11 @@
         "CUDA GPU",
         "stable-ABI reader"
       ],
-      "rebuilt_components": [
-        "CPU"
-      ],
-      "reused_source_matched_components": [
-        "CUDA GPU",
-        "stable-ABI reader"
-      ],
-      "cpu_solve_formulas_unchanged": true,
-      "unified_fresh_rebuild": false
+      "reused_validated_artifacts": true,
+      "unified_fresh_rebuild": false,
+      "cpu_from_release": "1.7.57",
+      "reader_from_candidate": "area1.7.58",
+      "gpu_from_release": "1.7.57"
     },
     "native_numeric": {
       "status": "passed",
@@ -130,10 +127,10 @@
       "modal_draw_calls": 312,
       "os_mouse_moved": false
     },
-    "actual_host_integration": {
+    "geometry_host_integration": {
       "status": "passed",
       "groups": 4,
-      "baseline": "published 1.7.55",
+      "baseline": "validated area58 source",
       "exact": true,
       "cases": [
         "multi_island",
@@ -141,74 +138,151 @@
         "actual_fill_holes",
         "actual_shared_stack"
       ],
-      "public_geometry_groups": 4
+      "actual_builtin_unwrap": true,
+      "actual_solver": true,
+      "source_and_package_unchanged": true,
+      "public_synthetic_regression_passed": true,
+      "lifecycle_registration_covered_separately": true
     },
-    "public_native_frames": {
+    "direct_complete_operations": {
       "status": "passed",
-      "mathutils_cases": 104,
-      "mesh_faces": 4,
-      "abi_sentinels": 2,
-      "shared_uv": true,
-      "nonfinite_and_overflow_fallback": true,
-      "missing_symbol_fallback": true,
-      "native_frames_required": true,
-      "input_unchanged": true
-    },
-    "native_frame_differential": {
-      "status": "passed",
-      "mathutils_cases": 1288,
-      "unsupported_reference_cases": 130,
-      "finite_overflow_fallback_batch": 128,
-      "geometry_cases": 128,
-      "abi_boundary_cases": 6,
-      "cpu_solve_cases": 8,
-      "cpu_evaluate_cases": 8,
-      "exact": true,
-      "numpy_error_policy_preserved": true
-    },
-    "frozen_actual_cpu_inputs": {
-      "status": "passed",
-      "calls": 3,
-      "input_buffers_exact": true,
-      "outputs_exact": true,
-      "statistics_exact": true,
-      "mark_accepted": 543,
-      "mark_evaluations": 556,
-      "profile_timings_diagnostic_only": true
-    },
-    "complete_operation_comparison": {
-      "status": "passed",
-      "paired_operations": 540,
+      "baseline_label": "published1.7.57 archive",
+      "candidate_label": "exact1.7.58 archive",
+      "pairs": 540,
       "exact_fields": 22,
-      "exact": true,
-      "baseline": "published 1.7.55",
-      "reader_required_and_recorded_on_both": true,
-      "first_process_operations_retained": true,
-      "baseline_seconds": 67.85816200002228,
-      "candidate_seconds": 66.21830580001006,
-      "change_percent": -2.4165938947943832
+      "native_solver_events_exact": 918,
+      "profiling": false,
+      "baseline": {
+        "operations": 540,
+        "total_seconds": 66.12007180003275,
+        "median_seconds": 0.136394150009437,
+        "p95_seconds": 0.3160616000095615,
+        "maximum_seconds": 0.4287996000057319
+      },
+      "candidate": {
+        "operations": 540,
+        "total_seconds": 62.42578419999336,
+        "median_seconds": 0.1257343499964918,
+        "p95_seconds": 0.309869599994272,
+        "maximum_seconds": 0.4064157999964664
+      },
+      "change_percent": -5.587240756803835,
+      "phases": [
+        {
+          "phase": 1,
+          "baseline_seconds": 32.926584200089565,
+          "candidate_seconds": 31.078582099973573,
+          "change_percent": -5.612492595302266
+        },
+        {
+          "phase": 2,
+          "baseline_seconds": 33.19348759994318,
+          "candidate_seconds": 31.347202100019786,
+          "change_percent": -5.562191964204921
+        }
+      ]
     },
-    "dense_complete_operation_comparison": {
+    "direct_dense_operations": {
       "status": "passed",
-      "paired_operations": 18,
-      "exact": true,
-      "side": 96,
       "triangles": 18432,
+      "pairs": 18,
       "order": "ABBA",
-      "natural_backend": "CPU",
-      "new_read_only_frame_counter_recorded_separately": true,
-      "baseline_seconds": 14.479992000002312,
-      "candidate_seconds": 13.693087599998762,
-      "change_percent": -5.434425654402464
+      "exact_outputs_and_statistics": true,
+      "baseline": {
+        "operations": 18,
+        "total_seconds": 13.160164599990821,
+        "median_seconds": 0.5607378999993671,
+        "p95_seconds": 1.1191895000083605,
+        "maximum_seconds": 1.1191895000083605
+      },
+      "candidate": {
+        "operations": 18,
+        "total_seconds": 12.22682620001433,
+        "median_seconds": 0.5121080500030075,
+        "p95_seconds": 1.0742033999995328,
+        "maximum_seconds": 1.0742033999995328
+      },
+      "change_percent": -7.0921483761467785,
+      "phases": [
+        {
+          "phase": 1,
+          "baseline_seconds": 6.632373999993433,
+          "candidate_seconds": 6.179528200023924,
+          "change_percent": -6.827808564021831
+        },
+        {
+          "phase": 2,
+          "baseline_seconds": 6.527790599997388,
+          "candidate_seconds": 6.0472979999904055,
+          "change_percent": -7.360723243897793
+        }
+      ]
     },
-    "geometry_memory_observation": {
+    "public_uv_area": {
       "status": "passed",
-      "triangles": 131072,
-      "arrays_exact": true,
-      "peak_working_set_change_mib": -38.49609375,
-      "private_usage_change_mib": -45.1484375,
-      "limited_per_process_observation": true,
-      "not_leak_or_bound_proof": true
+      "cases": 698,
+      "optional_fallback_cases": 16,
+      "native_method": true,
+      "live_and_numeric": true,
+      "errors_propagated": true,
+      "invalid_face_rejected": true,
+      "main_thread_guard": true
+    },
+    "public_transaction_state": {
+      "status": "passed",
+      "cases": 12,
+      "native_and_python_readers": true,
+      "shared_health_matches_original": true,
+      "independent_numeric_snapshots": true,
+      "outside_corruption_rollback": true,
+      "health_exception_rollback": true,
+      "existing_partial_mix_safe_rejections": 2,
+      "rejected_solves_not_counted_as_completed_alignments": true
+    },
+    "public_triangle_frames": {
+      "status": "passed",
+      "numeric_cases": 104,
+      "geometry_faces": 4,
+      "abi_sentinels": 2,
+      "oracle_bytes_equal": true
+    },
+    "public_recovery_input": {
+      "status": "passed",
+      "cases": 384,
+      "fresh_after_writes": true,
+      "live_and_numeric_parity": true
+    },
+    "source_stage_memory_observations": {
+      "status": "passed",
+      "runtime_identical_except_manifest": true,
+      "triangles": 32768,
+      "comparison_baseline": "area58 source, not public57",
+      "observations": [
+        {
+          "backend": "cpu",
+          "exact": true,
+          "triangles": 32768,
+          "peak_working_set_change_mib": 1.03125,
+          "private_usage_change_mib": -1.58984375,
+          "scope": "Single observed process per variant; no portable speed or memory bound claim."
+        },
+        {
+          "backend": "auto",
+          "exact": true,
+          "triangles": 32768,
+          "peak_working_set_change_mib": 1.9140625,
+          "private_usage_change_mib": -10.98046875,
+          "scope": "Single observed process per variant; no portable speed or memory bound claim."
+        }
+      ],
+      "memory_bound_or_leak_proof": false,
+      "additional_numeric_arrays_operation_local": true
+    },
+    "license_notices_preserved": {
+      "status": "passed",
+      "gpl": true,
+      "required_univ_attribution_retained": true,
+      "prior_notices_byte_identical": true
     }
   },
   "runtime_sha256": {
@@ -218,19 +292,19 @@
     "__init__.py": "5bf3566728a1d8c33674c9016f27c19631ce2434463f5e8bac66c35cc1199d62",
     "bin/windows-x64/engine.json": "642900f52a7aea8919eeb931d10d32ea4e773974600a48c4150e56516c2ad6a1",
     "bin/windows-x64/gpu.json": "483be60fcf9c70a8e4917f0aa81476630668f4395cac0d3e3a19c75d7181d72c",
-    "bin/windows-x64/reader.json": "6d4805fac7ce6c7716941522bf1fbaf201ecfe715c18973152c0942bf9d831e9",
+    "bin/windows-x64/reader.json": "dd3c0d76726530b7ef1fb9315c285fe63dbdeb3c402c168ffea0b014d528cf6e",
     "bin/windows-x64/uvck_engine_f9a89db0ea4f2781.dll": "f9a89db0ea4f27817e366a6dc3aa82f58c9c7e87639cea63b79b5d4eda71ad7b",
     "bin/windows-x64/uvck_gpu_79935224145298e7.dll": "79935224145298e7b34621251bc000ad718f19edb6624a2b394ed2350e7bf473",
     "bin/windows-x64/uvck_gpu_9cc973ed423fa3b2.ptx": "9cc973ed423fa3b25d0039c12fd28447ca22168a65ee5ce4fde57154ae08c825",
-    "bin/windows-x64/uvck_reader_560500bfe5fde8d8.pyd": "560500bfe5fde8d8db16bf32477a8afff1cd46f9661b399dd653c1943968b806",
-    "blender_manifest.toml": "85eee3fccf7cbd7d17adb5644c699ee7dff17ae84f94ce1abb0148b853f96e57",
+    "bin/windows-x64/uvck_reader_ca64874205afd1c0.pyd": "ca64874205afd1c0aec5fa92d77b3b8a24f2fc75ddc7875bfb74ac9d9a94dadb",
+    "blender_manifest.toml": "d4af7cc50157c90ea21ee5deb523f0a5316e7f1549794c1b0cbf4ff5b446b104",
     "circle.py": "0afc4fca63185d97a317aeca31d66a09d6b6a56fb6f03545f69b5989c8872b39",
     "circle_ops.py": "b3aa8529fb60bf527d5dacee82cc113e9505270952bda2391c1242c777c7e81a",
     "const.py": "fec58634525ec9d88e07111cc1a9566beae3fbcf0f0bb3393b3caa6c7945d18b",
-    "core.py": "c3d07b791b21afab2b473eb56cbb65ffcbd04ec4e6db5a003b33ecdbed01a85a",
+    "core.py": "c19e554e4dcdffdad430ddd75ede0840ba803c19cef99e6a8f2ba05e6efd7363",
     "i18n.py": "40f2c3a755a6a2bb7b6275b9fde0658b29f12ad6b2fac03e23aa6a4f51dc7768",
     "live_symmetry.py": "3946c570b2cfb682af2f9813afc9dbacf73535a4d735eba3386734c24bd965e7",
-    "mesh_reader.py": "e46fb56b888809fbf776b6bdf9c19c6af369eccbc2fc7823c9ba0f914bd1836d",
+    "mesh_reader.py": "53259a6eb94673908cdaf83af95acb7b29fb828941e8cd6eea38095b18401aab",
     "metric.py": "35327ac9388c8dcaf532f88de5c6c7a887af0e7d24e1a98f00c544f1335e5682",
     "native_engine.py": "b905f5d5278c6b072bc61b8d383cfb03d2f490777576be52dda02a36c82e4171",
     "native_source/CMakeLists.txt": "b01a8187ff27912441ea334a52c69f3f5953236fea37126658b45d80f2495e70",
@@ -239,7 +313,7 @@
     "native_source/engine_gpu.cpp": "fb62e8886eb82c0911686bdcf33e4826dc7f15331f16c83710b90d0abfb6f5ea",
     "native_source/gpu_driver.hpp": "e552b318744fcfae3b9b12cda0caa7ed1fd2b5a910ee2d0fb7fd13dc2559f5ac",
     "native_source/gpu_metric.cu": "788b9d7930130366015b67b7ad05b30c74021127f6f929ca1adc12665b4f345a",
-    "native_source/mesh_reader.cpp": "d59afb1bd080b01b9d5a2eaa3ea6cb8041b3bf32a6fd8aa4fe26e8b7e331ad1e",
+    "native_source/mesh_reader.cpp": "ee82f3223e99b74be768cbbe47725bf886e08eeca9dc39fe5a1a2011a3b2b5c9",
     "ops.py": "f9fc5a7a484169e7b563fd5d608474708fa3f7e12bfa94694b1ea3d8d19553bb",
     "overlay.py": "087143b5b7b9b1277890302c73fb2a81df8acd3cf5d15621a786c6b153c94be8",
     "prefs.py": "a968b181335a1db31751b5bb500282e625c2de4d40c99ff5c1d29b70ecb82561",
@@ -249,7 +323,7 @@
     "recovery.py": "0e1e9f03ef07204980eb92077ffcd44723dadb98c130f0f3704eb0de003a4c84",
     "rectangle.py": "00d2c6d570e1e46bd7cea6ad30da1aad7038c8c56cbafcaebd575b8afaf551d2",
     "refine.py": "c3e43a81a10e79e4ff00da4521860f16fcaa19e38c1668c296f4db2eb9ad060a",
-    "safety.py": "ad7f24233d3a2f9a93fac3c52321df28c4752d0f4742136e8a76993515a9f099",
+    "safety.py": "98f7f1e37cf0e9f63c40711ce4a329a64f322ed8a40bfe693dc12cbf14b98f2d",
     "shape_constraints.py": "450c144dc465a77d8d6e8ad3a5a6a4eab9684e8e5883f13eb9a1af1ecce81734",
     "shape_ops.py": "768d3e9f3a71ceb961fe29f6f60859591051df082fc0d4a4d1290b4ab0074bfc",
     "symmetry.py": "a404c11fbefce8867d7a36b23953b437d0078796e755fc9259342e1bd00d9976",
@@ -269,21 +343,21 @@
     "tests/test_recovery_input_host.py": "ef99d1c0ce38cddf535c0a7b82af61e40a57a96382f038804b4a9a6592f74f57",
     "tests/test_safety.py": "86d6ff6ddecc56003d50173d562204ed0778678b7d8e8d590504d2b39b52eb7e",
     "tests/test_selection_host.py": "98707cf4500ad927cbef2ec65fcafa5828d456f1c8cde24cfc23ac9a7c80d70d",
+    "tests/test_transaction_state_host.py": "256803960019256d1ca8d534f0189c0b702868ec5359b8ed67732f279344b75f",
     "tests/test_triangle_frames_host.py": "6e9b4ad5e62f08ae5760735efe9288a3f812bd2f96d35e41c14587c5070f35aa",
+    "tests/test_uv_area_host.py": "7b81f22ca7de0cb2b84900a6ca8059b92e339548f6b961b0eb137eaea82c66d0",
     "scripts/build_native.py": "545c54e05b2b11ee8e2997666bc97b768dd24203eb747947822695a4ad67e19b",
     "scripts/check_public_tree.py": "60ebeeb9d4a25812ffcb1d55de9c9f3ac0662075b0f2a4cb498eca1aa40c5671",
     "scripts/generate_examples.py": "f37c442988da937898e86d55f4f20ee28d18830b55088d1fc99d7a045760d1ab",
     "scripts/package.py": "b2aac2b2faba435d8a17079a8855691cdddca04173d66a70949cb84401427c56"
   },
   "scope": [
-    "New optional read-only CPU frame preparation; CPU solve formulas and iterations are unchanged.",
-    "CPU rebuilt; source-matched CUDA GPU and stable-ABI reader artifacts reused from 1.7.55.",
-    "Bitwise mathutils precision verified only on Blender 5.2.3; other versions remain unverified.",
-    "Some small mesh groups regress; no universal speed or sub-second guarantee; no additive historical gain claim.",
-    "Memory is a one-process-per-variant geometry-preparation observation, not a bound or leak proof.",
-    "Two historical constraint_triangle_conflict cases remain unresolved; protections were not weakened.",
-    "Factory queued events are not manual/user-installed/third-party acceptance.",
-    "All GPUs, Blender versions and many-island memory pressure remain unverified."
+    "Final archive was tested through extraction; user installation and preferences were not changed.",
+    "Timing is direct57-to-final58, not a sum of area/shared-snapshot experiments; not a portable or sub-second guarantee.",
+    "Factory GUI queued events are automated; third-party add-ons and manual user-installed interaction remain unverified.",
+    "Two historical triangle conflicts and a documented partial-mix rejection remain; no new solver algorithm is claimed.",
+    "CPU/GPU artifacts are source-matched public57 artifacts; only the area-reader component was rebuilt; no unified rebuild is claimed.",
+    "Memory numbers are one-pair source-stage observations with another baseline, not a bound or proof of no leak."
   ],
   "user_install_modified": false,
   "user_scene_saved": false,

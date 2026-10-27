@@ -1779,6 +1779,10 @@ def _loop_uv_snapshot(topo, faces):
 def island_area(topo, faces, *, coordinates=None):
     """Summed |UV area| of the given faces."""
     uvl = topo.uvl
+    if coordinates is None:
+        value = mesh_reader.island_area((topo.bm.faces[fi] for fi in sorted(faces)), uvl)
+        if value is not None:
+            return value
     total = 0.0
     for fi in sorted(faces):
         face = topo.bm.faces[fi]
@@ -2607,12 +2611,17 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     # views at every triangle/probe. Keep the packed snapshot for the outer
     # fresh outside-UV guard and native topology arrays.
     saved = topo.initial_uv
+    # The native reader owns immutable bytes; fallback lists are copied.
+    # Numeric state only, scoped to this checked transaction.
+    saved_array = np.asarray(saved, dtype=float)
     if isinstance(saved, np.ndarray):
         saved = list(map(tuple, saved.tolist()))
     triangle_positions = [tuple(topo.loop_pos[l] for l in tri)
                           for tri in topo.loop_triangles()
                           if tri[0].face.index in faces]
-    old_triangles = np.asarray([[saved[p] for p in tri] for tri in triangle_positions])
+    triangle_indices = np.asarray(triangle_positions, dtype=np.intp)
+    old_triangles = (saved_array[triangle_indices] if triangle_positions else
+                     np.asarray([[saved[p] for p in tri] for tri in triangle_positions]))
     old_edges = old_triangles[:, 1:] - old_triangles[:, :1]
     old_cross = old_edges[:, 0, 0]*old_edges[:, 1, 1] - old_edges[:, 0, 1]*old_edges[:, 1, 0]
     oriented = np.abs(old_cross) > 2e-14
@@ -2637,7 +2646,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     # immutable input only here; candidate checks always capture fresh values.
     probe = safety.AcceptanceProbe(module, topo, faces,
                                   settings.get('prevent_overlap', False), coordinates=saved)
-    before = probe.measure(topo, coordinates=probe.reference)
+    before = probe.measure(topo, coordinates=probe.reference, _triangles=old_triangles)
     _outside_state.setdefault('flips', before['flips'])
     # The GUI consumes elapsed time and probe health, not descriptive reports.
     # Direct callers retain full reports by default. The final interpolation
@@ -2733,13 +2742,23 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     healthy_roots={root for root,signs in chart_signs.items() if signs-{0} in ({1},{-1})}
     healthy_mask=np.asarray([root in healthy_roots for root in chart_roots]) & oriented
     healthy_input=bool(np.any(healthy_mask))
-    def valid(topo, health, coordinates, loop_coordinates=None):
+    def capture_health(topo, loop_coordinates=None):
+        # Capture afresh for each trial; no coordinate cache crosses writes.
+        coordinates = probe.capture(topo, coordinates=loop_coordinates)
+        triangles = (loop_coordinates[triangle_indices]
+                     if isinstance(loop_coordinates, np.ndarray) and triangle_positions else
+                     np.asarray([coordinates[tri] for tri in triangle_positions]))
+        health = probe.measure(topo, coordinates=coordinates,
+                               loop_coordinates=loop_coordinates, _triangles=triangles)
+        return coordinates, health, triangles
+
+    def valid(topo, health, coordinates, triangles, loop_coordinates=None):
         def uv_at(p):
             return (topo.loops[p][topo.uvl].uv if loop_coordinates is None else
                     loop_coordinates[p])
         # Negative winding may be an intentional mirrored island. Comparing
         # only total negative areas would incorrectly accept its reflection.
-        current = np.asarray([coordinates[tri] for tri in triangle_positions])
+        current = triangles
         edges = current[:, 1:] - current[:, :1]
         cross = edges[:, 0, 0]*edges[:, 1, 1] - edges[:, 0, 1]*edges[:, 1, 0]
         orientation_valid = bool(np.all(expected_orientation[oriented]*cross[oriented] > 0)
@@ -2821,7 +2840,6 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             loop[layer].uv = uv
         bmesh.update_edit_mesh(obj.data)
 
-    saved_array = np.asarray(saved, dtype=float)
     def interpolation(candidate, alpha, positions, *, scale_pinned=False):
         # Match both BMesh round trips: interpolation first, area correction
         # second. The summation order and loop-weighted centre stay unchanged.
@@ -2834,18 +2852,16 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         if fixed_positions:
             p = np.asarray(sorted(fixed_positions), dtype=np.int64)
             value[p] = saved_array[p]
-        coordinates = probe.capture(topo, coordinates=value)
-        health = probe.measure(topo, coordinates=coordinates, loop_coordinates=value)
-        return value, coordinates, health
+        coordinates, health, triangles = capture_health(topo, value)
+        return value, coordinates, health, triangles
 
     def commit_interpolation(value):
         # Only successful trials touch the edit mesh. Recheck live coordinates
         # once after commit, including the exact outside-selection guard.
         for p in probe.target_positions:
             topo.loops[p][topo.uvl].uv = value[p]
-        coordinates = probe.capture(topo)
-        health = probe.measure(topo, coordinates=coordinates)
-        if not valid(topo, health, coordinates):
+        coordinates, health, triangles = capture_health(topo)
+        if not valid(topo, health, coordinates, triangles):
             return None
         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
         return coordinates, health
@@ -2861,8 +2877,8 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         candidate = np.asarray([tuple(loop[topo.uvl].uv) for loop in topo.loops])
         for attempt in range(1, 13):
             alpha = .5 ** attempt
-            value, current, checked = interpolation(candidate, alpha, probe.target_positions, scale_pinned=True)
-            if valid(topo, checked, current, value):
+            value, current, checked, triangles = interpolation(candidate, alpha, probe.target_positions, scale_pinned=True)
+            if valid(topo, checked, current, triangles, value):
                 overlap = probe.check_overlaps(topo, include_existing=True, coordinates=current)
                 if overlap['overlap_check_complete'] and not overlap['self_overlaps']:
                     committed = commit_interpolation(value)
@@ -2887,9 +2903,8 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
                 _quality_after=False, _geometry_cache=prepared_geometry,
                 **dict(settings, _contact_faces=contact_faces))
-            coordinates = probe.capture(topo)
-            health = probe.measure(topo, coordinates=coordinates)
-            accepted = valid(topo, health, coordinates) and health['max_deviation'] < best_deviation
+            coordinates, health, triangles = capture_health(topo)
+            accepted = valid(topo, health, coordinates, triangles) and health['max_deviation'] < best_deviation
             if accepted and contact_faces and not health['constraints_limited']:
                 # The distance barrier is best-effort, not continuous
                 # collision detection. Validate the actual rounded UVs.
@@ -3052,9 +3067,8 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             bm = bmesh.from_edit_mesh(obj.data)
             prepare_bm(bm)
             topo = UVTopology(bm, uv_layer(bm))
-        coordinates = probe.capture(topo)
-        after = probe.measure(topo, coordinates=coordinates)
-        if valid(topo, after, coordinates):
+        coordinates, after, triangles = capture_health(topo)
+        if valid(topo, after, coordinates, triangles):
             if contact_eligible:
                 overlap = probe.check_overlaps(topo, include_existing=True, coordinates=coordinates)
                 if overlap['self_overlaps']:
@@ -3106,9 +3120,8 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             restore(seed_values)
             bm = bmesh.from_edit_mesh(obj.data)
             topo = UVTopology(bm, uv_layer(bm))
-            coordinates = probe.capture(topo)
-            after = probe.measure(topo, coordinates=coordinates)
-            if valid(topo, after, coordinates):
+            coordinates, after, triangles = capture_health(topo)
+            if valid(topo, after, coordinates, triangles):
                 return len(faces), after['flips'], dict(islands=len(face_islands(topo, faces)),
                     solver='recovered_initialization', input_recovery=recovery_report,
                     before=quality_before,
@@ -3129,8 +3142,8 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             candidate = np.asarray([tuple(loop[topo.uvl].uv) for loop in topo.loops])
             for attempt in range(1, 13):
                 alpha = 0.5 ** attempt
-                value, coordinates, health = interpolation(candidate, alpha, range(len(saved)))
-                if valid(topo, health, coordinates, value):
+                value, coordinates, health, triangles = interpolation(candidate, alpha, range(len(saved)))
+                if valid(topo, health, coordinates, triangles, value):
                     committed = commit_interpolation(value)
                     if committed is None:
                         continue
@@ -3264,9 +3277,8 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     if not settings.get('keep_metric'):
                         _restore_anchored_area(topo,island,held,runs,target_area)
             bmesh.update_edit_mesh(obj.data)
-            coordinates = probe.capture(topo)
-            after = probe.measure(topo, coordinates=coordinates)
-            if valid(topo, after, coordinates):
+            coordinates, after, triangles = capture_health(topo)
+            if valid(topo, after, coordinates, triangles):
                 return count, after['flips'], dict(islands=len(face_islands(topo,set(faces))),
                     before=quality_before,
                     after=quality_metrics(topo,set(faces)) if _report_quality else {},
@@ -3279,9 +3291,9 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             # Test the *whole* final layout, including other islands.
             for attempt in range(1, 11):
                 alpha = 0.5 ** attempt
-                value, coordinates, after = interpolation(candidate, alpha, range(len(saved)), scale_pinned=True)
+                value, coordinates, after, triangles = interpolation(candidate, alpha, range(len(saved)), scale_pinned=True)
                 q = quality_metrics(topo, set(faces), coordinates=value)
-                if valid(topo, after, coordinates, value) and q['worst_angle_deg'] <= quality_before['worst_angle_deg'] + 1e-4:
+                if valid(topo, after, coordinates, triangles, value) and q['worst_angle_deg'] <= quality_before['worst_angle_deg'] + 1e-4:
                     committed = commit_interpolation(value)
                     if committed is None:
                         continue

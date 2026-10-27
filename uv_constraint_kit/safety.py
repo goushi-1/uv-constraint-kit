@@ -225,11 +225,14 @@ class AcceptanceProbe:
                   {p: tuple(coordinates[p]) for p in self.target_positions})
         return {pos: tuple(points[p] for p in pos) for _, pos, _ in self.target}
 
-    def measure(self, topo, *, coordinates=None, loop_coordinates=None):
+    def measure(self, topo, *, coordinates=None, loop_coordinates=None, _triangles=None):
         coordinates = (self.capture(topo, coordinates=loop_coordinates)
                        if coordinates is None else coordinates)
+        # A checked transaction can share this exact ordered snapshot
+        # with its orientation guard. Other callers retain fresh packing.
         flips, degenerate, finite = _triangle_health(
-            [coordinates[pos] for _, pos, _ in self.target])
+            [coordinates[pos] for _, pos, _ in self.target]
+            if _triangles is None else _triangles)
         zero, deviation = 0, 0.0
         layer = self.core.constraint_layer(topo.bm)
         for pos in self.positions:

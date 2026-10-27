@@ -1,18 +1,8 @@
 # Build from source / 从源码构建
 
-The 1.7.57 Windows x64 release adds CPU native batching for reference-triangle
-frames. Its CPU library was newly compiled; solver equations are unchanged.
-GPU and CPython stable-ABI reader source and binaries are reused from 1.7.55.
-All final checks passed, and the three rejected 1.7.56 candidates are excluded.
-The current archive identity is recorded in [`release_checks.json`](../release_checks.json).
-The previous 1.7.55 archive checks are retained at the
-[v1.7.55 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.55/release_checks.json).
+The 1.7.58 release adds an optional stable-ABI reader method for live per-face UV area and shares initial numeric UV input and candidate triangle arrays in core and safety. Solver formulas, ordering and checks remain unchanged. The reader was rebuilt; CPU and GPU binaries are unchanged from published 1.7.57. Older readers retain the Python fallback. The final package passed 21 gates; identity is recorded in [release_checks.json](../release_checks.json).
 
-1.7.57 Windows x64 发行版新增 CPU 原生参考三角帧批处理。CPU 原生库为新编译，求解公式不变；
-GPU 与 CPython stable ABI 读取器源码和二进制沿用 1.7.55。全部最终检查已通过，三个已淘汰的
-1.7.56 候选均未纳入。当前包身份见 [`release_checks.json`](../release_checks.json)，
-上一版 1.7.55 包记录见 [v1.7.55 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.55/release_checks.json)。
-以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
+1.7.58 正式版新增读取器逐面 UV 面积方法，并共享初始数值 UV 输入及候选三角数组；求解公式、顺序和检查保留。读取器重新编译，CPU/GPU 二进制沿用 1.7.57，旧读取器仍回退 Python。最终包通过 21 项验收，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
 
 ## Requirements / 工具
 
@@ -30,6 +20,17 @@ GPU 与 CPython stable ABI 读取器源码和二进制沿用 1.7.55。全部最�
 
 当前原生构建只支持 Windows x64 / MSVC。CUDA/NVRTC、SDK 头文件和驱动不随仓库提供。
 其它操作系统的 Python 回退存在，但未作为支持平台验收。
+
+## Area and transaction state / 面积与事务状态
+
+Run against an extracted package with reports outside the add-on directory:
+
+```sh
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_uv_area_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/uv-area.json --require-native
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_transaction_state_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/transaction-state.json --require-native
+```
+
+The final tests passed 698 area cases plus 16 fallback cases and 12 transaction checks. Two existing partial-mix safe rejections are rollback checks, not completed alignments. 最终测试通过 698 个面积用例、16 个回退用例和 12 项事务检查；两个已有半强度安全拒绝用于验证回滚，不计为完成对齐。
 
 ## CPU
 
@@ -92,7 +93,7 @@ stable-ABI import library named exactly `python3.lib`:
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.57.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.58.zip
 ```
 
 `--reader` requires both `--python-include` and `--python-library`; the latter

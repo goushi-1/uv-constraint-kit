@@ -19,6 +19,7 @@ _captures = 0
 _reads = 0
 _loop_collects = 0
 _record_reads = 0
+_area_reads = 0
 
 
 def _load():
@@ -118,11 +119,24 @@ def constraint_records(bm, layer):
     return value
 
 
+def island_area(faces, layer):
+    """Current ordered face areas, or None if the optional method is absent."""
+    global _area_reads
+    module = _load()
+    function = getattr(module, 'island_area', None)
+    if function is None:
+        return None
+    _main_thread()
+    value = function(faces, layer)
+    _area_reads += 1
+    return value
+
+
 def diagnostics(reset=False):
-    global _captures, _reads, _loop_collects, _record_reads
+    global _captures, _reads, _loop_collects, _record_reads, _area_reads
     value = dict(attempted=_attempted, loaded=_module is not None, error=_error,
                  captures=_captures, reads=_reads, loop_collects=_loop_collects,
-                 record_reads=_record_reads)
+                 record_reads=_record_reads, area_reads=_area_reads)
     if reset:
-        _captures = _reads = _loop_collects = _record_reads = 0
+        _captures = _reads = _loop_collects = _record_reads = _area_reads = 0
     return value

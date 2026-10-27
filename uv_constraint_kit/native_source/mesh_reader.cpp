@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include <cmath>
 
 namespace {
 struct Release { void operator()(PyObject* value) const { Py_XDECREF(value); } };
@@ -200,8 +201,42 @@ PyObject* read_uv(PyObject*, PyObject* arguments) {
         return nullptr;
     }
 }
+
+PyObject* island_area(PyObject*, PyObject* arguments) {
+    PyObject *faces, *layer;
+    if (!PyArg_ParseTuple(arguments, "OO:island_area", &faces, &layer)) return nullptr;
+    try {
+        Ref loops_name = name("loops"), uv_name = name("uv");
+        std::vector<std::array<double, 2>> points;
+        double total = 0.;
+        // Caller supplies the sorted face order. Read all corners of each face
+        // before arithmetic, as the Python pts list does; retain no wrappers.
+        each(faces, [&](PyObject* face) {
+            points.clear();
+            Ref corners = attr(face, loops_name);
+            each(corners.get(), [&](PyObject* loop) {
+                points.push_back(coordinate(loop, layer, uv_name));
+            });
+            double acc = 0.;
+            for (size_t k = 0; k < points.size(); ++k) {
+                const auto& p = points[k];
+                const auto& q = points[(k + 1) % points.size()];
+                acc += p[0] * q[1] - q[0] * p[1];
+            }
+            total += std::abs(acc) * .5;
+        });
+        return PyFloat_FromDouble(total);
+    } catch (const PythonError&) { return nullptr; }
+    catch (const std::bad_alloc&) { return PyErr_NoMemory(); }
+    catch (...) {
+        PyErr_SetString(PyExc_RuntimeError, "native island area read failed");
+        return nullptr;
+    }
+}
+
 PyObject* version(PyObject*, PyObject*) { return PyLong_FromLong(2); }
 PyMethodDef methods[] = {
+    {"island_area", island_area, METH_VARARGS, "Sum current per-face UV areas in the supplied face and loop order, without writes."},
     {"collect_loops", collect_loops, METH_O, "Collect a fresh face-major loop list without reading UVs or changing the mesh."},
     {"constraint_records", constraint_records, METH_VARARGS, "Read sparse face-major constraint records using the caller's current vertex indices."},
     {"capture", capture, METH_VARARGS, "Read BMesh slots through public Python APIs, without writes."},

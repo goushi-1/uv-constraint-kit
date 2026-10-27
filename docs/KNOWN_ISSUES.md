@@ -1,12 +1,6 @@
 # Known issues / 已知问题
 
-The current release is 1.7.57. Its CPU frame batching does not change solver
-equations. The previous 1.7.55 release reused the operation's captured UV
-input during recovery prechecks while unchanged, retaining all checks, fresh
-reads after seeding and rollback. Current and historical release evidence is
-recorded in [VALIDATION.md](VALIDATION.md).
-Factory-GUI checks inject Blender
-events; they are not manual OS mouse or user-install acceptance.
+The 1.7.58 final ZIP passed the recorded 21 gates. It retains solver formulas, order and safety checks. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
 
 - **Grid tool topology.** The public quadrification replacement has a narrower
   supported topology than general UV tools. An integer-grid chart can contain
@@ -27,17 +21,17 @@ events; they are not manual OS mouse or user-install acceptance.
   Mixed winding, near-degenerate triangles, self-overlaps or
   incompatible anchors can still be rejected or restored unchanged. 折叠或重叠输入仍可能安全拒绝；
   合成恢复用例不等于旧用户案例已普遍修复。
-- **Performance varies.** Mesh extraction, topology, recovery, safety checks,
-  overlays and solver iterations contribute to complete operation time. In the
-  recorded local comparison, 540 pairs of complete operations took 67.8708471 s on
-  1.7.54 and 67.1553843 s on 1.7.55 (-1.054%; two rounds: -0.903%
-  and -1.205%). A separate dense 18-pair ABBA comparison took 14.499352 s and
-  13.7531216 s (-5.147%; rounds: -4.429% and -5.856%). These are limited
-  observations, not additive to earlier candidate results, not portable, and
-  not a sub-second promise. GPU checks
-  verify routing and results, not a performance guarantee.
-  这些是特定本机用例观测，不能与历史百分比相加，也不承诺低于一秒或通用提速。
-- **1.7.57 measurements are limited.** The CPU frame-batch release measured
+- **Partial-strength constraints.** A partial blend can miss the angular
+  acceptance threshold even when its full step is feasible. A synthetic curved
+  horizontal run at 50% strength is safely rejected with `constraint_residual`
+  in both published 1.7.57 and 1.7.58; the complete input state is
+  restored. The transaction regression checks that rollback, rather than
+  counting the rejected solve as a completed alignment.
+  半强度混合并不保证满足角度阈值；已有弯曲边界用例会安全拒绝并完整回滚，本版未改变此行为。
+- **Performance varies.** In a direct local comparison of published 1.7.57 and the exact final 1.7.58 ZIP, 540 complete-operation pairs took 5.587% less time; 18 dense ABBA pairs took 7.092% less. Some small cases regressed. These observations are not portable or a sub-second guarantee. GPU checks verify routing and results, not a performance guarantee.
+  直接对照结果仅适用于记录的有限本机用例，部分小用例变慢，不承诺通用提速或低于一秒。
+
+- **Historical 1.7.57 measurements are limited.** The CPU frame-batch release measured
   -2.4166% over 540 complete-operation pairs and -5.4344%
   over 18 dense ABBA pairs, with regressions in some small groups. These results
   apply only to the recorded machine and cases. Geometry arrays matched byte
@@ -73,7 +67,7 @@ events; they are not manual OS mouse or user-install acceptance.
   build requires the reader, but runtime compatibility with every Blender build is not
   guaranteed. Python and CUDA runtimes are not bundled. 原生读取器只随目标包提供，
   缺失或不兼容时会回退 Python；并不捆绑 Python 或 CUDA 运行时。
-  Older API 2 readers can lack the new collection methods; those calls use
+  Older API 2 readers can lack the new collection or area methods; those calls use
   Python and do not obtain their native-path performance benefit.
 - **Anchors and selection.** Pins and shape constraints can conflict with new
   edge directions. Seam sides require UV-aware selection; Selection Sync can
