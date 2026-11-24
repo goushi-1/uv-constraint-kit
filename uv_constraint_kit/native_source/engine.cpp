@@ -720,7 +720,7 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
             if(p.automatic && (!problem.soft || contact_progress || overlap_progress) && stats->accepted%25==0) {
                 double reduction=checkpoint_energy-e;
                 checkpoint_energy=e;
-                double base_tol=(p.nt>=32768)?0.001:0.01;
+                double base_tol=(p.nt>=32768)?0.005:0.01;
                 double tolerance=overlap_progress?0.0001:(contact_progress?0.001:base_tol);
                 bool direction_ready=true;
                 // The terminal penalty of the Python ramp must already meet

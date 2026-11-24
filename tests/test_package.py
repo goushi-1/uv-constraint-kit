@@ -37,7 +37,8 @@ def run_package(*arguments: str) -> tuple[int, str]:
     return 0, output.getvalue()
 
 
-def write_native_fixture(folder: Path, *, reader: dict | None = None, gpu: bool = False) -> None:
+def write_native_fixture(folder: Path, *, reader: dict | None = None,
+                         gpu: bool = False, numeric: dict | None = None) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     engine = b"fixture engine"
     (folder / "uvck_engine_fixture.dll").write_bytes(engine)
@@ -79,6 +80,20 @@ def write_native_fixture(folder: Path, *, reader: dict | None = None, gpu: bool 
         }
         identity.update(reader)
         (folder / "reader.json").write_text(json.dumps(identity), encoding="utf8")
+    if numeric is not None:
+        library = b"fixture numeric"
+        filename = numeric.setdefault("library", "uvck_numeric_fixture.dll")
+        (folder / filename).write_bytes(library)
+        identity = {
+            "abi": 1,
+            "area_read_abi": 1,
+            "library": filename,
+            "sha256": hashlib.sha256(library).hexdigest(),
+            "source_sha256": package.sha256(package.ADDON / "native_source" / "numeric_stage.cpp"),
+            "optional": True,
+        }
+        identity.update(numeric)
+        (folder / "numeric_stage.json").write_text(json.dumps(identity), encoding="utf8")
 
 
 class PackageTests(unittest.TestCase):
@@ -133,13 +148,13 @@ class PackageTests(unittest.TestCase):
                     run_package("--native-dir", str(native), "--output", str(output))
                 self.assertFalse(output.exists())
 
-    def test_reader_and_gpu_package_with_required_reader(self):
+    def test_reader_gpu_and_numeric_package_with_required_flags(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
             native = Path(temporary) / "native"
-            output = Path(temporary) / "reader-gpu.zip"
-            write_native_fixture(native, reader={}, gpu=True)
+            output = Path(temporary) / "reader-gpu-numeric.zip"
+            write_native_fixture(native, reader={}, gpu=True, numeric={})
             code, message = run_package("--native-dir", str(native), "--require-reader",
-                                        "--require-gpu", "--output", str(output))
+                                        "--require-gpu", "--require-numeric", "--output", str(output))
             self.assertEqual(code, 0, message)
             with zipfile.ZipFile(output) as archive:
                 self.assertIsNone(archive.testzip())
@@ -147,15 +162,51 @@ class PackageTests(unittest.TestCase):
                 for name in (
                     "mesh_reader.py",
                     "native_source/mesh_reader.cpp",
+                    "numeric_stage.py",
+                    "native_source/numeric_stage.cpp",
                     "bin/windows-x64/reader.json",
                     "bin/windows-x64/uvck_reader_fixture.pyd",
                     "bin/windows-x64/gpu.json",
                     "bin/windows-x64/uvck_gpu_fixture.dll",
                     "bin/windows-x64/uvck_gpu_fixture.ptx",
+                    "bin/windows-x64/numeric_stage.json",
+                    "bin/windows-x64/uvck_numeric_fixture.dll",
                 ):
                     self.assertIn(name, names)
 
-    def test_python_only_package_keeps_reader_optional(self):
+    def test_invalid_numeric_stage_abi_source_and_hash_are_rejected(self):
+        bad_metadata = (
+            ({"abi": 2}, "ABI"),
+            ({"area_read_abi": 2}, "ABI"),
+            ({"source_sha256": "0" * 64}, "different numeric_stage.cpp"),
+            ({"sha256": "0" * 64}, "checksum mismatch"),
+        )
+        for changes, expected in bad_metadata:
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+                native = Path(temporary) / "native"
+                output = Path(temporary) / "must-not-exist.zip"
+                write_native_fixture(native, numeric=dict(changes))
+                with self.assertRaisesRegex(ValueError, expected):
+                    run_package("--native-dir", str(native), "--output", str(output))
+                self.assertFalse(output.exists())
+
+    def test_require_numeric_needs_native_dir_and_numeric(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            output = Path(temporary) / "must-not-exist.zip"
+            code, message = run_package("--require-numeric", "--output", str(output))
+            self.assertEqual(code, 2, message)
+            self.assertIn("--require-numeric requires --native-dir", message)
+            self.assertFalse(output.exists())
+
+            native = Path(temporary) / "native"
+            write_native_fixture(native)
+            code, message = run_package("--native-dir", str(native), "--require-numeric",
+                                        "--output", str(output))
+            self.assertEqual(code, 2, message)
+            self.assertIn("validated numeric stage DLL", message)
+            self.assertFalse(output.exists())
+
+    def test_python_only_package_keeps_reader_and_numeric_optional(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
             output = Path(temporary) / "python-only.zip"
             code, message = run_package("--output", str(output))
@@ -163,14 +214,16 @@ class PackageTests(unittest.TestCase):
             with zipfile.ZipFile(output) as archive:
                 names = set(archive.namelist())
                 self.assertIn("mesh_reader.py", names)
+                self.assertIn("numeric_stage.py", names)
                 self.assertNotIn("bin/windows-x64/reader.json", names)
+                self.assertNotIn("bin/windows-x64/numeric_stage.json", names)
 
     def test_gpu_engine_packages_and_preserves_validated_hashes(self):
         gpu_json = GPU_ENGINE_DIR / "gpu.json"
         if not gpu_json.is_file():
             self.skipTest(f"GPU engine not found; pass --engine-dir when available: {GPU_ENGINE_DIR}")
         identity = json.loads(gpu_json.read_text(encoding="utf8"))
-        with tempfile.TemporaryDirectory(dir=ROOT / "build") as temporary:
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
             output = Path(temporary) / "with-gpu.zip"
             code, message = run_package(
                 "--native-dir", str(GPU_ENGINE_DIR), "--require-gpu", "--output", str(output)

@@ -13,10 +13,10 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ADDON = ROOT / "uv_constraint_kit"
 RUNTIME = """__init__.py blender_manifest.toml circle_ops.py circle.py const.py core.py
-i18n.py LICENSE live_symmetry.py metric.py native_engine.py ops.py overlay.py prefs.py
+i18n.py LICENSE live_symmetry.py metric.py native_engine.py numeric_stage.py ops.py overlay.py prefs.py
 proxy.py quad_grid.py quadrify.py recovery.py rectangle.py refine.py safety.py shape_constraints.py
 shape_ops.py symmetry.py terms_zh.py ui.py untangle.py mesh_reader.py""".split()
-NATIVE_SOURCE = "CMakeLists.txt build_gpu.py engine.cpp engine_gpu.cpp gpu_driver.hpp gpu_metric.cu mesh_reader.cpp".split()
+NATIVE_SOURCE = "CMakeLists.txt build_gpu.py engine.cpp engine_gpu.cpp gpu_driver.hpp gpu_metric.cu mesh_reader.cpp numeric_stage.cpp".split()
 
 
 def sha256(path: Path) -> str:
@@ -47,6 +47,32 @@ def reader_members(folder: Path) -> dict[str, Path]:
     if sha256(artifact) != identity.get("sha256"):
         raise ValueError(f"Reader checksum mismatch: {name}")
     return {"bin/windows-x64/reader.json": metadata,
+            f"bin/windows-x64/{name}": artifact}
+
+
+def numeric_stage_members(folder: Path) -> dict[str, Path]:
+    metadata = folder / "numeric_stage.json"
+    if not metadata.exists() and not metadata.is_symlink():
+        return {}
+    if metadata.is_symlink() or metadata.resolve().parent != folder.resolve():
+        raise ValueError("Numeric stage metadata must be a regular file inside its native directory")
+    identity = json.loads(metadata.read_text(encoding="utf8"))
+    if (not isinstance(identity, dict) or identity.get("abi") != 1
+            or identity.get("area_read_abi") != 1):
+        raise ValueError("Unsupported numeric stage ABI metadata")
+    if identity.get("source_sha256") != sha256(ADDON / "native_source" / "numeric_stage.cpp"):
+        raise ValueError("Numeric stage was built from a different numeric_stage.cpp")
+    name = identity.get("library")
+    if (not isinstance(name, str) or Path(name).name != name
+            or not name.startswith("uvck_numeric_") or not name.endswith(".dll")):
+        raise ValueError("Invalid numeric stage filename")
+    artifact = folder / name
+    if (artifact.is_symlink() or not artifact.is_file()
+            or artifact.resolve().parent != folder.resolve()):
+        raise ValueError("Numeric stage artifact must be a regular file inside its directory")
+    if sha256(artifact) != identity.get("sha256"):
+        raise ValueError(f"Numeric stage checksum mismatch: {name}")
+    return {"bin/windows-x64/numeric_stage.json": metadata,
             f"bin/windows-x64/{name}": artifact}
 
 
@@ -84,6 +110,7 @@ def native_members(folder: Path) -> dict[str, Path]:
                 raise ValueError(f"Engine checksum mismatch: {name}")
             result[f"bin/windows-x64/{name}"] = artifact
     result.update(reader_members(folder))
+    result.update(numeric_stage_members(folder))
     return result
 
 
@@ -96,11 +123,15 @@ def main() -> None:
                         help="Require a validated GPU DLL and PTX in the package")
     parser.add_argument("--require-reader", action="store_true",
                         help="Require a validated stable-ABI reader in the package")
+    parser.add_argument("--require-numeric", action="store_true",
+                        help="Require a validated numeric-stage DLL in the package")
     args = parser.parse_args()
     if args.require_gpu and args.native_dir is None:
         parser.error("--require-gpu requires --native-dir")
     if args.require_reader and args.native_dir is None:
         parser.error("--require-reader requires --native-dir")
+    if args.require_numeric and args.native_dir is None:
+        parser.error("--require-numeric requires --native-dir")
     members = {name: ADDON / name for name in RUNTIME}
     members.update({f"native_source/{name}": ADDON / "native_source" / name for name in NATIVE_SOURCE})
     for name in ("THIRD_PARTY_NOTICES.md", "NOTICE"):
@@ -124,6 +155,11 @@ def main() -> None:
         if ("bin/windows-x64/reader.json" not in members
                 or not any(name.startswith(reader_prefix) and name.endswith(".pyd") for name in members)):
             parser.error("--require-reader needs a validated reader module in --native-dir")
+    if args.require_numeric:
+        numeric_prefix = "bin/windows-x64/uvck_numeric_"
+        if ("bin/windows-x64/numeric_stage.json" not in members
+                or not any(name.startswith(numeric_prefix) and name.endswith(".dll") for name in members)):
+            parser.error("--require-numeric needs a validated numeric stage DLL in --native-dir")
     for name, path in members.items():
         if not path.is_file() or path.is_symlink():
             raise FileNotFoundError(f"Required regular source file missing: {name}")

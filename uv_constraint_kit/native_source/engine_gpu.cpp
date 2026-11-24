@@ -549,7 +549,7 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
             if(p.automatic && (!problem.soft || overlap_progress) && stats->accepted%25==0) {
                 double reduction=checkpoint_energy-e;
                 checkpoint_energy=e;
-                double base_tol=(p.nt>=32768)?0.001:0.01;
+                double base_tol=(p.nt>=32768)?0.005:0.01;
                 double tolerance=overlap_progress?0.0001:base_tol;
                 bool direction_ready=true;
                 if(overlap_progress && p.strength>=1e6) {

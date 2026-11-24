@@ -3375,9 +3375,15 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             # Keep the verified recovery seed for the checked hard trial and
             # its existing recovered-initialization fallback below.
             restore(seed_values)
+        from . import native_engine
+        guarded_clean = bool(
+            reusable and clean_relaxation and not constraint_positions
+            and len(triangle_positions) >= native_engine._GPU_MIN_TRIANGLES)
+        run_settings = (dict(settings, prevent_overlap=True) if guarded_clean
+                        else settings)
         result = _rebuild_islands(context, obj, faces, constraint_positions,
                                   _topo=topo if reusable else None,_quality_before=quality_before,
-                                  _quality_after=False, **settings)
+                                  _quality_after=False, **run_settings)
         if recovery_report is not None:
             result[2]['input_recovery'] = recovery_report
             result[2]['before'] = quality_before
@@ -3386,7 +3392,18 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             prepare_bm(bm)
             topo = UVTopology(bm, uv_layer(bm))
         coordinates, after, triangles = capture_health(topo)
-        if valid(topo, after, coordinates, triangles):
+        valid_after = valid(topo, after, coordinates, triangles)
+        if guarded_clean and not valid_after:
+            restore()
+            result = _rebuild_islands(context, obj, faces, constraint_positions,
+                                      _topo=topo, _quality_before=quality_before,
+                                      _quality_after=False, **settings)
+            if recovery_report is not None:
+                result[2]['input_recovery'] = recovery_report
+                result[2]['before'] = quality_before
+            coordinates, after, triangles = capture_health(topo)
+            valid_after = valid(topo, after, coordinates, triangles)
+        if valid_after:
             if contact_eligible:
                 overlap = probe.check_overlaps(topo, include_existing=True, coordinates=coordinates)
                 if overlap['self_overlaps']:
