@@ -60,6 +60,8 @@ struct Problem {
     Vec jacobian, gradient_terms;
     I evaluations=0;
     mutable I witness_i=-1,witness_j=-1;
+    mutable bool border_rejected=false;
+    const Vec* baseline_uv=nullptr;
     explicit Problem(const Input& in):p(in),soft(in.strength>=0),jacobian(4*in.nt) {
         for(I r=0;r<p.nr;++r) if(p.kinds[r]!=1 && p.kinds[r]!=2) axes_only=false;
         if(!soft && axes_only) for(I kind=1;kind<=2;++kind) {
@@ -134,7 +136,15 @@ struct Problem {
             I ia=p.border_edges[2*i],ib=p.border_edges[2*i+1],ic=p.border_edges[2*j],id=p.border_edges[2*j+1];
             if(ia==ic || ia==id || ib==ic || ib==id) return true;
             const double *a=&x[2*ia],*b=&x[2*ib],*c=&x[2*ic],*d=&x[2*id];
-            double margin=std::max(p.overlap_space,0.);
+            const bool margin_guard=(p.prevent_overlap==1 && baseline_uv!=nullptr && p.overlap_space<=0.);
+            double coord_scale=1.,local_margin=0.;
+            if(margin_guard) {
+                coord_scale=std::max({1.0,std::sqrt(std::max(p.penalty_scale,1e-20)),
+                                      std::abs(a[0]),std::abs(a[1]),std::abs(b[0]),std::abs(b[1]),
+                                      std::abs(c[0]),std::abs(c[1]),std::abs(d[0]),std::abs(d[1])});
+                local_margin=6e-7*coord_scale;
+            }
+            double margin=margin_guard?std::max({p.overlap_space,0.,local_margin}):std::max(p.overlap_space,0.);
             if(std::max(a[0],b[0])+margin<std::min(c[0],d[0]) || std::max(c[0],d[0])+margin<std::min(a[0],b[0]) ||
                std::max(a[1],b[1])+margin<std::min(c[1],d[1]) || std::max(c[1],d[1])+margin<std::min(a[1],b[1])) return true;
             double abx=b[0]-a[0],aby=b[1]-a[1],cdx=d[0]-c[0],cdy=d[1]-c[1];
@@ -146,6 +156,24 @@ struct Problem {
                              contact_segment_distance(c,a,b),contact_segment_distance(d,a,b)})>contact_sigma)
                     return false;
             }
+            if(p.prevent_overlap==1) {
+                const double af[2]={static_cast<double>(static_cast<float>(a[0])),static_cast<double>(static_cast<float>(a[1]))};
+                const double bf[2]={static_cast<double>(static_cast<float>(b[0])),static_cast<double>(static_cast<float>(b[1]))};
+                const double cf[2]={static_cast<double>(static_cast<float>(c[0])),static_cast<double>(static_cast<float>(c[1]))};
+                const double df[2]={static_cast<double>(static_cast<float>(d[0])),static_cast<double>(static_cast<float>(d[1]))};
+                const double abfx=bf[0]-af[0],abfy=bf[1]-af[1],cdfx=df[0]-cf[0],cdfy=df[1]-cf[1];
+                if(cross(abfx,abfy,cf[0]-af[0],cf[1]-af[1])*cross(abfx,abfy,df[0]-af[0],df[1]-af[1])<0 &&
+                   cross(cdfx,cdfy,af[0]-cf[0],af[1]-cf[1])*cross(cdfx,cdfy,bf[0]-cf[0],bf[1]-cf[1])<0) return false;
+            }
+            if(margin_guard) {
+                const double d_cand=std::min({distance(a,c,d),distance(b,c,d),distance(c,a,b),distance(d,a,b)});
+                if(d_cand<local_margin) {
+                    const Vec& base=*baseline_uv;
+                    const double *ba=&base[2*ia],*bb=&base[2*ib],*bc=&base[2*ic],*bd=&base[2*id];
+                    const double d_curr=std::min({distance(ba,bc,bd),distance(bb,bc,bd),distance(bc,ba,bb),distance(bd,ba,bb)});
+                    if(d_cand<std::min(local_margin,0.5*d_curr)) return false;
+                }
+            }
             if(p.overlap_space>0 && std::min({distance(a,c,d),distance(b,c,d),distance(c,a,b),distance(d,a,b)})<p.overlap_space) return false;
             return true;
     }
@@ -153,7 +181,7 @@ struct Problem {
         if(!p.prevent_overlap) return true;
         auto pair_valid=[&](I i,I j) {
             if(border_pair_valid(x,i,j)) return true;
-            if(p.prevent_overlap==1) {witness_i=i;witness_j=j;}
+            if(p.prevent_overlap==1) {witness_i=i;witness_j=j;border_rejected=true;}
             return false;
         };
         // A broad phase only: retain the same exact pair predicate, including
@@ -162,12 +190,18 @@ struct Problem {
         struct Bound {double low,high;I index;};
         std::vector<Bound> bounds;
         bool sweep=p.nb>=64;
+        const bool margin_guard=(p.prevent_overlap==1 && baseline_uv!=nullptr && p.overlap_space<=0.);
+        double max_abs_coord=0.;
         if(sweep) {
             bounds.reserve(p.nb);
             for(I i=0;i<p.nb;++i) {
                 I a=p.border_edges[2*i],b=p.border_edges[2*i+1];
                 if(!std::isfinite(x[2*a]) || !std::isfinite(x[2*a+1]) ||
                    !std::isfinite(x[2*b]) || !std::isfinite(x[2*b+1])) {sweep=false;break;}
+                if(margin_guard) {
+                    max_abs_coord=std::max({max_abs_coord,std::abs(x[2*a]),std::abs(x[2*a+1]),
+                                            std::abs(x[2*b]),std::abs(x[2*b+1])});
+                }
                 bounds.push_back({std::min(x[2*a],x[2*b]),std::max(x[2*a],x[2*b]),i});
             }
         }
@@ -178,7 +212,9 @@ struct Problem {
         std::sort(bounds.begin(),bounds.end(),[](const Bound& a,const Bound& b) {
             return a.low<b.low || (a.low==b.low && a.index<b.index);
         });
-        const double margin=std::max(p.overlap_space,0.);
+        const double margin=margin_guard
+            ?std::max(p.overlap_space,6e-7*std::max({1.0,std::sqrt(std::max(p.penalty_scale,1e-20)),max_abs_coord}))
+            :std::max(p.overlap_space,0.);
         for(I i=0;i<p.nb;++i) for(I j=i+1;j<p.nb;++j) {
             if(bounds[i].high+margin<bounds[j].low) break;
             I a=bounds[i].index,b=bounds[j].index;
@@ -553,7 +589,17 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
         if(!input || !output || !stats || !valid_input(*input)) return -1;
         const Input& p=*input;Problem problem(p);Vec x(p.uv,p.uv+2*p.n);problem.project(x);problem.build_j(x);
         problem.reciprocal=true;
-        for(I t=0;t<p.nt;++t) {const double* j=&problem.jacobian[4*t];double d=j[0]*j[3]-j[1]*j[2];if(!std::isfinite(d) || d<=1e-6) problem.reciprocal=false;}
+        bool finite_j=true;
+        for(I t=0;t<p.nt;++t) {
+            const double* j=&problem.jacobian[4*t];
+            for(int k=0;k<4;++k) if(!std::isfinite(j[k])) finite_j=false;
+            double d=j[0]*j[3]-j[1]*j[2];
+            if(!std::isfinite(d) || d<=1e-6) problem.reciprocal=false;
+        }
+        if(!finite_j || (p.prevent_flips && !problem.reciprocal) || !problem.borders_valid(x)) {
+            *stats={0,1,problem.reciprocal,0,INF,INF};
+            return 1; // Do not publish even the initial projection.
+        }
         double e=problem.energy(x);*stats={0,problem.evaluations,problem.reciprocal,0,e,INF};
         if(!std::isfinite(e)) return 1; // Do not publish even the initial projection.
         Vec g;problem.gradient(x,g);
@@ -566,6 +612,32 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
         // Hand control back to the existing stronger-penalty continuation.
         const bool overlap_progress=problem.soft && p.prevent_overlap==1;
         double checkpoint_energy=e;
+        const bool keep_initial_border=(p.prevent_overlap==1 && p.overlap_space<=0.);
+        const Vec initial_uv=keep_initial_border?x:Vec{};
+        const bool allow_contact_pin=(p.prevent_overlap==1 && !problem.soft);
+        std::vector<std::uint8_t> contact_pinned(allow_contact_pin?p.n:0,0);
+        std::vector<std::uint8_t> constrained_vert(allow_contact_pin?p.n:0,0);
+        if(allow_contact_pin) {
+            for(I k=0;k<p.nm;++k) constrained_vert[p.members[k]]=1;
+        }
+        I pinned_border_count=0;
+        auto try_pin_witness=[&]() -> bool {
+            if(!allow_contact_pin || !problem.border_rejected || problem.witness_i<0 || pinned_border_count>=16)
+                return false;
+            const I verts[4]={
+                p.border_edges[2*problem.witness_i],p.border_edges[2*problem.witness_i+1],
+                p.border_edges[2*problem.witness_j],p.border_edges[2*problem.witness_j+1]
+            };
+            bool added=false;
+            for(I v:verts) if(!contact_pinned[v] && !constrained_vert[v] && !p.fixed[v]) {
+                contact_pinned[v]=1;
+                g[2*v]=0.;g[2*v+1]=0.;
+                ++pinned_border_count;
+                added=true;
+            }
+            if(added) {problem.witness_i=-1;problem.witness_j=-1;history.clear();}
+            return added;
+        };
         I limit=p.automatic?1000:std::max<I>(1,p.iterations);
         for(I iteration=0;iteration<limit;++iteration) {
             if(p.automatic && max_abs(g)<1e-6) break;
@@ -588,12 +660,26 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
             }
             if(!preconditioned) {
                 double scale=history.empty()?std::max(p.density*p.density,1e-6)*.05:dot(history.back().s,history.back().y)/std::max(dot(history.back().y,history.back().y),1e-20);
+                if(history.empty()) {
+                    const double g_inf=max_abs(g);
+                    const double max_disp=.05*std::sqrt(std::max(p.penalty_scale,1e-20));
+                    if(g_inf>0. && max_disp>0. && scale*g_inf>max_disp) scale=max_disp/g_inf;
+                }
                 for(double& v:q) v*=scale;
             }
             for(std::size_t i=0;i<history.size();++i) {double v=coefficients[history.size()-i-1]-history[i].rho*dot(history[i].y,q);for(std::size_t k=0;k<q.size();++k) q[k]+=history[i].s[k]*v;}
             direction=q;for(double& v:direction) v=-v;double slope=dot(g,direction);
-            if(slope>=0) {for(std::size_t k=0;k<g.size();++k) direction[k]=-g[k];slope=-dot(g,g);history.clear();}
+            if(slope>=0) {
+                const double g_inf=max_abs(g);
+                const double max_disp=.05*std::sqrt(std::max(p.penalty_scale,1e-20));
+                const double reset_scale=(g_inf>max_disp && max_disp>0.)?(max_disp/g_inf):1.;
+                for(std::size_t k=0;k<g.size();++k) direction[k]=-reset_scale*g[k];
+                slope=dot(g,direction);
+                history.clear();
+            }
             double step=1,next_e=INF;candidate.resize(x.size());bool accepted=false;
+            problem.baseline_uv=keep_initial_border?&initial_uv:nullptr;
+            problem.border_rejected=false;
             for(int search=0;search<32;++search) {
                 for(std::size_t k=0;k<x.size();++k) candidate[k]=x[k]+step*direction[k];
                 problem.project(candidate);
@@ -602,6 +688,7 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                 // at the current projected UVs before it can reject a trial.
                 if(p.prevent_overlap==1 && problem.witness_i>=0 && std::isfinite(threshold) &&
                         !problem.border_pair_valid(candidate,problem.witness_i,problem.witness_j)) {
+                    problem.border_rejected=true;
                     ++problem.evaluations;
                     step*=.5;
                     continue;
@@ -609,18 +696,32 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                 next_e=problem.energy(candidate);
                 if(next_e<=threshold) {accepted=true;break;}step*=.5;
             }
-            if(!accepted) break;
-            problem.gradient(candidate,next_g);Vec change(x.size()),y(x.size());
+            problem.baseline_uv=nullptr;
+            if(!accepted) {
+                if(try_pin_witness()) continue;
+                if(history.empty()) break;
+                history.clear();
+                continue; // retry from x with the capped steepest-descent step
+            }
+            problem.gradient(candidate,next_g);
+            if(pinned_border_count>0) {
+                for(I v=0;v<p.n;++v) if(contact_pinned[v]) {next_g[2*v]=0.;next_g[2*v+1]=0.;}
+            }
+            Vec change(x.size()),y(x.size());
             for(std::size_t k=0;k<x.size();++k) {change[k]=candidate[k]-x[k];y[k]=next_g[k]-g[k];}
             double sy=dot(change,y);if(sy>1e-14) {history.push_back({std::move(change),std::move(y),1/sy});if(history.size()>8) history.erase(history.begin());}
             double improvement=e-next_e;x.swap(candidate);e=next_e;g.swap(next_g);++stats->accepted;
-            if(p.automatic && improvement<=1e-10*std::max(1.,std::abs(e))) break;
+            if(p.automatic && improvement<=1e-10*std::max(1.,std::abs(e))) {
+                if(try_pin_witness()) continue;
+                break;
+            }
             // Global objective progress, not a fixed short solve or mesh-specific rule.
             // Keep old early stops and the1000 ceiling; manual solves are unchanged.
             if(p.automatic && (!problem.soft || contact_progress || overlap_progress) && stats->accepted%25==0) {
                 double reduction=checkpoint_energy-e;
                 checkpoint_energy=e;
-                double tolerance=overlap_progress?0.0001:(contact_progress?0.001:0.01);
+                double base_tol=(p.nt>=32768)?0.001:0.01;
+                double tolerance=overlap_progress?0.0001:(contact_progress?0.001:base_tol);
                 bool direction_ready=true;
                 // The terminal penalty of the Python ramp must already meet
                 // direction tolerance before this additional stop can fire.
@@ -635,7 +736,10 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                     }
                 }
                 if(direction_ready && (!(contact_progress || overlap_progress) || stats->accepted>=100) && reduction>=0 &&
-                        reduction<=tolerance*std::max(std::abs(e),1e-12)) break;
+                        reduction<=tolerance*std::max(std::abs(e),1e-12)) {
+                    if(max_abs(g)>1e-3 && try_pin_witness()) continue;
+                    break;
+                }
             }
         }
         for(double v:x) if(!std::isfinite(v)) return -2;

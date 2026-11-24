@@ -323,15 +323,27 @@ class AcceptanceProbe:
         self.target = []
         self.static = []
         self.reference = {}
-        for tri in topo.loop_triangles() if triangles is None else triangles:
-            fi = tri[0].face.index
-            if fi not in self.faces and not (check_other_islands or self.roots[fi] in target_roots):
-                continue
-            row = (fi, tuple(topo.loop_pos[l] for l in tri), self.roots[fi])
-            if fi in self.faces:
-                self.target.append(row)
-            elif check_other_islands or self.roots[fi] in target_roots:
-                self.static.append(row)
+        tri_rows = (topo.triangle_rows()
+                    if triangles is None and hasattr(topo, 'triangle_rows') else None)
+        if tri_rows is not None:
+            for fi, pos in tri_rows:
+                if fi not in self.faces and not (check_other_islands or self.roots[fi] in target_roots):
+                    continue
+                row = (fi, pos, self.roots[fi])
+                if fi in self.faces:
+                    self.target.append(row)
+                elif check_other_islands or self.roots[fi] in target_roots:
+                    self.static.append(row)
+        else:
+            for tri in topo.loop_triangles() if triangles is None else triangles:
+                fi = tri[0].face.index
+                if fi not in self.faces and not (check_other_islands or self.roots[fi] in target_roots):
+                    continue
+                row = (fi, tuple(topo.loop_pos[l] for l in tri), self.roots[fi])
+                if fi in self.faces:
+                    self.target.append(row)
+                elif check_other_islands or self.roots[fi] in target_roots:
+                    self.static.append(row)
         self.target_positions = sorted({p for _, pos, _ in self.target for p in pos})
         self.reference = self.capture(topo, coordinates=coordinates)
 
@@ -363,9 +375,16 @@ class AcceptanceProbe:
 
     def capture(self, topo, *, coordinates=None):
         """Fresh sparse UV values for one candidate; never retain across writes."""
-        points = ({p: tuple(topo.loops[p][topo.uvl].uv) for p in self.target_positions}
-                  if coordinates is None else
-                  {p: tuple(coordinates[p]) for p in self.target_positions})
+        if coordinates is None:
+            if not self.target_positions:
+                points = {}
+            else:
+                coords = self.core.mesh_reader.read_uv(
+                    [topo.loops[p] for p in self.target_positions], topo.uvl)
+                values = coords.tolist() if isinstance(coords, np.ndarray) else coords
+                points = dict(zip(self.target_positions, map(tuple, values)))
+        else:
+            points = {p: tuple(coordinates[p]) for p in self.target_positions}
         return {pos: tuple(points[p] for p in pos) for _, pos, _ in self.target}
 
     def measure(self, topo, *, coordinates=None, loop_coordinates=None, _triangles=None):

@@ -258,19 +258,40 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
     pairs=[(i,j) for i in range(len(edge)) for j in range(i+1,len(edge))
            if not set(edge[i]) & set(edge[j])] if prevent_overlap else []
     pair_index=np.asarray(pairs,dtype=np.int64)
-    def borders_valid(value):
+    def borders_valid(value, baseline=None):
         if not prevent_overlap or not pairs:return True
         p=pair_index
         a=value[edge[p[:,0],0]];b=value[edge[p[:,0],1]]
         c=value[edge[p[:,1],0]];d=value[edge[p[:,1],1]]
         def cross(u,v):return u[:,0]*v[:,1]-u[:,1]*v[:,0]
+        def distance(q,u,v):
+            w=v-u
+            t=np.clip(((q-u)*w).sum(axis=1)/np.maximum((w*w).sum(axis=1),1e-20),0,1)
+            return np.linalg.norm(q-u-t[:,None]*w,axis=1)
         ab=b-a;cd=d-c
         if np.any((cross(ab,c-a)*cross(ab,d-a)<0)&(cross(cd,a-c)*cross(cd,b-c)<0)):return False
+        if not _contact_barrier:
+            with np.errstate(over='ignore', invalid='ignore'):
+                af=a.astype(np.float32).astype(np.float64)
+                bf=b.astype(np.float32).astype(np.float64)
+                cf=c.astype(np.float32).astype(np.float64)
+                df=d.astype(np.float32).astype(np.float64)
+            abf=bf-af;cdf=df-cf
+            if np.any((cross(abf,cf-af)*cross(abf,df-af)<0)&(cross(cdf,af-cf)*cross(cdf,bf-cf)<0)):return False
+            if baseline is not None and overlap_space<=0.:
+                dist_cand=np.minimum.reduce([distance(a,c,d),distance(b,c,d),distance(c,a,b),distance(d,a,b)])
+                base_scale=max(1.0,float(np.sqrt(max(penalty_scale,1e-20))))
+                pair_abs=np.maximum.reduce([np.abs(a[:,0]),np.abs(a[:,1]),np.abs(b[:,0]),np.abs(b[:,1]),
+                                            np.abs(c[:,0]),np.abs(c[:,1]),np.abs(d[:,0]),np.abs(d[:,1])])
+                local_margin=6e-7*np.maximum(base_scale,pair_abs)
+                close=dist_cand<local_margin
+                if np.any(close):
+                    pc=p[close]
+                    ba=baseline[edge[pc[:,0],0]];bb=baseline[edge[pc[:,0],1]]
+                    bc=baseline[edge[pc[:,1],0]];bd=baseline[edge[pc[:,1],1]]
+                    dist_base=np.minimum.reduce([distance(ba,bc,bd),distance(bb,bc,bd),distance(bc,ba,bb),distance(bd,ba,bb)])
+                    if np.any(dist_cand[close]<np.minimum(local_margin[close],0.5*dist_base)):return False
         if overlap_space>0:
-            def distance(q,a,b):
-                v=b-a
-                t=np.clip(((q-a)*v).sum(axis=1)/np.maximum((v*v).sum(axis=1),1e-20),0,1)
-                return np.linalg.norm(q-a-t[:,None]*v,axis=1)
             dist=np.minimum.reduce([distance(a,c,d),distance(b,c,d),distance(c,a,b),distance(d,a,b)])
             if np.any(dist<overlap_space):return False
         return True
@@ -323,13 +344,13 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
         for i in held:g[i]=0
         return g
 
-    def energy(value, gradient=True):
+    def energy(value, gradient=True, baseline=None):
         q=value[tri]
         u=np.stack((q[:,1]-q[:,0],q[:,2]-q[:,0]),axis=2)
         j=u@inv
         value_e, terms = _distortion_terms(j, angle_length, prevent_flips or reciprocal,
                                           reciprocal=reciprocal)
-        if value_e is None or not borders_valid(value):
+        if value_e is None or not borders_valid(value, baseline=baseline):
             return (float('inf'),None) if gradient else (float('inf'),None,None)
         e=float((value_e*weights).sum())
         penalty_gradient = None
@@ -369,6 +390,7 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
         if _coordinates is not None:
             return 0, int((signed < 0).sum()), np.array(_coordinates,dtype=float,copy=True)
         return 0,int((signed<0).sum())
+    initial_uv=x.copy() if (prevent_overlap and not _contact_barrier and overlap_space<=0.) else None
     history=[]
     limit=1000 if auto else max(1,int(iterations))
     for _ in range(limit):
@@ -380,19 +402,36 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
             s,y,_=history[-1]
             q*=float((s*y).sum())/max(float((y*y).sum()),1e-20)
         else:
-            q*=max(density*density,1e-6)*.05
+            scale = max(density*density,1e-6)*.05
+            g_inf = float(np.abs(g).max())
+            max_disp = .05 * float(np.sqrt(max(penalty_scale, 1e-20)))
+            if g_inf > 0. and max_disp > 0. and scale * g_inf > max_disp:
+                scale = max_disp / g_inf
+            q*=scale
         for (s,y,rho),alpha in zip(history,reversed(coeff)):
             q+=s*(alpha-rho*float((y*q).sum()))
         direction=-q
         slope=float((g*direction).sum())
-        if slope>=0:direction=-g;slope=-float((g*g).sum());history=[]
+        if slope>=0:
+            g_inf = float(np.abs(g).max())
+            max_disp = .05 * float(np.sqrt(max(penalty_scale, 1e-20)))
+            reset_scale = (max_disp / g_inf) if (g_inf > max_disp and max_disp > 0.) else 1.
+            direction = -reset_scale * g
+            slope = float((g * direction).sum())
+            history = []
         step=1.
+        accepted=False
         for _ in range(32):
             candidate=project(x+step*direction)
-            next_e,_,energy_state=energy(candidate,gradient=False)
-            if next_e<=e+1e-4*step*slope:break
+            next_e,_,energy_state=energy(candidate,gradient=False,baseline=initial_uv)
+            if next_e<=e+1e-4*step*slope:
+                accepted=True
+                break
             step*=.5
-        else:break
+        if not accepted:
+            if not history:break
+            history=[]
+            continue
         # Reuse the accepted trial's energy intermediates; rejected trials
         # never build or scatter a gradient.
         next_g=gradient_from(*energy_state)

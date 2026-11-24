@@ -59,10 +59,13 @@ def recall(core, topo, faces, positions, fixed, saved, pins, settings, state):
     return dict(seed=state['seed'], report=deepcopy(state['report']))
 
 
-def _crosses(topo, faces, triangles=None, *, coordinates=None):
-    positions = [tuple(topo.loop_pos[l] for l in tri)
-                 for tri in (topo.loop_triangles() if triangles is None else triangles)
-                 if tri[0].face.index in faces]
+def _crosses(topo, faces, triangles=None, *, coordinates=None, _positions=None):
+    if _positions is None:
+        positions = [tuple(topo.loop_pos[l] for l in tri)
+                     for tri in (topo.loop_triangles() if triangles is None else triangles)
+                     if tri[0].face.index in faces]
+    else:
+        positions = _positions
     uv = (np.asarray([[tuple(topo.loops[p][topo.uvl].uv) for p in tri] for tri in positions])
           if coordinates is None else
           np.asarray([[coordinates[p] for p in tri] for tri in positions], dtype=float))
@@ -81,14 +84,25 @@ def plan(core, topo, faces, settings, *, _coordinates=None, _initial_probe=None)
         return result
     islands = core.face_islands(topo, faces)
     roots = {fi: root for root, island in islands.items() for fi in island}
+    use_rows = hasattr(topo, 'triangle_rows')
     triangles = {root: [] for root in islands}
-    for tri in topo.loop_triangles():
-        root = roots.get(tri[0].face.index)
-        if root is not None:
-            triangles[root].append(tri)
+    if use_rows:
+        for fi, pos in topo.triangle_rows():
+            root = roots.get(fi)
+            if root is not None:
+                triangles[root].append(pos)
+    else:
+        for tri in topo.loop_triangles():
+            root = roots.get(tri[0].face.index)
+            if root is not None:
+                triangles[root].append(tri)
     for root, island in islands.items():
         island = set(island)
-        positions, cross = _crosses(topo, island, triangles[root], coordinates=_coordinates)
+        if use_rows:
+            positions, cross = _crosses(topo, island, None, coordinates=_coordinates,
+                                        _positions=triangles[root])
+        else:
+            positions, cross = _crosses(topo, island, triangles[root], coordinates=_coordinates)
         if not len(cross) or not np.all(np.isfinite(cross)):
             continue
         mixed = np.any(cross > 2e-14) and np.any(cross < -2e-14)
@@ -106,8 +120,10 @@ def plan(core, topo, faces, settings, *, _coordinates=None, _initial_probe=None)
                         and not shared.check_other_islands and not shared.static):
                     probe = shared
             if probe is None:
-                probe = safety.AcceptanceProbe(core, topo, island, triangles=triangles[root],
-                                               coordinates=_coordinates)
+                probe = safety.AcceptanceProbe(
+                    core, topo, island,
+                    triangles=None if use_rows else triangles[root],
+                    coordinates=_coordinates)
             # No UV writes occur between this probe's construction and the
             # existing-overlap check; reuse its exact current input values.
             overlap = probe.check_overlaps(topo, include_existing=True,

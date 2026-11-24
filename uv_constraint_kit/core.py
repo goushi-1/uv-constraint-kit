@@ -563,6 +563,17 @@ class UVTopology:
             triangles = self._loop_triangles = self.bm.calc_loop_triangles()
         return triangles
 
+    def triangle_rows(self):
+        """Cached (face_index, (loop_pos0, loop_pos1, loop_pos2)) tuples for this topology."""
+        rows = getattr(self, '_triangle_rows', None)
+        if rows is None:
+            pos = self.loop_pos
+            rows = self._triangle_rows = tuple(
+                (tri[0].face.index, (pos[tri[0]], pos[tri[1]], pos[tri[2]]))
+                for tri in self.loop_triangles()
+            )
+        return rows
+
     # -- UV vertices ------------------------------------------------------
 
     def _build_uv_vertices(self, coordinates=None):
@@ -1876,12 +1887,13 @@ def _loop_uv_snapshot(topo, faces):
     topology, so a loop is a stable handle for one corner even when UVs move
     and corners that used to coincide drift apart.
     """
-    uvl = topo.uvl
-    out = {}
-    for position, loop in _uv_loops(topo, faces):
-        uv = loop[uvl].uv
-        out[position] = (float(uv[0]), float(uv[1]))
-    return out
+    rows = _uv_loops(topo, faces)
+    if not rows:
+        return {}
+    positions, loops = zip(*rows)
+    coords = mesh_reader.read_uv(list(loops), topo.uvl)
+    values = coords.tolist() if isinstance(coords, np.ndarray) else coords
+    return dict(zip(positions, map(tuple, values)))
 
 
 def island_area(topo, faces, *, coordinates=None):
@@ -2283,18 +2295,13 @@ def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0,
     """
     uvl = topo.uvl
     rows = _uv_loops(topo, faces)
-    pairs = [(reference[p], None if _skip_same_uv else loop[uvl].uv, loop) for p, loop in rows
-             if p in reference]
+    pairs = [(reference[p], loop) for p, loop in rows if p in reference]
     if len(pairs) < 2:
         return {"applied": False}
 
-    P = np.asarray([(r[0], r[1]) for r, _c, _l in pairs], dtype=np.float64)
-    if _skip_same_uv:
-        Q = np.asarray(mesh_reader.read_uv([loop for _r, _c, loop in pairs], uvl),
-                       dtype=np.float64)
-    else:
-        Q = np.asarray([(float(c[0]), float(c[1])) for _r, c, _l in pairs],
-                       dtype=np.float64)
+    P = np.asarray([(r[0], r[1]) for r, _l in pairs], dtype=np.float64)
+    Q = np.asarray(mesh_reader.read_uv([loop for _r, loop in pairs], uvl),
+                   dtype=np.float64)
     pc = P.mean(axis=0)
     qc = Q.mean(axis=0)
     dx = Q[:, 0] - qc[0]
@@ -2328,7 +2335,7 @@ def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0,
             rounded = np.column_stack((pc[0] + scale * rx, pc[1] + scale * ry)).astype(np.float32)
         if np.isfinite(rounded).all() and _same_uv_bits(rounded, Q):
             return {"applied": True, "theta_deg": math.degrees(theta), "scale": scale}
-    for i, (_r, _c, loop) in enumerate(pairs):
+    for i, (_r, loop) in enumerate(pairs):
         loop[uvl].uv = (pc[0] + scale * rx[i], pc[1] + scale * ry[i])
     return {"applied": True, "theta_deg": math.degrees(theta),
             "scale": scale}
@@ -2576,7 +2583,8 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
                     respect_uv_selection=True, _topo=None, _constraint_strength=None,
                     _recovery_orientation=None, _recovery_guarded_faces=(),
                     _quality_before=None, _quality_after=True, _contact_faces=(),
-                    _geometry_cache=None):
+                    _geometry_cache=None, _direct_subspace=False,
+                    _require_positive_det=False):
     """Optimize the current parameterization, without resetting its solution."""
     from . import metric
     topo = _topo
@@ -2590,6 +2598,8 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
     before=quality_metrics(topo,faces) if _quality_before is None else _quality_before
     islands=face_islands(topo,faces)
     count=0
+    wrote_any=False
+    aborted=False
     skip_same_uv = _geometry_cache is not None and not fill_holes
     for island in islands.values():
         island=set(island)
@@ -2625,7 +2635,7 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
                 _geometry_cache[key] = (topo, topo.loop_to_vgroup, topo.initial_uv, geometry)
             else:
                 geometry = entry[3]
-        if runs and _constraint_strength is None:
+        if runs and _constraint_strength is None and not _direct_subspace:
             for _ in range(1 if auto_iterations else unfold_iterations):
                 feasible_constraint_boundary(topo,island,runs,held,angle_distance_mix,
                                                _geometry=geometry)
@@ -2651,7 +2661,7 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
         n,_=metric.solve(__import__(__name__,fromlist=['']),topo,island,held,runs,
             optimize_iterations,angle_length=angle_distance_mix,
             use_density_map=use_density_map,auto=auto_iterations,
-            prevent_flips=prevent_flips,
+            prevent_flips=(prevent_flips or _require_positive_det),
             prevent_overlap=(prevent_overlap or not island.isdisjoint(_recovery_guarded_faces)
                              or not island.isdisjoint(_contact_faces)),
             overlap_space=overlap_space if prevent_overlap else 0.,free_selection_borders=free_selection_borders,
@@ -2661,6 +2671,11 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
                              if _recovery_orientation else None),
             _contact_barrier=not island.isdisjoint(_contact_faces),
             _skip_same_uv=skip_same_uv)
+        if _direct_subspace and geometry is not None and n == 0:
+            aborted=True
+            break
+        if n > 0:
+            wrote_any=True
         count+=n
         if mix<1:blend_towards(topo,reference,island,mix)
         # Anchored layouts must never be similarity-fitted or rescaled.
@@ -2672,6 +2687,9 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
             land_uv_groups(topo,held,island)
             if not keep_metric:
                 _restore_anchored_area(topo,island,held,runs,area)
+    if aborted:
+        return count,0,dict(islands=len(islands),before=before,after=None,
+                              aborted_projection=True,wrote_any=wrote_any)
     bmesh.update_edit_mesh(obj.data)
     return count,0,dict(islands=len(islands),before=before,
                         after=quality_metrics(topo,faces) if _quality_after else None)
@@ -2744,9 +2762,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     saved_array = np.asarray(saved, dtype=float)
     if isinstance(saved, np.ndarray):
         saved = list(map(tuple, saved.tolist()))
-    triangle_positions = [tuple(topo.loop_pos[l] for l in tri)
-                          for tri in topo.loop_triangles()
-                          if tri[0].face.index in faces]
+    triangle_positions = [pos for fi, pos in topo.triangle_rows() if fi in faces]
     triangle_indices = np.asarray(triangle_positions, dtype=np.intp)
     old_triangles = (saved_array[triangle_indices] if triangle_positions else
                      np.asarray([[saved[p] for p in tri] for tri in triangle_positions]))
@@ -2885,7 +2901,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                                loop_coordinates=loop_coordinates, _triangles=triangles)
         return coordinates, health, triangles
 
-    def valid(topo, health, coordinates, triangles, loop_coordinates=None):
+    def valid(topo, health, coordinates, triangles, loop_coordinates=None, *, _ignore_residual=False):
         def uv_at(p):
             return (topo.loops[p][topo.uvl].uv if loop_coordinates is None else
                     loop_coordinates[p])
@@ -2926,7 +2942,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             reason = 'non_finite'
         elif health['zero_edges']:
             reason = 'collapsed_constraint'
-        elif health['max_deviation'] > tolerance and not limited:
+        elif not _ignore_residual and health['max_deviation'] > tolerance and not limited:
             reason = 'constraint_residual'
         elif ((settings.get('prevent_flips', False) and (
                 not orientation_valid or health['degenerate'] > before['degenerate'])) or
@@ -3051,7 +3067,32 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 topo, include_existing=True, coordinates=coordinates)['self_overlaps']:
             return coordinates, health, None
         candidate = np.asarray([tuple(loop[topo.uvl].uv) for loop in topo.loops])
+        def try_guarded_relaxation():
+            if not reusable:
+                return None
+            release_trial(clear_layout=True)
+            restore()
+            _rebuild_islands(context, obj, faces, constraint_positions,
+                             _topo=topo, _quality_before=quality_before,
+                             _quality_after=False,
+                             **dict(settings, prevent_overlap=True))
+            guarded_coords, guarded_health, guarded_tris = capture_health(topo)
+            if valid(topo, guarded_health, guarded_coords, guarded_tris):
+                overlap = probe.check_overlaps(topo, include_existing=True, coordinates=guarded_coords)
+                if overlap['overlap_check_complete'] and not overlap['self_overlaps']:
+                    guarded_health.update(overlap)
+                    return guarded_coords, guarded_health, None
+            return None
+
+        guarded_tried = False
         for attempt in range(1, 13):
+            if attempt == 2 and reusable and not constraint_positions and not guarded_tried:
+                guarded_tried = True
+                guarded_res = try_guarded_relaxation()
+                if guarded_res is not None:
+                    return guarded_res
+                for p in probe.target_positions:
+                    topo.loops[p][topo.uvl].uv = candidate[p]
             alpha = .5 ** attempt
             value, current, checked, triangles = interpolation(candidate, alpha, probe.target_positions, scale_pinned=True)
             if valid(topo, checked, current, triangles, value):
@@ -3063,10 +3104,15 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                         checked.update(overlap)
                         return current, checked, alpha
         release_trial(clear_layout=True)
+        if not guarded_tried:
+            guarded_res = try_guarded_relaxation()
+            if guarded_res is not None:
+                return guarded_res
         # Constraints can require an overlap. Retain the ordinary accepted
         # result if no tested clean step meets every existing acceptance gate.
         for p in probe.target_positions:
             topo.loops[p][topo.uvl].uv = candidate[p]
+        bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
         return coordinates, health, None
 
     def protected_trials(initial_deviation, _allow_medium=True):
@@ -3083,6 +3129,51 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         probe_accepted = False
         if medium_probe:
             strengths = (100., 1., 100., 1e4, 1e6)
+
+        fast_subspace = (not contact_faces and settings.get('auto_iterations', True)
+                         and not (settings.get('align_borders') and not settings.get('fix_boundary'))
+                         and bool(constraint_positions)
+                         and all(k in (C_HORIZONTAL, C_VERTICAL)
+                                 for k, _ in constraint_runs(bm, topo, constraint_positions)))
+        warm_values = seed_values if seed_values is not None else saved
+        warm_deviation = initial_deviation
+        require_pos = bool(settings.get('prevent_flips', False) or healthy_input)
+
+        def fallback_values():
+            return (seed_values if seed_values is not None else saved) if best_values is None else best_values
+
+        def read_loop_tuples():
+            coords = mesh_reader.read_uv(topo.loops, topo.uvl)
+            return list(map(tuple, coords.tolist())) if isinstance(coords, np.ndarray) else coords
+
+        def try_exact_subspace():
+            nonlocal best_values, best_result, best_deviation, warm_values, warm_deviation
+            guarded = _rebuild_islands(context, obj, faces, constraint_positions,
+                _topo=topo, _constraint_strength=None, _quality_before=quality_before,
+                _quality_after=False, _geometry_cache=prepared_geometry,
+                _direct_subspace=True, _require_positive_det=require_pos,
+                **dict(settings, _contact_faces=contact_faces))
+            if guarded[2].get('aborted_projection'):
+                restore(warm_values, _skip_same_uv=True)
+                return False
+            coordinates, health, triangles = capture_health(topo)
+            if valid(topo, health, coordinates, triangles) and health['max_deviation'] < best_deviation:
+                best_values = read_loop_tuples()
+                best_deviation = health['max_deviation']
+                warm_values = best_values
+                warm_deviation = best_deviation
+                guarded[2].update(before=quality_before, health=health,
+                    solver='protected_metric', constraint_penalty=0.0)
+                if recovery_report is not None:
+                    guarded[2]['input_recovery'] = recovery_report
+                best_result = guarded[0], health['flips'], guarded[2]
+                return not health['constraints_limited']
+            restore(warm_values, _skip_same_uv=prepared_geometry is not None)
+            return False
+
+        if fast_subspace and try_exact_subspace():
+            return best_values, best_result
+
         for stage, strength in enumerate(strengths):
             if medium_probe and probe_accepted and stage in (1, 2):
                 continue
@@ -3090,6 +3181,14 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
                 _quality_after=False, _geometry_cache=prepared_geometry,
                 **dict(settings, _contact_faces=contact_faces))
+            if guarded[0] == 0 and warm_values is not fallback_values():
+                warm_values = fallback_values()
+                warm_deviation = best_deviation
+                restore(warm_values, _skip_same_uv=prepared_geometry is not None)
+                guarded = _rebuild_islands(context, obj, faces, constraint_positions,
+                    _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
+                    _quality_after=False, _geometry_cache=prepared_geometry,
+                    **dict(settings, _contact_faces=contact_faces))
             coordinates, health, triangles = capture_health(topo)
             accepted = valid(topo, health, coordinates, triangles) and health['max_deviation'] < best_deviation
             if accepted and contact_faces and (not health['constraints_limited'] or (medium_probe and stage == 0)):
@@ -3101,8 +3200,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             if medium_probe and stage == 0:
                 probe_accepted = accepted
             if accepted:
-                best_values = [tuple(l[topo.uvl].uv) for l in topo.loops]
+                best_values = read_loop_tuples()
                 best_deviation = health['max_deviation']
+                warm_values = best_values
+                warm_deviation = best_deviation
                 guarded[2].update(before=quality_before, health=health,
                     solver='protected_metric', constraint_penalty=strength)
                 if recovery_report is not None:
@@ -3110,15 +3211,25 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 if contact_faces:
                     guarded[2]['contact_barrier'] = True
                 best_result = guarded[0], health['flips'], guarded[2]
+                if fast_subspace and health['max_deviation'] > 1e-4 and try_exact_subspace():
+                    break
                 if not health['constraints_limited']:
+                    break
+            elif (fast_subspace and health.get('rejection_reason') == 'constraint_residual'
+                  and health['max_deviation'] < warm_deviation - 1e-5
+                  and valid(topo, health, coordinates, triangles, _ignore_residual=True)):
+                warm_values = read_loop_tuples()
+                warm_deviation = health['max_deviation']
+                if try_exact_subspace():
                     break
             else:
                 # A weak penalty can first improve distortion while its
                 # worst constrained edge gets worse. Retry the stronger
                 # penalty from the last accepted state, not this trial.
-                restore((seed_values if seed_values is not None else saved)
-                        if best_values is None else best_values,
-                        _skip_same_uv=prepared_geometry is not None)
+                restore(warm_values, _skip_same_uv=prepared_geometry is not None)
+        if not medium_probe and best_result is None:
+            restore(seed_values if seed_values is not None else saved,
+                    _skip_same_uv=prepared_geometry is not None)
         if (medium_probe and probe_accepted and (best_result is None or
                 best_result[2]['health'].get('constraints_limited', False))):
             # Do not publish a merely partial fast-path continuation.
@@ -3252,7 +3363,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             finally:
                 contact_faces.clear()
             if best_result is not None:
-                restore(best_values)
+                restore(best_values, _skip_same_uv=True)
                 best_result[2]['after'] = quality_metrics(topo, faces) if _report_quality else {}
                 return best_result
             if seed_values is None:
@@ -3290,7 +3401,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     finally:
                         contact_faces.clear()
                     if best_result is not None and not best_result[2]['health']['constraints_limited']:
-                        restore(best_values)
+                        restore(best_values, _skip_same_uv=True)
                         best_result[2]['after'] = quality_metrics(topo, faces) if _report_quality else {}
                         return best_result
                     # No complete clean contact result: retain the originally

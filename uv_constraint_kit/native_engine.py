@@ -22,6 +22,7 @@ _library = None
 _attempted = False
 _error = None
 _calls = dict(solve=0, deform=0, uv_groups=0, islands=0, overlaps=0, intersections=0, frames=0)
+_solve_totals = dict(accepted=0, evaluations=0)
 _fallbacks = {}
 _last_solve = {}
 _last_overlap = {}
@@ -267,6 +268,8 @@ def diagnostics(reset=False):
     result = dict(loaded=_library is not None, enabled=_enabled, error=_error, abi=1,
                   library=getattr(_library, '_name', None),
                   calls=sum(_calls.values()), solve_calls=_calls['solve'],
+                  solve_accepted_total=_solve_totals['accepted'],
+                  solve_evaluations_total=_solve_totals['evaluations'],
                   deform_calls=_calls['deform'], topology_calls=_calls['uv_groups'],
                   island_calls=_calls['islands'], overlap_calls=_calls['overlaps'],
                   intersection_calls=_calls['intersections'],
@@ -277,6 +280,8 @@ def diagnostics(reset=False):
     if reset:
         for key in _calls:
             _calls[key] = 0
+        for key in _solve_totals:
+            _solve_totals[key] = 0
         _fallbacks.clear()
         _last_solve.clear()
         _last_overlap.clear()
@@ -346,6 +351,8 @@ def solve(x, tri, inverse, weights, arrays, held, penalties, boundary,
     if status not in (0, 1):
         return _fallback('solve_status_' + str(status))
     _calls['solve'] += 1
+    _solve_totals['accepted'] += int(stats.accepted)
+    _solve_totals['evaluations'] += int(stats.evaluations)
     _last_solve.update({key: (None if isinstance(getattr(stats, key), float)
                             and not math.isfinite(getattr(stats, key)) else getattr(stats, key))
                        for key, _ in stats._fields_})
