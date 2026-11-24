@@ -88,6 +88,12 @@ def _load():
             lib.uvck_islands.restype = ct.c_int
             lib.uvck_check_overlaps.argtypes = [ct.c_int64] + [ct.c_void_p]*5 + [ct.c_int64]*2 + [ct.c_void_p]
             lib.uvck_check_overlaps.restype = ct.c_int
+            if hasattr(lib, 'uvck_check_overlaps_witness'):
+                lib.uvck_check_overlaps_witness.argtypes = lib.uvck_check_overlaps.argtypes + [ct.c_void_p]
+                lib.uvck_check_overlaps_witness.restype = ct.c_int
+            if hasattr(lib, 'uvck_find_self_overlap_pair'):
+                lib.uvck_find_self_overlap_pair.argtypes = [ct.c_int64] + [ct.c_void_p]*4
+                lib.uvck_find_self_overlap_pair.restype = ct.c_int
             lib.uvck_intersections.argtypes = [ct.c_int64] + [ct.c_void_p]*3
             lib.uvck_intersections.restype = ct.c_int
             if hasattr(lib, 'uvck_triangle_frames'):
@@ -399,6 +405,68 @@ def islands(nfaces, offsets, members, faces, following, coordinates, epsilon):
     return output.tolist()
 
 
+def _overlaps_trial(snapshot, reference, check_other_islands=False):
+    """Private include-existing, zero-static handoff; public overlaps unchanged."""
+    lib = _load()
+    if lib is None:
+        return _fallback('disabled' if not _enabled else _error or 'unavailable')
+    rows, n = snapshot.rows, len(snapshot.rows)
+    buffers = [_array([r[0] for r in rows], np.int64),
+               _array([r[2] for r in rows], np.int64),
+               _array([True for r in rows], np.uint8),
+               _array(snapshot.triangles).reshape(n, 3, 2)]
+    missing, previous = object(), []
+    for _fi, pos, _root in rows:
+        value = reference.get(pos, missing)
+        previous.append(snapshot.row(pos) if value is missing else value)
+    buffers.append(_array(previous).reshape(n, 3, 2))
+    output = np.zeros(2, dtype=np.int64)
+    witness = getattr(getattr(snapshot, 'layout', None), '_overlap_witness', None)
+    owned = (type(witness) is np.ndarray and witness.dtype == np.int64 and witness.shape == (3,)
+             and witness.flags.owndata and witness.flags.c_contiguous and witness.flags.writeable)
+    if owned and not check_other_islands and hasattr(lib, 'uvck_check_overlaps_witness'):
+        status = lib.uvck_check_overlaps_witness(n, *[a.ctypes.data for a in buffers],
+                                    check_other_islands, True, output.ctypes.data, witness.ctypes.data)
+    else:
+        if owned:
+            witness[:] = (-1, -1, 0)
+        status = lib.uvck_check_overlaps(n, *[a.ctypes.data for a in buffers],
+                                       check_other_islands, True, output.ctypes.data)
+    if status:
+        if owned:
+            witness[:] = (-1, -1, 0)
+        return _fallback('overlap_status_' + str(status))
+    _calls['overlaps'] += 1
+    _last_overlap.update(triangles=n, tested_pairs=int(output[1]), kind=int(output[0]))
+    if output[0] == 3:
+        return _fallback('ambiguous_overlap_order')
+    return int(output[0]), int(output[1])
+
+
+def _overlaps_arrays(buffers, check_other_islands=False, include_existing=False):
+    """Private numeric handoff to the unchanged ordered overlap predicate."""
+    lib = _load()
+    if lib is None:
+        return _fallback('disabled' if not _enabled else _error or 'unavailable')
+    n = len(buffers[0])
+    expected = ((np.int64, (n,)), (np.int64, (n,)), (np.uint8, (n,)),
+                (np.float64, (n, 3, 2)), (np.float64, (n, 3, 2)))
+    if len(buffers) != 5 or any(type(a) is not np.ndarray or a.dtype != dtype
+            or a.shape != shape or not a.flags.c_contiguous
+            for a, (dtype, shape) in zip(buffers, expected)):
+        raise ValueError('Invalid packed overlap buffers')
+    output = np.zeros(2, dtype=np.int64)
+    status = lib.uvck_check_overlaps(n, *[a.ctypes.data for a in buffers],
+                                   check_other_islands, include_existing, output.ctypes.data)
+    if status:
+        return _fallback('overlap_status_' + str(status))
+    _calls['overlaps'] += 1
+    _last_overlap.update(triangles=n, tested_pairs=int(output[1]), kind=int(output[0]))
+    if output[0] == 3:
+        return _fallback('ambiguous_overlap_order')
+    return int(output[0]), int(output[1])
+
+
 def overlaps(records, reference, check_other_islands=False, include_existing=False):
     lib = _load()
     if lib is None:
@@ -440,9 +508,22 @@ def self_overlap_witness(coordinates, face_ids):
     lib = _load()
     if lib is None:
         return _fallback('disabled' if not _enabled else _error or 'unavailable')
+    output = np.zeros(2, dtype=np.int64)
+    find_pair = getattr(lib, 'uvck_find_self_overlap_pair', None)
+    if find_pair is not None:
+        pair = np.empty(2, dtype=np.int64)
+        status = find_pair(n, faces.ctypes.data, uv.ctypes.data, output.ctypes.data, pair.ctypes.data)
+        if status == 0:
+            kind, tested = map(int, output)
+            first, second = map(int, pair)
+            if ((kind == 0 and first == second == -1) or
+                    (kind == 1 and 0 <= first < n and 0 <= second < n and first != second)):
+                _calls['overlaps'] += 1
+                _last_overlap.update(triangles=n, tested_pairs=tested, kind=kind)
+                return kind, first, second
+
     roots = np.zeros(n, dtype=np.int64)
     flags = np.ones(n, dtype=np.uint8)
-    output = np.zeros(2, dtype=np.int64)
 
     def query(active, subset=None):
         flags.fill(0)

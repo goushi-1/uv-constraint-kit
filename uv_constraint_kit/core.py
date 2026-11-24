@@ -112,6 +112,62 @@ def constraint_layer(bm, create=False):
     return layer
 
 
+ALIGNED_GROUP_ATTR = 'uvck_aligned_group'
+ALIGNED_GROUP_STORE = 'uvck_aligned_groups'
+
+
+def aligned_group_layer(bm, create=False):
+    """CORNER INT marking-batch IDs; zero keeps legacy connected-run behaviour."""
+    layer = bm.loops.layers.int.get(ALIGNED_GROUP_ATTR)
+    if layer is None and create:
+        layer = bm.loops.layers.int.new(ALIGNED_GROUP_ATTR)
+    return layer
+
+
+def write_constraint_marks(bm, positions, kind, *, _loop_count=None):
+    """Write one mark action, giving aligned edges one unused positive batch ID.
+
+    IDs live in undoable mesh data, with no process counter. Old zero IDs cannot
+    reconstruct earlier marking batches and retain their connected-run meaning.
+    """
+    positions = list(positions)
+    if not positions:
+        return 0
+    count = sum(len(face.loops) for face in bm.faces) if _loop_count is None else _loop_count
+    if min(positions) < 0 or max(positions) >= count:
+        raise IndexError('Constraint loop position is outside the mesh')
+    # Allocate every needed custom-data layer before acquiring loop/layer handles.
+    constraint_layer(bm, create=True)
+    if kind == C_ALIGNED:
+        aligned_group_layer(bm, create=True)
+    prepare_bm(bm)
+    layer, groups = constraint_layer(bm), aligned_group_layer(bm)
+    loops = loops_in_order(bm)
+    batch = 0
+    used = set()
+    # Other kinds need no ID allocation. The caller's atomic persistence step
+    # validates remaining aligned records and rolls back an invalid edit.
+    if kind == C_ALIGNED:
+        for loop in loops:
+            if loop[layer] != C_ALIGNED:
+                continue
+            value = int(loop[groups])
+            if value < 0:
+                raise ValueError('Aligned constraint batch IDs must not be negative')
+            used.add(value)
+    if kind == C_ALIGNED:
+        batch = 1
+        while batch in used:
+            batch += 1
+        if batch > 2**31 - 1:
+            raise OverflowError('No aligned constraint batch ID is available')
+    for position in positions:
+        loops[position][layer] = kind
+        if groups is not None:
+            loops[position][groups] = batch
+    return batch
+
+
 # Counting in edit mode cannot go through the Mesh datablock (its attributes
 # are stale while the object is in edit mode), so results are cached briefly.
 _stats_cache = {"key": None, "value": (0, {}), "time": 0.0}
@@ -201,9 +257,9 @@ CONSTRAINT_STORE_VERSION = 1
 _STORE_STRIDE = 4
 
 
-def _store_records(bm):
+def _store_records(bm, attribute=CONSTRAINT_ATTR):
     """The mirror's payload for the layer a BMesh is currently holding."""
-    layer = constraint_layer(bm)
+    layer = bm.loops.layers.int.get(attribute)
     if layer is None:
         return []
     prepare_bm(bm)
@@ -228,10 +284,34 @@ def store_constraints(obj, bm):
     "there is something to recover".
     """
     data = _store_records(bm)
-    if data:
-        obj[CONSTRAINT_STORE] = [CONSTRAINT_STORE_VERSION] + data
-    elif CONSTRAINT_STORE in obj:
-        del obj[CONSTRAINT_STORE]
+    aligned = {data[i] for i in range(0, len(data), _STORE_STRIDE)
+               if data[i + 3] == C_ALIGNED}
+    group_data = _store_records(bm, ALIGNED_GROUP_ATTR) if aligned else []
+    groups = []
+    for i in range(0, len(group_data), _STORE_STRIDE):
+        if group_data[i] not in aligned:
+            continue
+        if group_data[i + 3] < 0:
+            raise ValueError('Aligned constraint batch IDs must not be negative')
+        groups.extend(group_data[i:i + _STORE_STRIDE])
+    payloads = ((CONSTRAINT_STORE, data), (ALIGNED_GROUP_STORE, groups))
+    previous = {store: list(obj[store]) if store in obj else None for store, _ in payloads}
+    try:
+        for store, payload in payloads:
+            if payload:
+                obj[store] = [CONSTRAINT_STORE_VERSION] + payload
+            elif store in obj:
+                del obj[store]
+    except BaseException as error:
+        for store, value in previous.items():
+            try:
+                if value is not None:
+                    obj[store] = value
+                elif store in obj:
+                    del obj[store]
+            except BaseException as rollback_error:
+                error.add_note('Constraint mirror rollback failed for %s: %s' % (store, rollback_error))
+        raise
     return len(data) // _STORE_STRIDE
 
 
@@ -247,9 +327,9 @@ def store_constraints_from_object(obj):
         bm.free()
 
 
-def _records(obj):
+def _records(obj, store=CONSTRAINT_STORE):
     """The mirror's records, or [] if absent / from another version / malformed."""
-    raw = obj.get(CONSTRAINT_STORE)
+    raw = obj.get(store)
     if not raw:
         return []
     try:
@@ -272,7 +352,7 @@ def _layer_has_marks(bm):
                for loop in face.loops)
 
 
-def _write_records(bm, records):
+def _write_records(bm, records, attribute=CONSTRAINT_ATTR):
     """Map records onto the BMesh's loops and write them into the layer.
 
     Returns how many records found an edge.  A record's stored `position` is
@@ -280,8 +360,13 @@ def _write_records(bm, records):
     topology change degrades to a vertex-pair search instead of marking an
     unrelated edge.
     """
-    loops = loops_in_order(bm)
+    if not records:
+        return 0
+    # Recovery allocates all target layers before collecting any element handles.
+    if bm.loops.layers.int.get(attribute) is None:
+        bm.loops.layers.int.new(attribute)
     prepare_bm(bm)
+    loops = loops_in_order(bm)
     by_edge = {}
     for position, loop in enumerate(loops):
         verts = loop.edge.verts
@@ -310,43 +395,59 @@ def _write_records(bm, records):
 
     if not resolved:
         return 0
-    # Create the layer first: adding a custom-data layer invalidates every
-    # existing element reference, so `loops` has to be re-read afterwards.
-    constraint_layer(bm, create=True)
-    loops = loops_in_order(bm)
-    layer = constraint_layer(bm)
+    layer = bm.loops.layers.int.get(attribute)
+    if attribute == ALIGNED_GROUP_ATTR:
+        kinds = constraint_layer(bm)
+        if kinds is None:
+            return 0
+        if any(value < 0 for _, value in resolved):
+            raise ValueError('Aligned constraint batch IDs must not be negative')
+        resolved = [(position, value) for position, value in resolved
+                    if value > 0 and loops[position][kinds] == C_ALIGNED]
     for position, kind in resolved:
         loops[position][layer] = kind
     return len(resolved)
 
 
 def restore_constraints(obj):
-    """Rebuild the layer from the object mirror.  Returns how many were restored.
+    """Recover missing marks/batch IDs; return the number of restored records.
 
-    A no-op unless the layer is empty, so it is safe to call on every load: a
-    file whose marks are already in place is never touched.
+    Existing batch layers, including zero IDs, stay authoritative. Legacy zero
+    cannot recover the boundaries of earlier aligned marking actions.
     """
     records = _records(obj)
-    if not records:
+    groups = _records(obj, ALIGNED_GROUP_STORE)
+    if not records and not groups:
         return 0
+
+    def restore(bm):
+        restore_marks = bool(records) and not _layer_has_marks(bm)
+        restore_groups = bool(groups) and aligned_group_layer(bm) is None
+        if restore_marks:
+            constraint_layer(bm, create=True)
+        if restore_groups:
+            aligned_group_layer(bm, create=True)
+        restored = _write_records(bm, records) if restore_marks else 0
+        if restore_groups:
+            restored += _write_records(bm, groups, ALIGNED_GROUP_ATTR)
+        return restored
 
     mesh = obj.data
     if obj.mode == "EDIT":
         bm = bmesh.from_edit_mesh(mesh)
-        if _layer_has_marks(bm):
-            return 0
-        restored = _write_records(bm, records)
+        restored = restore(bm)
         if restored:
             bmesh.update_edit_mesh(mesh)
         return restored
 
     attr = mesh.attributes.get(CONSTRAINT_ATTR)
-    if attr is not None and any(item.value != C_NONE for item in attr.data):
+    has_marks = attr is not None and any(item.value != C_NONE for item in attr.data)
+    if (not records or has_marks) and (not groups or mesh.attributes.get(ALIGNED_GROUP_ATTR) is not None):
         return 0
     bm = bmesh.new()
     try:
         bm.from_mesh(mesh)
-        restored = _write_records(bm, records)
+        restored = restore(bm)
         if restored:
             bm.to_mesh(mesh)
             mesh.update()
@@ -361,7 +462,7 @@ def restore_all_constraints():
     for obj in bpy.data.objects:
         if obj.type != "MESH" or obj.data is None:
             continue
-        if CONSTRAINT_STORE not in obj:
+        if CONSTRAINT_STORE not in obj and ALIGNED_GROUP_STORE not in obj:
             continue
         try:
             restored += restore_constraints(obj)
@@ -719,21 +820,25 @@ def constrained_loops(bm, only_faces=None):
 # ---------------------------------------------------------------------------
 
 
-def group_chains(topo, positions, kinds):
+def group_chains(topo, positions, kinds, groups=None):
     """Split constrained UV edges into runs connected through shared vertices.
 
     `positions` are loop positions, `kinds` maps position -> constraint kind.
     Connecting through UV-vertices (not mesh vertices) keeps the two sides of a
-    seam as separate runs, which is what RizomUV does too.
+    seam as separate runs. Aligned batches fit independently even at shared UV
+    endpoints; batch zero retains the connected semantics of legacy marks.
     """
     per_kind = {}
     for position in positions:
         kind = kinds.get(position, C_NONE)
         if kind != C_NONE:
-            per_kind.setdefault(kind, []).append(position)
+            batch = int(groups.get(position, 0)) if kind == C_ALIGNED and groups is not None else 0
+            if batch < 0:
+                raise ValueError('Aligned constraint batch IDs must not be negative')
+            per_kind.setdefault((kind, batch), []).append(position)
 
     chains = []
-    for kind, items in per_kind.items():
+    for (kind, _batch), items in per_kind.items():
         parent = {}
 
         def find(x):
@@ -765,7 +870,7 @@ def group_chains(topo, positions, kinds):
 def constraint_runs(bm, topo, positions):
     """The constrained UV edges, grouped into runs: [(kind, [position, ...])].
 
-    One run per connected group of same-kind constrained edges. Runs of
+    One run per connected group of same-kind/batch constrained edges. Runs of
     different kinds that share a vertex stay separate -- they constrain
     different axes, so they do not fight.
     """
@@ -775,7 +880,10 @@ def constraint_runs(bm, topo, positions):
     if layer is None:
         return []
     kinds = {p: topo.loops[p][layer] for p in positions}
-    return group_chains(topo, positions, kinds)
+    group_layer = aligned_group_layer(bm)
+    groups = {p: int(topo.loops[p][group_layer]) for p in positions
+              if kinds[p] == C_ALIGNED} if group_layer is not None else None
+    return group_chains(topo, positions, kinds, groups)
 
 
 def _project_run(x, index, kind, blend=1.0):
@@ -2148,7 +2256,13 @@ def quality_metrics(topo, faces, *, coordinates=None):
     }
 
 
-def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0):
+def _same_uv_bits(left, right):
+    return np.array_equal(np.asarray(left, dtype=np.float64).view(np.uint64),
+                          np.asarray(right, dtype=np.float64).view(np.uint64))
+
+
+def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0,
+                 *, _skip_same_uv=False):
     """Move the island back onto its old pose, keeping the new shape.
 
     `reference` is a `_loop_uv_snapshot`. The similarity that best maps the
@@ -2169,14 +2283,18 @@ def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0):
     """
     uvl = topo.uvl
     rows = _uv_loops(topo, faces)
-    pairs = [(reference[p], loop[uvl].uv, loop) for p, loop in rows
+    pairs = [(reference[p], None if _skip_same_uv else loop[uvl].uv, loop) for p, loop in rows
              if p in reference]
     if len(pairs) < 2:
         return {"applied": False}
 
     P = np.asarray([(r[0], r[1]) for r, _c, _l in pairs], dtype=np.float64)
-    Q = np.asarray([(float(c[0]), float(c[1])) for _r, c, _l in pairs],
-                   dtype=np.float64)
+    if _skip_same_uv:
+        Q = np.asarray(mesh_reader.read_uv([loop for _r, _c, loop in pairs], uvl),
+                       dtype=np.float64)
+    else:
+        Q = np.asarray([(float(c[0]), float(c[1])) for _r, c, _l in pairs],
+                       dtype=np.float64)
     pc = P.mean(axis=0)
     qc = Q.mean(axis=0)
     dx = Q[:, 0] - qc[0]
@@ -2203,6 +2321,13 @@ def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0):
     if not (1e-3 < scale < 1e3):
         scale = 1.0
 
+    if _skip_same_uv:
+        # Blender stores UVs as float32. Compare the resulting bits, including
+        # the sign of zero, before suppressing an otherwise identical write.
+        with np.errstate(over='ignore', invalid='ignore'):
+            rounded = np.column_stack((pc[0] + scale * rx, pc[1] + scale * ry)).astype(np.float32)
+        if np.isfinite(rounded).all() and _same_uv_bits(rounded, Q):
+            return {"applied": True, "theta_deg": math.degrees(theta), "scale": scale}
     for i, (_r, _c, loop) in enumerate(pairs):
         loop[uvl].uv = (pc[0] + scale * rx[i], pc[1] + scale * ry[i])
     return {"applied": True, "theta_deg": math.degrees(theta),
@@ -2465,6 +2590,7 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
     before=quality_metrics(topo,faces) if _quality_before is None else _quality_before
     islands=face_islands(topo,faces)
     count=0
+    skip_same_uv = _geometry_cache is not None and not fill_holes
     for island in islands.values():
         island=set(island)
         area=island_area(topo,island)
@@ -2533,13 +2659,15 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
             _reference_sign=(next((_recovery_orientation[fi] for fi in island
                                    if fi in _recovery_orientation),None)
                              if _recovery_orientation else None),
-            _contact_barrier=not island.isdisjoint(_contact_faces))
+            _contact_barrier=not island.isdisjoint(_contact_faces),
+            _skip_same_uv=skip_same_uv)
         count+=n
         if mix<1:blend_towards(topo,reference,island,mix)
         # Anchored layouts must never be similarity-fitted or rescaled.
         if not held:
             target=mesh_area3d(topo,island) if keep_metric else area
-            restore_pose(topo,island,reference,allow_rotation=fill_holes and not runs,target_area=target)
+            restore_pose(topo,island,reference,allow_rotation=fill_holes and not runs,
+                         target_area=target,_skip_same_uv=skip_same_uv)
         else:
             land_uv_groups(topo,held,island)
             if not keep_metric:
@@ -2721,15 +2849,20 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         mapping = components.setdefault(kind, {})
         for p in positions:
             for g in topo.loop_edge_vgroups(p):
-                mapping[g] = run_id
+                if kind == C_ALIGNED:
+                    mapping.setdefault(g, set()).add(run_id)
+                else:
+                    mapping[g] = run_id
     collapsed = set()
     for positions, area in zip(triangle_positions, old_cross):
         if abs(area) <= 2e-14:
             continue
         groups = [topo.loop_to_vgroup[p] for p in positions]
         if any(groups[0] in mapping and
-               all(mapping.get(g) == mapping[groups[0]] for g in groups)
-               for mapping in components.values()):
+               (mapping[groups[0]].intersection(mapping.get(groups[1], ()), mapping.get(groups[2], ()))
+                if kind == C_ALIGNED else
+                all(mapping.get(g) == mapping[groups[0]] for g in groups))
+               for kind, mapping in components.items()):
             collapsed.add(topo.loops[positions[0]].face.index)
     if collapsed and settings.get('mix',1.)==1.:
         return 0,before['flips'],dict(rejected=True,reason='constraint_triangle_conflict',
@@ -2809,7 +2942,17 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         elif not settings.get('keep_metric'):
             for root, island in face_islands(topo, faces).items():
                 area = original_areas[root]
-                if abs(island_area(topo, island, coordinates=loop_coordinates)-area) > max(area, 1e-12)*1e-4:
+                measured_area = None
+                if loop_coordinates is not None:
+                    try:
+                        from . import numeric_stage
+                    except ImportError:
+                        pass
+                    else:
+                        measured_area = numeric_stage.read_area(topo, island, loop_coordinates)
+                if measured_area is None:
+                    measured_area = island_area(topo, island, coordinates=loop_coordinates)
+                if abs(measured_area-area) > max(area, 1e-12)*1e-4:
                     reason = 'area_drift'
                     break
         if reason is None and settings.get('prevent_overlap', False):
@@ -2831,16 +2974,31 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             health['rejection_reason'] = reason
         return reason is None
 
-    def restore(value=None):
+    active_trial = trial_layout = None
+    def release_trial(clear_layout=False):
+        nonlocal active_trial, trial_layout
+        if active_trial is not None:
+            active_trial.invalidate()
+            active_trial = None
+        if clear_layout:
+            trial_layout = None
+
+    def restore(value=None, *, _skip_same_uv=False):
+        release_trial(clear_layout=True)
         mesh = bmesh.from_edit_mesh(obj.data)
         prepare_bm(mesh)
         layer = uv_layer(mesh)
         loops = loops_in_order(mesh)
-        for loop, uv in zip(loops, saved if value is None else value):
+        target = saved if value is None else value
+        if _skip_same_uv and _same_uv_bits(mesh_reader.read_uv(loops, layer), target):
+            return
+        for loop, uv in zip(loops, target):
             loop[layer].uv = uv
         bmesh.update_edit_mesh(obj.data)
 
     def interpolation(candidate, alpha, positions, *, scale_pinned=False):
+        nonlocal active_trial, trial_layout
+        release_trial()
         # Match both BMesh round trips: interpolation first, area correction
         # second. The summation order and loop-weighted centre stay unchanged.
         value = np.array(candidate, dtype=float, copy=True)
@@ -2848,14 +3006,32 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         value[p] = (saved_array[p] + alpha*(value[p]-saved_array[p])).astype(np.float32)
         for root, island in input_islands.items():
             if scale_pinned or not any(topo.loops[p].face.index in island for p in fixed_positions):
-                scale_faces_to_area(topo, island, original_areas[root], coordinates=value)
+                try:
+                    from . import numeric_stage
+                except ImportError:
+                    scaled = None
+                else:
+                    scaled = numeric_stage.scaled_copy(topo, island, original_areas[root], value)
+                if scaled is None:
+                    scale_faces_to_area(topo, island, original_areas[root], coordinates=value)
+                else:
+                    value = scaled
         if fixed_positions:
             p = np.asarray(sorted(fixed_positions), dtype=np.int64)
             value[p] = saved_array[p]
-        coordinates, health, triangles = capture_health(topo, value)
+        trial = probe._trial_snapshot(value, triangle_positions, len(saved), _layout=trial_layout)
+        if trial is None:
+            trial_layout = None
+            coordinates, health, triangles = capture_health(topo, value)
+        else:
+            active_trial = coordinates = trial
+            trial_layout = trial.layout
+            triangles = trial.triangles
+            health = probe.measure(topo, coordinates=trial, loop_coordinates=value, _triangles=triangles)
         return value, coordinates, health, triangles
 
     def commit_interpolation(value):
+        release_trial(clear_layout=True)
         # Only successful trials touch the edit mesh. Recheck live coordinates
         # once after commit, including the exact outside-selection guard.
         for p in probe.target_positions:
@@ -2886,31 +3062,44 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                         current, checked = committed
                         checked.update(overlap)
                         return current, checked, alpha
+        release_trial(clear_layout=True)
         # Constraints can require an overlap. Retain the ordinary accepted
         # result if no tested clean step meets every existing acceptance gate.
         for p in probe.target_positions:
             topo.loops[p][topo.uvl].uv = candidate[p]
         return coordinates, health, None
 
-    def protected_trials(initial_deviation):
+    def protected_trials(initial_deviation, _allow_medium=True):
         best_values, best_result, best_deviation = None, None, initial_deviation
         # Owned by this strength continuation only, before any native unwrap.
         prepared_geometry = None if settings.get('fill_holes') else {}
         strengths = ((1., 100., 1e4, 1e6) if settings.get('auto_iterations', True)
                      else (1e6,))
-        for strength in strengths:
+        # Only the existing clean, whole-chart H/V contact route probes
+        # a stronger starting penalty. A rejected probe restores the seed and
+        # executes the original ramp. No state survives this one operation.
+        medium_probe = bool(_allow_medium and contact_faces and contact_eligible
+                            and settings.get('auto_iterations', True))
+        probe_accepted = False
+        if medium_probe:
+            strengths = (100., 1., 100., 1e4, 1e6)
+        for stage, strength in enumerate(strengths):
+            if medium_probe and probe_accepted and stage in (1, 2):
+                continue
             guarded = _rebuild_islands(context, obj, faces, constraint_positions,
                 _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
                 _quality_after=False, _geometry_cache=prepared_geometry,
                 **dict(settings, _contact_faces=contact_faces))
             coordinates, health, triangles = capture_health(topo)
             accepted = valid(topo, health, coordinates, triangles) and health['max_deviation'] < best_deviation
-            if accepted and contact_faces and not health['constraints_limited']:
+            if accepted and contact_faces and (not health['constraints_limited'] or (medium_probe and stage == 0)):
                 # The distance barrier is best-effort, not continuous
                 # collision detection. Validate the actual rounded UVs.
                 overlap = probe.check_overlaps(topo, include_existing=True, coordinates=coordinates)
                 health.update(overlap)
                 accepted = overlap['overlap_check_complete'] and not overlap['self_overlaps']
+            if medium_probe and stage == 0:
+                probe_accepted = accepted
             if accepted:
                 best_values = [tuple(l[topo.uvl].uv) for l in topo.loops]
                 best_deviation = health['max_deviation']
@@ -2928,7 +3117,13 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 # worst constrained edge gets worse. Retry the stronger
                 # penalty from the last accepted state, not this trial.
                 restore((seed_values if seed_values is not None else saved)
-                        if best_values is None else best_values)
+                        if best_values is None else best_values,
+                        _skip_same_uv=prepared_geometry is not None)
+        if (medium_probe and probe_accepted and (best_result is None or
+                best_result[2]['health'].get('constraints_limited', False))):
+            # Do not publish a merely partial fast-path continuation.
+            restore(seed_values if seed_values is not None else saved)
+            return protected_trials(initial_deviation, _allow_medium=False)
         return best_values, best_result
 
     clean_relaxation = False
@@ -2942,9 +3137,15 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         if context.edit_object == obj and len(context.objects_in_mode_unique_data) == 1:
             recalled = recovery.recall(module, topo, faces, constraint_positions,
                                       fixed_positions, saved, pins, settings, _recovered)
-            # The input has not been written since the saved snapshot.
+            # Private synchronous handoff: no UV/topology writes since this
+            # probe captured saved. Partial/multiple charts keep fresh probes.
+            initial_probe = ((probe, saved) if not recalled and len(input_islands) == 1
+                and not probe.check_other_islands and not probe.static
+                and all(len(island) == len(topo.island_faces[root])
+                        for root, island in input_islands.items()) else None)
             recovery_plan = None if recalled else recovery.plan(
-                module, topo, faces, settings, _coordinates=saved)
+                module, topo, faces, settings, _coordinates=saved,
+                _initial_probe=initial_probe)
             clean_relaxation = bool(
                 recovery_plan is not None and faces.issubset(recovery_plan['clean_faces'])
                 and before['max_deviation'] <= .05 and not before['zero_edges']
@@ -3043,7 +3244,13 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             # Increase the constraint penalty inside the protected optimization.
             # Keep each feasible improvement; an over-aggressive later stage
             # must not discard the preceding useful result.
-            best_values, best_result = protected_trials(initial_deviation)
+            # The primary guarded route can also own an eligible clean H/V
+            # chart. Use the same contact objective as the post-solve retry.
+            contact_faces.update(contact_eligible)
+            try:
+                best_values, best_result = protected_trials(initial_deviation)
+            finally:
+                contact_faces.clear()
             if best_result is not None:
                 restore(best_values)
                 best_result[2]['after'] = quality_metrics(topo, faces) if _report_quality else {}
@@ -3322,6 +3529,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         bmesh.from_edit_mesh(obj.data).uv_select_sync_valid = selection_valid
         raise
     finally:
+        # Break the recursive closure's self-reference before releasing this
+        # transaction. Otherwise its captured topology waits for cyclic GC.
+        protected_trials = None
+        release_trial(clear_layout=True)
         if context.scene.tool_settings.use_uv_select_sync != sync:
             context.scene.tool_settings.use_uv_select_sync = sync
         if restore_ui:

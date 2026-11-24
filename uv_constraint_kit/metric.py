@@ -137,7 +137,8 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
           use_density_map=True, auto=True, prevent_flips=False,
           prevent_overlap=False, overlap_space=0., free_selection_borders=False,
           constraint_strength=None, shared_uv_groups=None, _geometry=_UNPREPARED,
-          _reference_sign=None, _coordinates=None, _contact_barrier=False):
+          _reference_sign=None, _coordinates=None, _contact_barrier=False,
+          _skip_same_uv=False):
     # Internal continuation trials can keep coordinates outside the BMesh.
     # They return (count, flips, float32-rounded coordinates), matching a UV
     # write/read round trip. Ordinary calls retain their two-value API.
@@ -238,7 +239,16 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
             with np.errstate(over='ignore', invalid='ignore'):
                 rounded = solved.astype(np.float32).astype(float)
             return len(tri), int((signed < 0).sum()), rounded
-        for pos, i in _geometry['write_targets']:
+        write_targets = _geometry['write_targets']
+        if _skip_same_uv and write_targets and core._same_uv_bits(solved, x):
+            # A group representative can be unchanged while its other loops
+            # differ. The original would still write to these loops.
+            positions, groups = zip(*write_targets)
+            active = [topo.loops[pos] for pos in positions]
+            current = core.mesh_reader.read_uv(active, topo.uvl)
+            if core._same_uv_bits(current, solved[np.asarray(groups, dtype=np.intp)]):
+                return len(tri), int((signed < 0).sum())
+        for pos, i in write_targets:
             topo.loops[pos][topo.uvl].uv = solved[i]
         return len(tri), int((signed < 0).sum())
     scatter_index=np.concatenate((tri[:,0],tri[:,1],tri[:,2]))

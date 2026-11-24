@@ -178,10 +178,16 @@ def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8
             sign not in (-1, 1) or int(max_pairs) < 0):
         return None
     work = uv.copy()
-    signed = np.asarray([sign * _cross(*work[tri]) for tri in triangles])
+    initial_triangles = work[triangles]
+    edges = initial_triangles[:, 1:] - initial_triangles[:, :1]
+    signed = sign * (edges[:, 0, 0] * edges[:, 1, 1] - edges[:, 0, 1] * edges[:, 1, 0])
+    del initial_triangles, edges
     if np.any(~np.isfinite(signed)) or np.any(signed <= 2e-14):
         return None
 
+    # Vertex-to-triangle incidence depends only on the triangle indices
+    # and can be reused when subsequent witnesses touch the same vertex.
+    incident = {}
     for round_index in range(int(max_pairs) + 1):
         witness = engine.self_overlap_witness(work[triangles], face_ids)
         if witness is None:
@@ -198,12 +204,12 @@ def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8
             return None
 
         witness_groups = sorted(set(map(int, triangles[first])) | set(map(int, triangles[second])))
-        incident = {group: np.flatnonzero(np.any(triangles == group, axis=1)).tolist()
-                    for group in witness_groups}
         best = None
         for group in witness_groups:
             if group in locked:
                 continue
+            if group not in incident:
+                incident[group] = np.flatnonzero(np.any(triangles == group, axis=1)).tolist()
             star = incident[group]
             kernel = _star_kernel(work, triangles, star, group, sign)
             if not kernel:
@@ -211,6 +217,9 @@ def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8
             targets = list(kernel) + [np.mean(np.asarray(kernel), axis=0)]
             proposals, seen = [], set()
             origin = work[group]
+            star_triangles = triangles[star]
+            trial_star = work[star_triangles]
+            moved = star_triangles == group
             for target in targets:
                 for fraction in (.25, .5, .75, 1.):
                     candidate = (origin + fraction * (target - origin)).astype(np.float32).astype(np.float64)
@@ -220,9 +229,8 @@ def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8
                     if key in seen or np.array_equal(candidate, origin):
                         continue
                     seen.add(key)
-                    trial = work.copy()
-                    trial[group] = candidate
-                    if not all(sign * _cross(*trial[triangles[ti]]) > 2e-14 for ti in star):
+                    trial_star[moved] = candidate
+                    if not all(sign * _cross(*corners) > 2e-14 for corners in trial_star):
                         continue
                     proposals.append(candidate)
             if not proposals:
@@ -259,9 +267,7 @@ def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8
 def feasible_seed(topo, chart, held, engine):
     """Build a compact contact repair from a local fold seed; return corner UVs."""
     raw = fold_seed(topo, chart, held)
-    if raw is None:
-        raw = np.asarray(topo.initial_uv, dtype=float).copy()
-    raw = np.asarray(raw, dtype=float).copy()
+    raw = np.asarray(topo.initial_uv if raw is None else raw, dtype=float).copy()
     chart_faces = set(chart['faces'])
     positions = np.asarray(chart['positions'], dtype=np.int64)
     if positions.ndim != 2 or positions.shape[1:] != (3,) or not len(positions):
@@ -269,16 +275,17 @@ def feasible_seed(topo, chart, held, engine):
 
     loop_groups = np.asarray(topo.loop_to_vgroup, dtype=np.int64)
     triangle_groups = loop_groups[positions]
-    unique_groups = np.asarray(sorted(set(map(int, triangle_groups.ravel()))), dtype=np.int64)
+    unique_groups = np.unique(triangle_groups)
     if not len(unique_groups):
         return None
     group_index = {int(group): i for i, group in enumerate(unique_groups)}
-    triangles = np.asarray([[group_index[int(group)] for group in tri]
-                            for tri in triangle_groups], dtype=np.int64)
-    face_ids = np.asarray(topo.loop_faces, dtype=np.int64)[positions[:, 0]]
-    compact_uv = np.asarray([raw[topo.vgroup_loops[int(group)][0]] for group in unique_groups], dtype=np.float64)
-    outside_groups = {int(group) for p, group in enumerate(loop_groups)
-                      if int(topo.loop_faces[p]) not in chart_faces}
+    triangles = np.searchsorted(unique_groups, triangle_groups).astype(np.int64, copy=False)
+    loop_faces = np.asarray(topo.loop_faces, dtype=np.int64)
+    face_ids = loop_faces[positions[:, 0]]
+    representatives = [topo.vgroup_loops[int(group)][0] for group in unique_groups]
+    compact_uv = raw[representatives]
+    outside = ~np.isin(loop_faces, sorted(chart_faces))
+    outside_groups = set(map(int, loop_groups[outside]))
     locked_groups = {int(group) for group in held} | outside_groups
     locked = {group_index[group] for group in locked_groups if group in group_index}
 
@@ -286,9 +293,8 @@ def feasible_seed(topo, chart, held, engine):
                                sign=chart['sign'], max_pairs=8)
     if repaired is None:
         return None
-    for compact_index, group in enumerate(unique_groups):
-        group = int(group)
-        if compact_index in locked or np.array_equal(repaired[compact_index], compact_uv[compact_index]):
-            continue
-        raw[topo.vgroup_loops[group]] = repaired[compact_index]
+    for compact_index in np.flatnonzero(np.any(repaired != compact_uv, axis=1)):
+        if compact_index not in locked:
+            group = int(unique_groups[compact_index])
+            raw[topo.vgroup_loops[group]] = repaired[compact_index]
     return raw

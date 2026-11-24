@@ -256,11 +256,30 @@ def mirror_constraints(obj, groups):
         return False
     layer = core.constraint_layer(bm)
     before_marks = [loop[layer] for loop in loops] if layer else [0]*len(loops)
+    batch_layer = core.aligned_group_layer(bm)
+    before_batches = [loop[batch_layer] for loop in loops] if batch_layer else [0]*len(loops)
+    if any(batch < 0 for kind,batch in zip(before_marks,before_batches) if kind == core.C_ALIGNED):
+        raise ValueError('Aligned constraint batch IDs must not be negative')
     marks = {}
+    batches = {}
+    used_batches = {value for value in before_batches if value > 0}
+    next_batch = 1
     mappings = []
     for group in groups:
         edges = _mirrored_edges(loops, group['pairs'])
         marks.update({target:before_marks[source] for target,source in edges.items()})
+        # Mirrored runs keep their source partition, with independent IDs even
+        # when source and target touch inside the same UV island. Baking never
+        # runs from the live timer, so no group writes occur during a transform.
+        copied_batches = {}
+        for target, source in edges.items():
+            source_batch = before_batches[source] if before_marks[source] == core.C_ALIGNED else 0
+            if source_batch > 0 and source_batch not in copied_batches:
+                while next_batch in used_batches:
+                    next_batch += 1
+                copied_batches[source_batch] = next_batch
+                used_batches.add(next_batch)
+            batches[target] = copied_batches.get(source_batch, 0)
         mappings.append((group,edges))
     before_raw = _raw(bm, loops, shapes.LAYER)
     after_raw = before_raw
@@ -297,32 +316,47 @@ def mirror_constraints(obj, groups):
         if len(after_raw) > len(loops)*240:
             raise ValueError('Shape constraint data exceeds mesh storage capacity')
     marks_changed = any(before_marks[p] != kind for p,kind in marks.items())
+    batches_changed = any(before_batches[p] != batch for p,batch in batches.items())
     shapes_changed = before_raw != after_raw
-    if not marks_changed and not shapes_changed:
+    if not marks_changed and not batches_changed and not shapes_changed:
         return False
     backup = obj.data.get(shapes.BACKUP)
+    stores = (core.CONSTRAINT_STORE, core.ALIGNED_GROUP_STORE)
+    mirrors = {name: list(obj[name]) if name in obj else None for name in stores}
     try:
-        if marks_changed:
+        if marks_changed or batches_changed:
             core.constraint_layer(bm, create=True)
+            if any(batches.values()) or core.aligned_group_layer(bm) is not None:
+                core.aligned_group_layer(bm, create=True)
             loops = core.loops_in_order(bm)
             layer = core.constraint_layer(bm)
+            batch_layer = core.aligned_group_layer(bm)
             for p,kind in marks.items():
                 loops[p][layer] = kind
+                if batch_layer is not None:
+                    loops[p][batch_layer] = batches[p]
         if shapes_changed:
             _write(bm, core.loops_in_order(bm), after_raw, shapes.LAYER)
             if after_raw:obj.data[shapes.BACKUP] = after_raw.decode('ascii')
             else:obj.data.pop(shapes.BACKUP,None)
+        core.store_constraints(obj,bm)
     except Exception:
         loops = core.loops_in_order(bm)
         layer = core.constraint_layer(bm)
         if layer:
             for p,kind in enumerate(before_marks):loops[p][layer] = kind
+        batch_layer = core.aligned_group_layer(bm)
+        if batch_layer is not None:
+            for p,batch in enumerate(before_batches):loops[p][batch_layer] = batch
         if shapes_changed:
             _write(bm, loops, before_raw, shapes.LAYER)
         if backup is None:obj.data.pop(shapes.BACKUP,None)
         else:obj.data[shapes.BACKUP] = backup
+        for name,values in mirrors.items():
+            if values is None:obj.pop(name,None)
+            else:obj[name] = values
+        bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         raise
-    core.store_constraints(obj,bm)
     core.invalidate_stats_cache()
     shapes.invalidate()
     bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)

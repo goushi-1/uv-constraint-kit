@@ -125,6 +125,7 @@ struct GpuSession {
     std::unique_lock<std::recursive_mutex> lock;
     CudaRuntime& driver;
     I n,nt;
+    I invalid_triangle=-1;
     CUdeviceptr uv=0,triangles=0,j=0,inverse=0,weights=0,result=0;
     CUdeviceptr adjacency_offsets=0,adjacency_entries=0,vertex_gradient=0;
     void* staging_in=nullptr;
@@ -200,7 +201,7 @@ struct GpuSession {
         }
     }
     ~GpuSession(){cleanup();}
-    void energy(const Vec& host_uv,bool reciprocal,bool prevent,double angle,Vec& terms) {
+    double energy(const Vec& host_uv,bool reciprocal,bool prevent,double angle) {
         // Copies and kernels share one stream. A pageable synchronous copy on
         // the default stream need not finish DMA before a nonblocking kernel.
         std::memcpy(staging_in,host_uv.data(),2*n*sizeof(double));
@@ -210,8 +211,18 @@ struct GpuSession {
         driver.check(driver.launch(driver.energy_kernel,unsigned((nt+127)/128),1,1,128,1,1,0,stream,args,nullptr),"energy launch");
         driver.check(driver.download(staging_out,result,nt*sizeof(double),stream),"download terms");
         driver.check(driver.wait(stream),"energy wait");
-        std::memcpy(terms.data(),staging_out,nt*sizeof(double));
         ++gpu_counts[1];gpu_counts[4]+=2*n*sizeof(double);gpu_counts[5]+=nt*sizeof(double);
+        // Keep the original triangle-order sum and read the completed transfer in place.
+        const auto* terms=static_cast<const double*>(staging_out);
+        double sum=0;
+        for(I t=0;t<nt;++t) sum+=terms[t];
+        if((reciprocal || prevent) && !std::isfinite(sum)) {
+            for(I t=0;t<nt;++t) if(!std::isfinite(terms[t])) {
+                invalid_triangle=t;
+                break;
+            }
+        }
+        return sum;
     }
     void gradient(bool reciprocal,bool prevent,double angle,Vec& gradient) {
         int rec=reciprocal,flip=prevent;

@@ -223,7 +223,8 @@ def touched_edges(topo, selected=()):
 
 def clear(obj, selected):
     bm=overlay._edit_bmesh(obj);core.prepare_bm(bm)
-    topo=core.UVTopology(bm,bm.loops.layers.uv.active)
+    topo=(core.UVTopology(bm,bm.loops.layers.uv.active) if bm.loops.layers.uv.active is None else
+          SimpleNamespace(bm=bm,uvl=bm.loops.layers.uv.active,loops=core.loops_in_order(bm)))
     raw=live_symmetry._raw(bm,topo.loops,LAYER)
     if not raw:
         return

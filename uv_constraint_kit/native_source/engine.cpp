@@ -3,6 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cfenv>
+#include <cstring>
+#if defined(_M_X64) || defined(__SSE__)
+#include <xmmintrin.h>
+#endif
 #include <cfloat>
 #include <set>
 #include <cstdint>
@@ -54,6 +59,7 @@ struct Problem {
     std::vector<AxisSet> sets;
     Vec jacobian, gradient_terms;
     I evaluations=0;
+    mutable I witness_i=-1,witness_j=-1;
     explicit Problem(const Input& in):p(in),soft(in.strength>=0),jacobian(4*in.nt) {
         for(I r=0;r<p.nr;++r) if(p.kinds[r]!=1 && p.kinds[r]!=2) axes_only=false;
         if(!soft && axes_only) for(I kind=1;kind<=2;++kind) {
@@ -124,9 +130,7 @@ struct Problem {
         double t=std::clamp(((q[0]-a[0])*vx+(q[1]-a[1])*vy)/std::max(vx*vx+vy*vy,1e-20),0.,1.);
         return std::hypot(q[0]-a[0]-t*vx,q[1]-a[1]-t*vy);
     }
-    bool borders_valid(const Vec& x) const {
-        if(!p.prevent_overlap) return true;
-        auto pair_valid=[&](I i,I j) {
+    bool border_pair_valid(const Vec& x,I i,I j) const {
             I ia=p.border_edges[2*i],ib=p.border_edges[2*i+1],ic=p.border_edges[2*j],id=p.border_edges[2*j+1];
             if(ia==ic || ia==id || ib==ic || ib==id) return true;
             const double *a=&x[2*ia],*b=&x[2*ib],*c=&x[2*ic],*d=&x[2*id];
@@ -144,6 +148,13 @@ struct Problem {
             }
             if(p.overlap_space>0 && std::min({distance(a,c,d),distance(b,c,d),distance(c,a,b),distance(d,a,b)})<p.overlap_space) return false;
             return true;
+    }
+    bool borders_valid(const Vec& x) const {
+        if(!p.prevent_overlap) return true;
+        auto pair_valid=[&](I i,I j) {
+            if(border_pair_valid(x,i,j)) return true;
+            if(p.prevent_overlap==1) {witness_i=i;witness_j=j;}
+            return false;
         };
         // A broad phase only: retain the same exact pair predicate, including
         // shared vertices, touching edges and the requested spacing margin.
@@ -401,6 +412,140 @@ static bool valid_input(const Input& p) {
     for(I i=0;i<2*p.nb;++i) if(p.border_edges[i]<0 || p.border_edges[i]>=p.n) return false;
     return true;
 }
+// Geometric Gram plus exact H/V quadratic penalties, not the full Hessian.
+// Fixed variables are eliminated before factorization; no H/V averaging.
+struct SoftMetric {
+    std::vector<I> offsets,columns,lower_ends;
+    Vec values,diagonal;
+    bool enabled() const {return !diagonal.empty();}
+    static void fixed_zero(const Problem& problem,Vec& v) {
+        for(I i=0;i<problem.p.n;++i) if(problem.p.fixed[i]) {v[2*i]=0.;v[2*i+1]=0.;}
+    }
+    bool apply(const Problem& problem,const Vec& rhs,Vec& result) const {
+        if(!enabled()) return false;
+        const I n=2*problem.p.n;
+        Vec input=rhs,forward(n);result.assign(n,0.);fixed_zero(problem,input);
+        for(I i=0;i<n;++i) {
+            double v=input[i];
+            for(I k=offsets[i];k<lower_ends[i];++k) v-=values[k]*forward[columns[k]];
+            forward[i]=v/diagonal[i];if(!std::isfinite(forward[i])) return false;
+        }
+        for(I i=n;i-->0;) {
+            double v=forward[i];
+            for(I k=lower_ends[i];k<offsets[i+1];++k) v-=values[k]*result[columns[k]];
+            result[i]=v/diagonal[i];if(!std::isfinite(result[i])) return false;
+        }
+        fixed_zero(problem,result);
+        for(double v:result) if(!std::isfinite(v)) return false;
+        return true;
+    }
+    bool apply_pair(const Problem& problem,const Vec& rhs_y,const Vec& rhs_q,Vec& mapped_y,Vec& mapped_q) const {
+        if(!enabled()) return false;
+        const I n=2*problem.p.n;
+        Vec input_y=rhs_y,input_q=rhs_q,forward_y(n),forward_q(n);
+        mapped_y.assign(n,0.);mapped_q.assign(n,0.);
+        fixed_zero(problem,input_y);fixed_zero(problem,input_q);
+        for(I i=0;i<n;++i) {
+            double y=input_y[i],q=input_q[i];
+            for(I k=offsets[i];k<lower_ends[i];++k) {y-=values[k]*forward_y[columns[k]];q-=values[k]*forward_q[columns[k]];}
+            forward_y[i]=y/diagonal[i];forward_q[i]=q/diagonal[i];
+            if(!std::isfinite(forward_y[i]) || !std::isfinite(forward_q[i])) return false;
+        }
+        for(I i=n;i-->0;) {
+            double y=forward_y[i],q=forward_q[i];
+            for(I k=lower_ends[i];k<offsets[i+1];++k) {y-=values[k]*mapped_y[columns[k]];q-=values[k]*mapped_q[columns[k]];}
+            mapped_y[i]=y/diagonal[i];mapped_q[i]=q/diagonal[i];
+            if(!std::isfinite(mapped_y[i]) || !std::isfinite(mapped_q[i])) return false;
+        }
+        fixed_zero(problem,mapped_y);fixed_zero(problem,mapped_q);
+        for(double v:mapped_y) if(!std::isfinite(v)) return false;
+        for(double v:mapped_q) if(!std::isfinite(v)) return false;
+        return true;
+    }
+};
+static SoftMetric make_soft_metric(const Problem& problem) noexcept {
+    try {
+        const Input& p=problem.p;
+        if(!p.automatic || !problem.soft || !problem.axes_only || !problem.reciprocal
+                || p.angle_length!=1. || p.ne<=0 || p.prevent_overlap!=2 || p.strength<0. || p.strength>100.) return {};
+        const I n=2*p.n;
+        std::vector<std::map<I,double>> rows(n);
+        for(I t=0;t<p.nt;++t) {
+            const double* v=&p.inverse[4*t];
+            double cx[3]={-v[0]-v[2],v[0],v[2]},cy[3]={-v[1]-v[3],v[1],v[3]};
+            for(I i=0;i<3;++i) for(I j=i;j<3;++j) {
+                double add=2*p.weights[t]*(cx[i]*cx[j]+cy[i]*cy[j]);if(!std::isfinite(add)) return {};
+                for(I axis=0;axis<2;++axis) {
+                    I a=2*p.tri[3*t+i]+axis,b=2*p.tri[3*t+j]+axis;
+                    rows[a][b]+=add;if(i!=j) rows[b][a]+=add;
+                    if(!std::isfinite(rows[a][b]) || !std::isfinite(rows[b][a])) return {};
+                }
+            }
+        }
+        double sum=0.;I count=0;
+        for(I i=0;i<n;++i) if(!p.fixed[i/2]) {
+            double d=rows[i][i];if(d>0.) {sum+=d;++count;if(!std::isfinite(sum)) return {};}
+        }
+        if(!count) return {};
+        const double damping=.01*(sum/count);
+        if(!(damping>0.) || !std::isfinite(damping)) return {};
+        bool positive=false;
+        for(I e=0;e<p.ne;++e) {
+            I a=2*p.penalty_edges[2*e]+p.penalty_axis[e],b=2*p.penalty_edges[2*e+1]+p.penalty_axis[e];
+            if(a==b || p.penalty_weights[e]==0.) continue;
+            double add=2*p.penalty_weights[e];if(!(add>0.) || !std::isfinite(add)) return {};
+            positive=true;rows[a][a]+=add;rows[b][b]+=add;rows[a][b]-=add;rows[b][a]-=add;
+            if(!std::isfinite(rows[a][a]) || !std::isfinite(rows[b][b]) || !std::isfinite(rows[a][b]) || !std::isfinite(rows[b][a])) return {};
+        }
+        if(!positive) return {};
+        for(I i=0;i<n;++i) {
+            if(p.fixed[i/2]) {rows[i].clear();rows[i][i]=1.;}
+            else {
+                rows[i][i]+=damping;if(!std::isfinite(rows[i][i])) return {};
+                for(auto it=rows[i].begin();it!=rows[i].end();) {
+                    if(it->first!=i && p.fixed[it->first/2]) it=rows[i].erase(it);else ++it;
+                }
+            }
+        }
+        std::vector<std::map<I,double>> lower(n);
+        SoftMetric result;result.diagonal.resize(n);
+        for(I i=0;i<n;++i) {
+            for(const auto& item:rows[i]) {
+                I j=item.first;if(j>=i) break;if(item.second==0.) continue;
+                double value=item.second;auto a=lower[i].begin(),b=lower[j].begin();
+                while(a!=lower[i].end() && b!=lower[j].end()) {
+                    if(a->first>=j || b->first>=j) break;
+                    if(a->first<b->first) ++a;else if(b->first<a->first) ++b;
+                    else {value-=a->second*b->second;++a;++b;}
+                    if(!std::isfinite(value)) return {};
+                }
+                value/=result.diagonal[j];if(!std::isfinite(value)) return {};
+                lower[i].emplace(j,value);
+            }
+            double pivot=rows[i][i];if(!std::isfinite(pivot)) return {};
+            for(const auto& item:lower[i]) {pivot-=item.second*item.second;if(!std::isfinite(pivot)) return {};}
+            if(!(pivot>0.)) return {};
+            result.diagonal[i]=std::sqrt(pivot);
+            if(!(result.diagonal[i]>0.) || !std::isfinite(result.diagonal[i])) return {};
+        }
+        std::vector<std::map<I,double>> factor(n);
+        for(I i=0;i<n;++i) for(const auto& item:lower[i]) {factor[i].emplace(item.first,item.second);factor[item.first].emplace(i,item.second);}
+        result.offsets.push_back(0);
+        for(I i=0;i<n;++i) {
+            const std::size_t begin=static_cast<std::size_t>(result.offsets.back());
+            const std::size_t maximum=static_cast<std::size_t>(std::numeric_limits<I>::max());
+            if(lower[i].size()>maximum-begin) return {};
+            const std::size_t split=begin+lower[i].size();
+            for(const auto& item:factor[i]) {result.columns.push_back(item.first);result.values.push_back(item.second);}
+            if(result.columns.size()>maximum || split>result.columns.size()) return {};
+            if(split>begin && result.columns[split-1]>=i) return {};
+            if(split<result.columns.size() && result.columns[split]<=i) return {};
+            result.lower_ends.push_back(static_cast<I>(split));result.offsets.push_back(static_cast<I>(result.columns.size()));
+        }
+        return result;
+    }catch(...) {return {};}
+}
+
 API I uvck_contact_capability() {return 1;}
 API I uvck_abi(I input_size,I output_size) {return input_size==sizeof(Input) && output_size==sizeof(Output)?1:0;}
 API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
@@ -414,21 +559,55 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
         Vec g;problem.gradient(x,g);
         struct History {Vec s,y;double rho;};std::vector<History> history;
         Vec q,direction,candidate,next_g;std::vector<double> coefficients;
+        const SoftMetric soft_metric=make_soft_metric(problem);
+        const bool contact_progress=soft_metric.enabled();
+        // Soft stages with the explicit overlap guard can stall against a
+        // boundary while line search still accepts vanishing improvements.
+        // Hand control back to the existing stronger-penalty continuation.
+        const bool overlap_progress=problem.soft && p.prevent_overlap==1;
+        double checkpoint_energy=e;
         I limit=p.automatic?1000:std::max<I>(1,p.iterations);
         for(I iteration=0;iteration<limit;++iteration) {
             if(p.automatic && max_abs(g)<1e-6) break;
             q=g;coefficients.clear();
             for(auto i=history.rbegin();i!=history.rend();++i) {double alpha=i->rho*dot(i->s,q);coefficients.push_back(alpha);for(std::size_t k=0;k<q.size();++k) q[k]-=alpha*i->y[k];}
-            double scale=history.empty()?std::max(p.density*p.density,1e-6)*.05:dot(history.back().s,history.back().y)/std::max(dot(history.back().y,history.back().y),1e-20);
-            for(double& v:q) v*=scale;
+            bool preconditioned=false;
+            if(soft_metric.enabled()) {
+                Vec mapped;double gamma=1.;bool finite=true;
+                if(!history.empty()) {
+                    Vec mapped_y;
+                    finite=soft_metric.apply_pair(problem,history.back().y,q,mapped_y,mapped);
+                    double denominator=finite?dot(history.back().y,mapped_y):0.;
+                    finite=finite && denominator>0. && std::isfinite(denominator);
+                    if(finite) gamma=dot(history.back().s,history.back().y)/std::max(denominator,1e-20);
+                }
+                finite=finite && gamma>0. && std::isfinite(gamma);
+                if(finite && history.empty()) finite=soft_metric.apply(problem,q,mapped);
+                if(finite) for(double& v:mapped) {v*=gamma;if(!std::isfinite(v)) {finite=false;break;}}
+                if(finite) {q.swap(mapped);preconditioned=true;}
+            }
+            if(!preconditioned) {
+                double scale=history.empty()?std::max(p.density*p.density,1e-6)*.05:dot(history.back().s,history.back().y)/std::max(dot(history.back().y,history.back().y),1e-20);
+                for(double& v:q) v*=scale;
+            }
             for(std::size_t i=0;i<history.size();++i) {double v=coefficients[history.size()-i-1]-history[i].rho*dot(history[i].y,q);for(std::size_t k=0;k<q.size();++k) q[k]+=history[i].s[k]*v;}
             direction=q;for(double& v:direction) v=-v;double slope=dot(g,direction);
             if(slope>=0) {for(std::size_t k=0;k<g.size();++k) direction[k]=-g[k];slope=-dot(g,g);history.clear();}
             double step=1,next_e=INF;candidate.resize(x.size());bool accepted=false;
             for(int search=0;search<32;++search) {
                 for(std::size_t k=0;k<x.size();++k) candidate[k]=x[k]+step*direction[k];
-                problem.project(candidate);next_e=problem.energy(candidate);
-                if(next_e<=e+1e-4*step*slope) {accepted=true;break;}step*=.5;
+                problem.project(candidate);
+                const double threshold=e+1e-4*step*slope;
+                // A pair remembered by the original scan must fail again
+                // at the current projected UVs before it can reject a trial.
+                if(p.prevent_overlap==1 && problem.witness_i>=0 && std::isfinite(threshold) &&
+                        !problem.border_pair_valid(candidate,problem.witness_i,problem.witness_j)) {
+                    ++problem.evaluations;
+                    step*=.5;
+                    continue;
+                }
+                next_e=problem.energy(candidate);
+                if(next_e<=threshold) {accepted=true;break;}step*=.5;
             }
             if(!accepted) break;
             problem.gradient(candidate,next_g);Vec change(x.size()),y(x.size());
@@ -436,6 +615,28 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
             double sy=dot(change,y);if(sy>1e-14) {history.push_back({std::move(change),std::move(y),1/sy});if(history.size()>8) history.erase(history.begin());}
             double improvement=e-next_e;x.swap(candidate);e=next_e;g.swap(next_g);++stats->accepted;
             if(p.automatic && improvement<=1e-10*std::max(1.,std::abs(e))) break;
+            // Global objective progress, not a fixed short solve or mesh-specific rule.
+            // Keep old early stops and the1000 ceiling; manual solves are unchanged.
+            if(p.automatic && (!problem.soft || contact_progress || overlap_progress) && stats->accepted%25==0) {
+                double reduction=checkpoint_energy-e;
+                checkpoint_energy=e;
+                double tolerance=overlap_progress?0.0001:(contact_progress?0.001:0.01);
+                bool direction_ready=true;
+                // The terminal penalty of the Python ramp must already meet
+                // direction tolerance before this additional stop can fire.
+                if((contact_progress && p.strength>1.) || (overlap_progress && p.strength>=1e6)) {
+                    const double tangent=std::tan(0.045*3.14159265358979323846/180.);
+                    for(I edge=0;edge<p.ne;++edge) {
+                        I a=p.penalty_edges[2*edge],b=p.penalty_edges[2*edge+1];
+                        I axis=p.penalty_axis[edge];
+                        double along=std::abs(x[2*b+1-axis]-x[2*a+1-axis]);
+                        double across=std::abs(x[2*b+axis]-x[2*a+axis]);
+                        if(along<=1e-12 || across>tangent*along) {direction_ready=false;break;}
+                    }
+                }
+                if(direction_ready && (!(contact_progress || overlap_progress) || stats->accepted>=100) && reduction>=0 &&
+                        reduction<=tolerance*std::max(std::abs(e),1e-12)) break;
+            }
         }
         for(double v:x) if(!std::isfinite(v)) return -2;
         std::copy(x.begin(),x.end(),output);stats->evaluations=problem.evaluations;stats->finite=1;stats->energy=e;stats->gradient_max=max_abs(g);return 0;
@@ -502,43 +703,180 @@ API int uvck_islands(I nf,I nl,I ne,const I* offsets,const I* members,
 struct Point {double x,y;};
 using Triangle=std::array<Point,3>;
 static bool equal_point(const Point& a,const Point& b) {return a.x==b.x && a.y==b.y;}
-static double polygon_area(const std::vector<Point>& points) {
+static double polygon_area(const Point* points,std::size_t count) {
     double area=0;
-    for(std::size_t i=0;i<points.size();++i) {const auto& a=points[i];const auto& b=points[(i+1)%points.size()];area+=a.x*b.y-b.x*a.y;}
+    for(std::size_t i=0;i<count;++i) {
+        const auto& a=points[i];const auto& b=points[i+1==count?0:i+1];
+        area+=a.x*b.y-b.x*a.y;
+    }
     return area*.5;
 }
 static double side(const Point& a,const Point& b,const Point& p) {return (b.x-a.x)*(p.y-a.y)-(b.y-a.y)*(p.x-a.x);}
+// A filtered sign with an exact integer fallback for finite binary64 points.
+// Products have exponent >= -2148; six terms need <4200 bits on this grid.
+using OrientationWords=std::array<std::uint32_t,136>;
+struct OrientationDyadic {std::uint64_t mantissa;int exponent;bool negative;};
+static OrientationDyadic orientation_dyadic(double value) {
+    std::uint64_t bits;std::memcpy(&bits,&value,sizeof(bits));
+    const unsigned field=static_cast<unsigned>((bits>>52)&2047);
+    return {(bits&0xfffffffffffffULL)|(field?1ULL<<52:0),
+        field?static_cast<int>(field)-1075:-1074,(bits>>63)!=0};
+}
+static void orientation_add_word(OrientationWords& sum,std::size_t index,std::uint32_t value) {
+    std::uint64_t carry=value;
+    while(carry) {
+        if(index>=sum.size()) throw std::overflow_error("orientation integer bound");
+        carry+=sum[index];sum[index]=static_cast<std::uint32_t>(carry);
+        carry>>=32;++index;
+    }
+}
+static void orientation_add_partial(OrientationWords& sum,std::uint64_t value,int shift) {
+    const std::size_t word=static_cast<std::size_t>(shift/32);
+    const unsigned offset=static_cast<unsigned>(shift%32);
+    for(unsigned part=0;part<2;++part) {
+        const std::uint64_t chunk=static_cast<std::uint32_t>(value>>(32*part));
+        const std::uint64_t shifted=chunk<<offset;
+        orientation_add_word(sum,word+part,static_cast<std::uint32_t>(shifted));
+        orientation_add_word(sum,word+part+1,static_cast<std::uint32_t>(shifted>>32));
+    }
+}
+static int exact_orientation(const Point& a,const Point& b,const Point& c) {
+    const OrientationDyadic values[6]={orientation_dyadic(a.x),orientation_dyadic(a.y),
+        orientation_dyadic(b.x),orientation_dyadic(b.y),orientation_dyadic(c.x),orientation_dyadic(c.y)};
+    OrientationWords positive{},negative{};
+    const int terms[6][3]={{0,3,0},{0,5,1},{2,5,0},{2,1,1},{4,1,0},{4,3,1}};
+    for(const auto& term:terms) {
+        const auto& u=values[term[0]];const auto& v=values[term[1]];
+        if(!u.mantissa || !v.mantissa) continue;
+        auto& sum=(u.negative^v.negative^(term[2]!=0))?negative:positive;
+        const int shift=u.exponent+v.exponent+2148;
+        for(unsigned i=0;i<2;++i) for(unsigned j=0;j<2;++j) {
+            const std::uint64_t first=static_cast<std::uint32_t>(u.mantissa>>(32*i));
+            const std::uint64_t second=static_cast<std::uint32_t>(v.mantissa>>(32*j));
+            orientation_add_partial(sum,first*second,shift+32*static_cast<int>(i+j));
+        }
+    }
+    for(std::size_t i=positive.size();i-->0;) {
+        if(positive[i]>negative[i]) return 1;
+        if(positive[i]<negative[i]) return -1;
+    }
+    return 0;
+}
+enum class OrientationFilter { exact, normal_range, unrestricted };
+static OrientationFilter orientation_filter_mode() {
+    if(std::fegetround()!=FE_TONEAREST) return OrientationFilter::exact;
+#if defined(_M_X64) || defined(__SSE__)
+    const unsigned control=_mm_getcsr();
+    if(control&0x6000U) return OrientationFilter::exact;
+    if(control&0x8040U) {
+        // The new arithmetic must not introduce an unmasked FP trap.
+        if((control&0x1f80U)!=0x1f80U) return OrientationFilter::exact;
+        return OrientationFilter::normal_range;
+    }
+#endif
+    return OrientationFilter::unrestricted;
+}
+static int orientation_sign(const Point& a,const Point& b,const Point& c,bool filtered) {
+    if(!filtered) return exact_orientation(a,b,c);
+    const double values[6]={a.x,a.y,b.x,b.y,c.x,c.y};
+    for(double value:values) {
+        std::uint64_t bits;std::memcpy(&bits,&value,sizeof(bits));
+        if(!(bits&0x7ff0000000000000ULL) && (bits&0xfffffffffffffULL))
+            return exact_orientation(a,b,c);
+    }
+    if(equal_point(a,b) || equal_point(a,c) || equal_point(b,c)
+            || (a.x==b.x && a.x==c.x) || (a.y==b.y && a.y==c.y)) return 0;
+    const double ax=a.x-c.x,ay=a.y-c.y,bx=b.x-c.x,by=b.y-c.y;
+    const auto safe=[](double v) {return std::isfinite(v) && (v==0. || std::abs(v)>=DBL_MIN);};
+    if(!safe(ax) || !safe(ay) || !safe(bx) || !safe(by)
+            || (ax==0. && a.x!=c.x) || (ay==0. && a.y!=c.y)
+            || (bx==0. && b.x!=c.x) || (by==0. && b.y!=c.y))
+        return exact_orientation(a,b,c);
+    const double left=ax*by,right=ay*bx,determinant=left-right;
+    const double bound=8.*DBL_EPSILON*(std::abs(left)+std::abs(right));
+    if(safe(left) && safe(right) && std::isfinite(determinant) && std::isfinite(bound) && bound>=DBL_MIN
+            && !(left==0. && ax!=0. && by!=0.) && !(right==0. && ay!=0. && bx!=0.)) {
+        if(determinant>bound) return 1;
+        if(determinant< -bound) return -1;
+    }
+    return exact_orientation(a,b,c);
+}
+static bool proper_triangle_crossing(const Triangle& a,const Triangle& b,bool filtered) {
+    for(const auto& p:a) if(!std::isfinite(p.x) || !std::isfinite(p.y)) return false;
+    for(const auto& p:b) if(!std::isfinite(p.x) || !std::isfinite(p.y)) return false;
+    for(int i=0;i<3;++i) for(int j=0;j<3;++j) {
+        const Point& p=a[i];const Point& q=a[(i+1)%3];
+        const Point& r=b[j];const Point& s=b[(j+1)%3];
+        if(std::max(p.x,q.x)<std::min(r.x,s.x) || std::max(r.x,s.x)<std::min(p.x,q.x)
+                || std::max(p.y,q.y)<std::min(r.y,s.y) || std::max(r.y,s.y)<std::min(p.y,q.y)) continue;
+        if(filtered && (equal_point(p,r) || equal_point(p,s) || equal_point(q,r) || equal_point(q,s))) continue;
+        const int first=orientation_sign(p,q,r,filtered),second=orientation_sign(p,q,s,filtered);
+        if(!first || !second || first==second) continue;
+        const int third=orientation_sign(r,s,p,filtered),fourth=orientation_sign(r,s,q,filtered);
+        if(third && fourth && third!=fourth)
+            return orientation_sign(a[0],a[1],a[2],filtered)!=0 && orientation_sign(b[0],b[1],b[2],filtered)!=0;
+    }
+    return false;
+}
+
 static double triangle_intersection(const Triangle& a,const Triangle& b) {
-    std::vector<Point> shared;
+    Triangle shared;
+    std::size_t shared_count=0;
     for(const auto& p:a) {
         bool in_b=false,seen=false;
         for(const auto& q:b) in_b|=equal_point(p,q);
-        for(const auto& q:shared) seen|=equal_point(p,q);
-        if(in_b && !seen) shared.push_back(p);
+        for(std::size_t i=0;i<shared_count;++i) seen|=equal_point(p,shared[i]);
+        if(in_b && !seen) shared[shared_count++]=p;
     }
-    if(shared.size()==2) {
+    if(shared_count==2) {
         const Point *u=nullptr,*v=nullptr;
         for(const auto& p:a) if(!equal_point(p,shared[0]) && !equal_point(p,shared[1])) {u=&p;break;}
         for(const auto& p:b) if(!equal_point(p,shared[0]) && !equal_point(p,shared[1])) {v=&p;break;}
         if(!u || !v || side(shared[0],shared[1],*u)*side(shared[0],shared[1],*v)<=0) return 0;
     }
-    std::vector<Point> poly(a.begin(),a.end()),clip(b.begin(),b.end()),next;
-    if(polygon_area(poly)<0) std::reverse(poly.begin(),poly.end());
-    if(polygon_area(clip)<0) std::reverse(clip.begin(),clip.end());
-    next.reserve(12);
-    for(std::size_t edge=0;edge<3;++edge) {
-        const auto& v=clip[edge];const auto& w=clip[(edge+1)%3];next.clear();
-        for(std::size_t i=0;i<poly.size();++i) {
-            const auto& p=poly[i];const auto& q=poly[(i+1)%poly.size()];
+    // Each clipping pass emits at most two vertices per input edge.
+    // Three passes from a triangle therefore fit even with duplicate points.
+    std::array<Point,3*2*2*2> scratch_a,scratch_b;
+    Point* poly=scratch_a.data();
+    Point* next=scratch_b.data();
+    std::copy(a.begin(),a.end(),poly);
+    Triangle clip=b;
+    std::size_t count=3;
+    if(polygon_area(poly,count)<0) std::reverse(poly,poly+count);
+    if(polygon_area(clip.data(),clip.size())<0) std::reverse(clip.begin(),clip.end());
+    for(std::size_t edge=0;edge<clip.size();++edge) {
+        const auto& v=clip[edge];const auto& w=clip[(edge+1)%clip.size()];
+        std::size_t next_count=0;
+        for(std::size_t i=0;i<count;++i) {
+            const auto& p=poly[i];const auto& q=poly[i+1==count?0:i+1];
             double sp=side(v,w,p),sq=side(v,w,q);
-            if(sp>=-1e-12) next.push_back(p);
+            if(sp>=-1e-12) next[next_count++]=p;
             if((sp>1e-12 && sq< -1e-12) || (sp< -1e-12 && sq>1e-12)) {
-                double t=sp/(sp-sq);next.push_back({p.x+t*(q.x-p.x),p.y+t*(q.y-p.y)});
+                double t=sp/(sp-sq);next[next_count++]={p.x+t*(q.x-p.x),p.y+t*(q.y-p.y)};
             }
         }
-        poly.swap(next);if(poly.empty()) return 0;
+        std::swap(poly,next);count=next_count;
+        if(!count) return 0;
     }
-    return std::abs(polygon_area(poly));
+    return std::abs(polygon_area(poly,count));
+}
+static bool orientation_normal_range(const Triangle& triangle) {
+    // With FTZ/DAZ, keep differences, products, determinants and filter
+    // bounds normal or zero by limiting nonzero coordinates to this range.
+    constexpr std::uint64_t low=std::uint64_t{1023-200}<<52;
+    constexpr std::uint64_t high=std::uint64_t{1023+200}<<52;
+    for(const auto& p:triangle) for(double coordinate:{p.x,p.y}) {
+        std::uint64_t bits;std::memcpy(&bits,&coordinate,sizeof(bits));
+        bits&=0x7fffffffffffffffULL;
+        if(bits!=0 && (bits<low || bits>high)) return false;
+    }
+    return true;
+}
+static bool triangles_overlap(const Triangle& a,const Triangle& b,OrientationFilter mode) {
+    if(triangle_intersection(a,b)>1e-10) return true;
+    const bool filtered=mode==OrientationFilter::unrestricted
+        || (mode==OrientationFilter::normal_range && orientation_normal_range(a) && orientation_normal_range(b));
+    return proper_triangle_crossing(a,b,filtered);
 }
 static Triangle read_triangle(const double* value) {return {{{value[0],value[1]},{value[2],value[3]},{value[4],value[5]}}};}
 API int uvck_intersections(I n,const double* a,const double* b,double* output) noexcept {
@@ -566,14 +904,17 @@ struct Bounds {
 };
 // First violating pair only, like AcceptanceProbe. Existing overlap is a
 // tolerated relationship, not an area budget; static/static pairs are ignored.
-API int uvck_check_overlaps(I n,const I* faces,const I* roots,const std::uint8_t* changed,
-                            const double* current,const double* reference,I other,I existing,I* output) noexcept {
+template<bool OrderedPair=false>
+static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint8_t* changed,
+                            const double* current,const double* reference,I other,I existing,I* output,I* witness) noexcept {
     try {
-        if(n<0 || !faces || !roots || !changed || !current || !reference || !output) return -1;
+        if(n<0 || !faces || !current || !reference || !output || (!OrderedPair && (!roots || !changed))) return -1;
         std::vector<Bounds> boxes(n);Vec sizes;sizes.reserve(n);
-        bool unchanged=true;
-        for(I i=0;i<n;++i) if(changed[i]) for(int k=0;k<6;++k) unchanged&=current[6*i+k]==reference[6*i+k];
-        if(!existing && unchanged) {output[0]=output[1]=0;return 0;}
+        if constexpr (!OrderedPair) {
+            bool unchanged=true;
+            for(I i=0;i<n;++i) if(changed[i]) for(int k=0;k<6;++k) unchanged&=current[6*i+k]==reference[6*i+k];
+            if(!existing && unchanged) {output[0]=output[1]=0;return 0;}
+        }
         for(I i=0;i<n;++i) {
             const double* p=current+6*i;bool finite=true;for(int k=0;k<6;++k) finite&=std::isfinite(p[k]);if(!finite) continue;
             auto& box=boxes[i];box.x0=std::min({p[0],p[2],p[4]});box.x1=std::max({p[0],p[2],p[4]});
@@ -591,7 +932,7 @@ API int uvck_check_overlaps(I n,const I* faces,const I* roots,const std::uint8_t
             out=static_cast<I>(v);return true;
         };
         for(I i=0;i<n;++i) {
-            auto& b=boxes[i];if(!b.valid) continue;b.bucket=other?0:roots[i];
+            auto& b=boxes[i];if(!b.valid) continue;b.bucket=(OrderedPair || other)?0:roots[i];
             if(!coordinate(b.x0,b.ix0) || !coordinate(b.x1,b.ix1) || !coordinate(b.y0,b.iy0) || !coordinate(b.y1,b.iy1)) return -2;
             // A cell count above 64 takes the existing large-triangle route.
             long double width=static_cast<long double>(b.ix1)-b.ix0+1,height=static_cast<long double>(b.iy1)-b.iy0+1;
@@ -599,23 +940,68 @@ API int uvck_check_overlaps(I n,const I* faces,const I* roots,const std::uint8_t
             if(b.large) large[b.bucket].push_back(i);
             else for(I x=b.ix0;x<=b.ix1;++x) for(I y=b.iy0;y<=b.iy1;++y) grid[{b.bucket,x,y}].push_back(i);
         }
+        const auto filtered_orientation=orientation_filter_mode();
         I tested=0,kind=0;
-        for(I i=0;i<n;++i) {
-            const auto& a=boxes[i];if(!changed[i] || !a.valid) continue;
-            std::unordered_set<I> candidates;
-            auto add=[&](const std::vector<I>& rows) {candidates.insert(rows.begin(),rows.end());};
+        std::vector<I> seen(n,-1), candidates;
+        // Recovery scans the same triangle more than once, so deduplicate per
+        // visit instead of using the triangle index as the epoch.
+        I visit=0;
+        auto gather=[&](I i) {
+            const auto& a=boxes[i];
+            const I epoch=OrderedPair?visit++:i;
+            candidates.clear();
+            auto add=[&](const std::vector<I>& rows) {
+                for(I j:rows) if(seen[j]!=epoch) {seen[j]=epoch;candidates.push_back(j);}
+            };
             auto big=large.find(a.bucket);if(big!=large.end()) add(big->second);
             if(a.large) add(buckets[a.bucket]);
             else for(I x=a.ix0;x<=a.ix1;++x) for(I y=a.iy0;y<=a.iy1;++y) {auto row=grid.find({a.bucket,x,y});if(row!=grid.end()) add(row->second);}
+        };
+        auto current_overlaps=[&](I i,I j) {
+            const auto& a=boxes[i];
+            const auto& b=boxes[j];
+            if(j==i || !b.valid || faces[i]==faces[j] ||
+                a.x0>=b.x1 || b.x0>=a.x1 || a.y0>=b.y1 || b.y0>=a.y1) return false;
+            ++tested;
+            return triangles_overlap(read_triangle(current+6*i),read_triangle(current+6*j),filtered_orientation);
+        };
+        if constexpr (OrderedPair) {
+            auto has_pair=[&](I start,I end) {
+                for(I i=start;i<end;++i) {
+                    if(!boxes[i].valid) continue;
+                    gather(i);
+                    // An earlier partner is skipped only when both rows are
+                    // active. Preserve clipping argument order on every probe.
+                    for(I j:candidates)
+                        if((j>=i || j<start) && current_overlaps(i,j)) return true;
+                }
+                return false;
+            };
+            if(!has_pair(0,n)) {output[0]=0;output[1]=tested;return 0;}
+            I start=0,end=n;
+            while(end-start>1) {
+                const I middle=start+(end-start)/2;
+                if(has_pair(start,middle)) end=middle;
+                else start=middle;
+            }
+            gather(start);
+            I partner=n;
+            // For the single active row the legacy partner probes all have the
+            // same argument order. Choose the smallest passing original index.
+            for(I j:candidates) if(j<partner && current_overlaps(start,j)) partner=j;
+            if(partner==n) return -4;
+            witness[0]=start;witness[1]=partner;
+            output[0]=1;output[1]=tested;
+            return 0;
+        }
+        for(I i=0;i<n;++i) {
+            if(!changed[i] || !boxes[i].valid) continue;
+            gather(i);
             for(I j:candidates) {
-                const auto& b=boxes[j];
-                if(j==i || !b.valid || (changed[j] && j<i) || faces[i]==faces[j] || (!other && roots[i]!=roots[j])) continue;
-                if(a.x0>=b.x1 || b.x0>=a.x1 || a.y0>=b.y1 || b.y0>=a.y1) continue;
-                ++tested;
-                if(triangle_intersection(read_triangle(current+6*i),read_triangle(current+6*j))<=1e-10) continue;
-                if(!existing && !(triangle_intersection(read_triangle(reference+6*i),read_triangle(reference+6*j))<=1e-10)) continue;
+                if((changed[j] && j<i) || (!other && roots[i]!=roots[j]) || !current_overlaps(i,j)) continue;
+                if(!existing && triangles_overlap(read_triangle(reference+6*i),read_triangle(reference+6*j),filtered_orientation)) continue;
                 const I found=roots[i]==roots[j]?1:2;
-                if(!other) {output[0]=found;output[1]=tested;return 0;}
+                if(!other) {if(witness) {witness[0]=i;witness[1]=j;} output[0]=found;output[1]=tested;return 0;}
                 // Python's set order can choose a different class when both
                 // kinds fail. Ask the existing Python path to resolve that
                 // rare ambiguity instead of changing the acceptance result.
@@ -625,6 +1011,73 @@ API int uvck_check_overlaps(I n,const I* faces,const I* roots,const std::uint8_t
         }
         output[0]=kind;output[1]=tested;return 0;
     }catch(...){return -3;}
+}
+
+// The legacy ABI never takes the witness shortcut.
+API int uvck_check_overlaps(I n,const I* faces,const I* roots,const std::uint8_t* changed,
+                            const double* current,const double* reference,I other,I existing,I* output) noexcept {
+    return check_overlaps_impl(n,faces,roots,changed,current,reference,other,existing,output,nullptr);
+}
+
+// Contact recovery keeps the legacy ordered witness search on one spatial grid.
+API int uvck_find_self_overlap_pair(I n,const I* faces,const double* current,I* output,I* pair) noexcept {
+    if(n<0 || n>10000000 || !faces || !current || !output || !pair) return -1;
+    pair[0]=pair[1]=-1;
+    // The legacy partner probes build subset grids. This range ensures every
+    // possible subset grid (cell >= 1e-12) can use native integer cells.
+    for(I k=0;k<6*n;++k) {
+        if(!std::isfinite(current[k]) || std::abs(current[k])>1e6) return 2;
+    }
+    return check_overlaps_impl<true>(n,faces,nullptr,nullptr,current,current,0,1,output,pair);
+}
+
+// Optional private ABI. witness[0:2] is a numeric row hint, witness[2] reports
+// a freshly confirmed early rejection. Buffers must be valid and disjoint
+// except that current/reference may alias. No clean result skips the full scan.
+API int uvck_check_overlaps_witness(I n,const I* faces,const I* roots,const std::uint8_t* changed,
+                            const double* current,const double* reference,I other,I existing,I* output,I* witness) noexcept {
+    auto clear=[&]() {if(witness) {witness[0]=witness[1]=-1;witness[2]=0;}};
+    try {
+        if(n<0 || !faces || !roots || !changed || !current || !reference || !output) {clear();return -1;}
+        I i=witness?witness[0]:-1,j=witness?witness[1]:-1;
+        clear();
+        // Bound the optional scan and its index products. Other sizes retain
+        // the legacy implementation, including its allocation/error policy.
+        // Blender can flush denormals. Match the full check's predicate mode
+        // without changing the caller's floating-point environment.
+        const auto filtered=orientation_filter_mode();
+        bool nearest=std::fegetround()==FE_TONEAREST;
+#if defined(_M_X64) || defined(__SSE__)
+        nearest=nearest && !(_mm_getcsr()&0x6000U);
+#endif
+        bool hint=witness && other==0 && existing==1 && n>0 && n<=10000000
+            && i>=0 && j>=0 && i<n && j<n && i!=j && nearest;
+        // The full grid has cell>=1e-12. This conservative finite range keeps
+        // every floor(coord/cell) safely inside its +/-9e18 integer guard.
+        if(hint) for(I k=0;k<6*n;++k) {
+            if(!std::isfinite(current[k]) || std::abs(current[k])>1e6) {hint=false;break;}
+        }
+        if(hint) {
+            // Match the argument order of the original changed-row scan;
+            // floating clipping is not assumed to be symmetric under swap.
+            if((!changed[i] && changed[j]) || (changed[i] && changed[j] && j<i)) std::swap(i,j);
+            hint=changed[i] && faces[i]!=faces[j] && roots[i]==roots[j];
+        }
+        if(hint) {
+            const auto a=read_triangle(current+6*i),b=read_triangle(current+6*j);
+            auto bounds=[](const Triangle& t) {
+                return std::array<double,4>{std::min({t[0].x,t[1].x,t[2].x}),std::min({t[0].y,t[1].y,t[2].y}),
+                    std::max({t[0].x,t[1].x,t[2].x}),std::max({t[0].y,t[1].y,t[2].y})};
+            };
+            const auto x=bounds(a),y=bounds(b);
+            if(x[0]<y[2] && y[0]<x[2] && x[1]<y[3] && y[1]<x[3] && triangles_overlap(a,b,filtered)) {
+                output[0]=1;output[1]=1;witness[0]=i;witness[1]=j;witness[2]=1;return 0;
+            }
+        }
+        const int status=check_overlaps_impl(n,faces,roots,changed,current,reference,other,existing,output,witness);
+        if(status || other!=0 || existing!=1 || output[0]!=1) clear();
+        return status;
+    }catch(...) {clear();return -3;}
 }
 
 // Read-only reference frames. Match mathutils float component subtraction,

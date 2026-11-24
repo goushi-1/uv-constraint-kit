@@ -2,6 +2,8 @@
 """Operators: constrain / unconstrain / optimize."""
 
 from time import perf_counter
+from types import SimpleNamespace
+from traceback import clear_frames
 
 import bmesh
 import bpy
@@ -294,19 +296,81 @@ def _apply_constraint_edit(context, positions, kind, shape_positions=()):
     if not positions and not shape_positions:
         return False
     if positions:
-        if min(positions)<0 or max(positions)>=sum(len(f.loops) for f in bm.faces):return False
-        # Adding custom data invalidates element references; acquire them afterwards.
-        core.constraint_layer(bm, create=True)
-        core.prepare_bm(bm)
-        layer = core.constraint_layer(bm)
         loops = core.loops_in_order(bm)
-        for position in positions:loops[position][layer] = kind
-        bmesh.update_edit_mesh(obj.data)
-        core.store_constraints(obj, bm)
-        del layer,loops
+        loop_count = len(loops)
+        if min(positions) < 0 or max(positions) >= loop_count:
+            return False
+        layer, groups = core.constraint_layer(bm), core.aligned_group_layer(bm)
+        had_layer, had_groups = layer is not None, groups is not None
+        previous = [(p, int(loops[p][layer]) if had_layer else 0,
+                     int(loops[p][groups]) if had_groups else 0) for p in positions]
+        mirrors = {store: list(obj[store]) if store in obj else None
+                   for store in (core.CONSTRAINT_STORE, core.ALIGNED_GROUP_STORE)}
+        del bm, loops, layer, groups
+        try:
+            bm = bmesh.from_edit_mesh(obj.data)
+            try:
+                core.write_constraint_marks(bm, positions, kind, _loop_count=loop_count)
+            finally:
+                del bm
+            bmesh.update_edit_mesh(obj.data)
+            bm = bmesh.from_edit_mesh(obj.data)
+            try:
+                core.store_constraints(obj, bm)
+            finally:
+                del bm
+        except BaseException as error:
+            # Completed failing callees can retain element wrappers in traceback
+            # locals. Keep their traceback locations, release those wrappers.
+            clear_frames(error.__traceback__)
+            bm = loops = layer = groups = removable = None
+            try:
+                bm = bmesh.from_edit_mesh(obj.data)
+                if not had_groups:
+                    removable = core.aligned_group_layer(bm)
+                    if removable is not None:
+                        bm.loops.layers.int.remove(removable)
+                    removable = None
+                if not had_layer:
+                    removable = core.constraint_layer(bm)
+                    if removable is not None:
+                        bm.loops.layers.int.remove(removable)
+                    removable = None
+                # Complete all allocations/removals before acquiring fresh handles.
+                if had_layer:
+                    core.constraint_layer(bm, create=True)
+                if had_groups:
+                    core.aligned_group_layer(bm, create=True)
+                core.prepare_bm(bm)
+                layer, groups = core.constraint_layer(bm), core.aligned_group_layer(bm)
+                loops = core.loops_in_order(bm)
+                for position, old_kind, old_group in previous:
+                    if layer is not None:
+                        loops[position][layer] = old_kind
+                    if groups is not None:
+                        loops[position][groups] = old_group
+            except BaseException as rollback_error:
+                clear_frames(rollback_error.__traceback__)
+                error.add_note('Constraint corner rollback failed: %s' % rollback_error)
+            finally:
+                bm = loops = layer = groups = removable = None
+            for store, value in mirrors.items():
+                try:
+                    if value is not None:
+                        obj[store] = value
+                    elif store in obj:
+                        del obj[store]
+                except BaseException as rollback_error:
+                    error.add_note('Constraint mirror rollback failed for %s: %s' % (store, rollback_error))
+            try:
+                bmesh.update_edit_mesh(obj.data)
+            except BaseException as rollback_error:
+                error.add_note('Constraint mesh update after rollback failed: %s' % rollback_error)
+            raise
     overlay.bump_revision()
     core.invalidate_stats_cache()
-    del bm
+    if not positions:
+        del bm
     if shape_positions:
         from . import shape_constraints
         shape_constraints.clear(obj,shape_positions)
@@ -408,7 +472,7 @@ class UVCK_OT_unconstrain(bpy.types.Operator):
         from . import shape_constraints
         shape_targets=set()
         if bm.loops.layers.string.get(shape_constraints.LAYER) is not None:
-            topology=core.UVTopology(bm,bm.loops.layers.uv.active)
+            topology=SimpleNamespace(bm=bm,uvl=bm.loops.layers.uv.active,loops=loops)
             try:shape_targets=shape_constraints.touched_edges(topology,selected)
             except ValueError as exc:
                 self.report({'WARNING'},t(str(exc)))

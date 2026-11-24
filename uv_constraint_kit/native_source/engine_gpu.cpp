@@ -12,6 +12,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#ifdef _M_X64
+#include <xmmintrin.h>
+#endif
 
 #ifdef _WIN32
 #define API extern "C" __declspec(dllexport)
@@ -37,6 +40,18 @@ struct Output { I accepted, evaluations, reciprocal, finite; double energy, grad
 #include "gpu_driver.hpp"
 static double dot(const Vec& a, const Vec& b) {
     double r=0; for(std::size_t i=0;i<a.size();++i) r+=a[i]*b[i]; return r;
+}
+
+template<bool subtract>
+static double update_and_dot(Vec& direction,const Vec& update,double scale,const Vec& weights) {
+    double sum=0;
+    for(std::size_t i=0;i<direction.size();++i) {
+        const double change=scale*update[i];
+        const double value=subtract ? direction[i]-change : direction[i]+change;
+        direction[i]=value;
+        sum+=weights[i]*value;
+    }
+    return sum;
 }
 static double max_abs(const Vec& a) {
     double r=0; for(double x:a) r=std::max(r,std::abs(x)); return r;
@@ -198,17 +213,49 @@ struct Problem {
             (*gradient)[2*(end?b:a)+axis]+=(end?2:-2)*p.penalty_weights[e]*d;
         }
     }
+    bool rejects_at_previous_triangle(const Vec& x) const {
+#ifdef _M_X64
+        if(!gpu || (!reciprocal && !p.prevent_flips) || gpu->invalid_triangle<0) return false;
+        // Bundled PTX uses separate round-to-nearest double operations
+        // without flush-to-zero. Use the shortcut only in that FP mode.
+        // Restore the Blender thread's full control and exception flags
+        // before returning to any of the original solver arithmetic.
+        struct RestoreMxcsr {
+            unsigned original = _mm_getcsr();
+            ~RestoreMxcsr() {_mm_setcsr(original);}
+        } fp;
+        constexpr unsigned ieee_nearest = _MM_MASK_MASK;
+        _mm_setcsr(ieee_nearest);
+        const I t=gpu->invalid_triangle;
+        const I a=p.tri[3*t],b=p.tri[3*t+1],c=p.tri[3*t+2];
+        const double* inv=&p.inverse[4*t];
+        double jacobian[4];
+        for(int axis=0;axis<2;++axis) {
+            const __m128d base=_mm_set_sd(x[2*a+axis]);
+            const __m128d u=_mm_sub_sd(_mm_set_sd(x[2*b+axis]),base);
+            const __m128d w=_mm_sub_sd(_mm_set_sd(x[2*c+axis]),base);
+            for(int column=0;column<2;++column) {
+                const volatile double u_term=_mm_cvtsd_f64(_mm_mul_sd(u,_mm_set_sd(inv[column])));
+                const volatile double w_term=_mm_cvtsd_f64(_mm_mul_sd(w,_mm_set_sd(inv[column+2])));
+                jacobian[2*axis+column]=_mm_cvtsd_f64(_mm_add_sd(_mm_set_sd(u_term),_mm_set_sd(w_term)));
+            }
+        }
+        for(double component:jacobian) if(!std::isfinite(component)) return false;
+        const volatile double left=jacobian[0]*jacobian[3],right=jacobian[1]*jacobian[2];
+        const double determinant=left-right;
+        return std::isfinite(determinant) && determinant<=1e-6;
+#else
+        return false;
+#endif
+    }
     double energy(const Vec& x) {
         ++evaluations;double e=0;
-        Vec gpu_terms;
         if(gpu) {
-            gpu_terms.resize(p.nt);
-            try {gpu->energy(x,reciprocal,p.prevent_flips!=0,p.angle_length,gpu_terms);}
+            try {e=gpu->energy(x,reciprocal,p.prevent_flips!=0,p.angle_length);}
             catch(const std::exception& error) {gpu_failure(error);gpu.reset();}
         }
         if(!gpu) build_j(x);
-        for(I t=0;t<p.nt;++t) {
-            if(gpu) {e+=gpu_terms[t];continue;}
+        if(!gpu) for(I t=0;t<p.nt;++t) {
             const double* j=&jacobian[4*t];
             for(int k=0;k<4;++k) if(!std::isfinite(j[k])) return INF;
             double det=j[0]*j[3]-j[1]*j[2];
@@ -222,8 +269,9 @@ struct Problem {
         if(!borders_valid(x)) return INF;
         penalty(x,&e,nullptr);return std::isfinite(e)?e:INF;
     }
-    Vec gradient(const Vec& x) {
-        Vec gu,g(2*p.n,0);
+    void gradient(const Vec& x,Vec& g) {
+        Vec gu;
+        g.assign(2*p.n,0);
         if(gpu) {
             try {gpu->gradient(reciprocal,p.prevent_flips!=0,p.angle_length,g);}
             catch(const std::exception& error) {gpu_failure(error);gpu.reset();build_j(x);}
@@ -263,7 +311,6 @@ struct Problem {
             }
         } else penalty(x,nullptr,&g);
         for(I i=0;i<p.n;++i) if(p.fixed[i]) {g[2*i]=0;g[2*i+1]=0;}
-        return g;
     }
 };
 static bool valid_input(const Input& p) {
@@ -292,29 +339,91 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
         for(I t=0;t<p.nt;++t) {const double* j=&problem.jacobian[4*t];double d=j[0]*j[3]-j[1]*j[2];if(!std::isfinite(d) || d<=1e-6) problem.reciprocal=false;}
         double e=problem.energy(x);*stats={0,problem.evaluations,problem.reciprocal,0,e,INF};
         if(!std::isfinite(e)) return 1; // Do not publish even the initial projection.
-        Vec g=problem.gradient(x);
-        struct History {Vec s,y;double rho;};std::vector<History> history;
+        Vec g,next_g;
+        problem.gradient(x,g);
+        Vec direction(x.size()),candidate(x.size()),change(x.size()),y(x.size());
+        constexpr std::size_t history_limit=8;
+        struct History {Vec s,y;double rho,sy,yy;};
+        std::vector<History> history;
+        history.reserve(history_limit);
+        std::array<double,history_limit> coefficients{};
         I limit=p.automatic?1000:std::max<I>(1,p.iterations);
         for(I iteration=0;iteration<limit;++iteration) {
             if(p.automatic && max_abs(g)<1e-6) break;
-            Vec q=g;std::vector<double> coefficients;
-            for(auto i=history.rbegin();i!=history.rend();++i) {double alpha=i->rho*dot(i->s,q);coefficients.push_back(alpha);for(std::size_t k=0;k<q.size();++k) q[k]-=alpha*i->y[k];}
-            double scale=history.empty()?std::max(p.density*p.density,1e-6)*.05:dot(history.back().s,history.back().y)/std::max(dot(history.back().y,history.back().y),1e-20);
-            for(double& v:q) v*=scale;
-            for(std::size_t i=0;i<history.size();++i) {double v=coefficients[history.size()-i-1]-history[i].rho*dot(history[i].y,q);for(std::size_t k=0;k<q.size();++k) q[k]+=history[i].s[k]*v;}
-            Vec direction=q;for(double& v:direction) v=-v;double slope=dot(g,direction);
+            direction=g;
+            if(!history.empty()) {
+                std::size_t i=history.size()-1;
+                coefficients[i]=history[i].rho*dot(history[i].s,direction);
+                while(i>0) {
+                    const auto& current=history[i];
+                    const auto& next=history[i-1];
+                    // Apply this pair while reading the vector for the next dot,
+                    // keeping the original element order of its scalar sum.
+                    coefficients[i-1]=next.rho*update_and_dot<true>(
+                        direction,current.y,coefficients[i],next.s);
+                    --i;
+                }
+                for(std::size_t k=0;k<direction.size();++k)
+                    direction[k]-=coefficients[0]*history.front().y[k];
+            }
+            const double scale=history.empty()?std::max(p.density*p.density,1e-6)*.05
+                :history.back().sy/std::max(history.back().yy,1e-20);
+            for(double& v:direction) v*=scale;
+            if(!history.empty()) {
+                double v=coefficients[0]-history.front().rho*dot(history.front().y,direction);
+                for(std::size_t i=1;i<history.size();++i) {
+                    const double next_dot=update_and_dot<false>(direction,history[i-1].s,v,history[i].y);
+                    v=coefficients[i]-history[i].rho*next_dot;
+                }
+                for(std::size_t k=0;k<direction.size();++k)
+                    direction[k]+=history.back().s[k]*v;
+            }
+            for(double& v:direction) v=-v;
+            double slope=dot(g,direction);
             if(slope>=0) {for(std::size_t k=0;k<g.size();++k) direction[k]=-g[k];slope=-dot(g,g);history.clear();}
-            double step=1,next_e=INF;Vec candidate(x.size());bool accepted=false;
+            double step=1,next_e=INF;
+            bool accepted=false;
             for(int search=0;search<32;++search) {
                 for(std::size_t k=0;k<x.size();++k) candidate[k]=x[k]+step*direction[k];
-                problem.project(candidate);next_e=problem.energy(candidate);
-                if(next_e<=e+1e-4*step*slope) {accepted=true;break;}step*=.5;
+                problem.project(candidate);
+                const double threshold=e+1e-4*step*slope;
+                if(std::isfinite(threshold) && problem.rejects_at_previous_triangle(candidate)) {
+                    // The full kernel would return invalid energy. Count the
+                    // trial and follow the same rejection/halving policy.
+                    ++problem.evaluations;
+                    step*=.5;
+                    continue;
+                }
+                next_e=problem.energy(candidate);
+                if(next_e<=threshold) {accepted=true;break;}step*=.5;
             }
             if(!accepted) break;
-            Vec next_g=problem.gradient(candidate),change(x.size()),y(x.size());
-            for(std::size_t k=0;k<x.size();++k) {change[k]=candidate[k]-x[k];y[k]=next_g[k]-g[k];}
-            double sy=dot(change,y);if(sy>1e-14) {history.push_back({std::move(change),std::move(y),1/sy});if(history.size()>8) history.erase(history.begin());}
-            double improvement=e-next_e;x=std::move(candidate);e=next_e;g=std::move(next_g);++stats->accepted;
+            problem.gradient(candidate,next_g);
+            double sy=0,yy=0;
+            for(std::size_t k=0;k<x.size();++k) {
+                change[k]=candidate[k]-x[k];
+                y[k]=next_g[k]-g[k];
+                sy+=change[k]*y[k];
+                yy+=y[k]*y[k];
+            }
+            if(sy>1e-14) {
+                History entry{std::move(change),std::move(y),1/sy,sy,yy};
+                if(history.size()==history_limit) {
+                    // Reuse the buffers of the history pair that is leaving the window.
+                    change=std::move(history.front().s);
+                    y=std::move(history.front().y);
+                    history.erase(history.begin());
+                } else {
+                    change.resize(x.size());
+                    y.resize(x.size());
+                }
+                history.push_back(std::move(entry));
+            }
+            double improvement=e-next_e;
+            x.swap(candidate);
+            e=next_e;
+            g.swap(next_g);
+            ++stats->accepted;
             if(p.automatic && improvement<=1e-10*std::max(1.,std::abs(e))) break;
         }
         for(double v:x) if(!std::isfinite(v)) return -2;
@@ -332,7 +441,8 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
 API int uvck_evaluate(const Input* input,I reciprocal,double* energy,double* gradient) noexcept {
     try {if(!input || !energy || !gradient || !valid_input(*input)) return -1;
         Problem p(*input);p.reciprocal=reciprocal!=0;Vec x(input->uv,input->uv+2*input->n);
-        double e=p.energy(x);if(!std::isfinite(e)) {*energy=e;return 1;}Vec g=p.gradient(x);*energy=e;std::copy(g.begin(),g.end(),gradient);return 0;
+        double e=p.energy(x);if(!std::isfinite(e)) {*energy=e;return 1;}
+        Vec g;p.gradient(x,g);*energy=e;std::copy(g.begin(),g.end(),gradient);return 0;
     }catch(...){return -3;}
 }
 API int uvck_deform(I n,I ne,const I* edges,const double* weights,const double* degree,const std::uint8_t* fixed,double* displacement) noexcept {

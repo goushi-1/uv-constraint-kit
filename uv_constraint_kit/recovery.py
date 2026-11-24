@@ -70,8 +70,12 @@ def _crosses(topo, faces, triangles=None, *, coordinates=None):
     return positions, edges[:, 0, 0]*edges[:, 1, 1]-edges[:, 0, 1]*edges[:, 1, 0]
 
 
-def plan(core, topo, faces, settings, *, _coordinates=None):
-    """Find damaged charts; optional coordinates are this unchanged input."""
+def plan(core, topo, faces, settings, *, _coordinates=None, _initial_probe=None):
+    """Find damaged charts; private probe/source pair belongs to unchanged input.
+
+    Only the synchronous checked caller supplies this pair, before any UV or
+    topology write. Identity guards do not authorize reuse after mutation.
+    """
     result = dict(charts=[], skipped=[], clean_faces=[])
     if settings.get('mix', 1.) != 1.:
         return result
@@ -92,8 +96,18 @@ def plan(core, topo, faces, settings, *, _coordinates=None):
         if not mixed and not degenerate:
             if len(island) == 1:
                 continue
-            probe = safety.AcceptanceProbe(core, topo, island, triangles=triangles[root],
-                                           coordinates=_coordinates)
+            probe = None
+            if (_coordinates is not None and isinstance(_initial_probe, tuple)
+                    and len(_initial_probe) == 2 and _initial_probe[1] is _coordinates
+                    and len(islands) == 1 and len(island) == len(topo.island_faces[root])):
+                shared = _initial_probe[0]
+                if (shared is not None and shared.core is core
+                        and shared.roots is topo.face_island and shared.faces == island
+                        and not shared.check_other_islands and not shared.static):
+                    probe = shared
+            if probe is None:
+                probe = safety.AcceptanceProbe(core, topo, island, triangles=triangles[root],
+                                               coordinates=_coordinates)
             # No UV writes occur between this probe's construction and the
             # existing-overlap check; reuse its exact current input values.
             overlap = probe.check_overlaps(topo, include_existing=True,
@@ -263,7 +277,7 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                             angle_length=settings.get('angle_distance_mix', 1.),
                             use_density_map=settings.get('use_density_map', True),
                             auto=False, _reference_sign=chart['sign'])
-                        raw = np.asarray([tuple(l[topo.uvl].uv) for l in topo.loops])
+                        raw = np.array(core.mesh_reader.read_uv(topo.loops, topo.uvl), dtype=float, copy=True)
                         topo = None
                         status = {'FINISHED'} if count else {'CANCELLED'}
                     else:
@@ -299,7 +313,7 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                             use_subsurf_data=False, use_weights=False)
                         bm = bmesh.from_edit_mesh(obj.data)
                         uvl = core.uv_layer(bm)
-                        raw = np.asarray([tuple(l[uvl].uv) for l in core.loops_in_order(bm)])
+                        raw = np.array(core.mesh_reader.read_uv(core.loops_in_order(bm), uvl), dtype=float, copy=True)
                         del bm, uvl
                         if chart['sign'] < 0:
                             raw[target, 0] *= -1
@@ -350,12 +364,16 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                                      else target_area)
                         core.restore_pose(topo, island, {p: tuple(best[p]) for p in target},
                                           allow_rotation=(method not in ('LOCAL', 'METRIC')), target_area=pose_area)
-                    _, cross = _crosses(topo, island)
-                    probe = safety.AcceptanceProbe(core, topo, island)
-                    health = probe.measure(topo, coordinates=probe.reference)
+                    # All checks below read the same post-pose coordinates.
+                    value = np.array(core.mesh_reader.read_uv(topo.loops, topo.uvl), dtype=float, copy=True)
+                    probe = safety.AcceptanceProbe(core, topo, island, coordinates=value)
+                    triangle_positions = np.asarray([pos for _, pos, _ in probe.target], dtype=np.intp).reshape(-1, 3)
+                    triangles = value[triangle_positions]
+                    edges = triangles[:, 1:] - triangles[:, :1]
+                    cross = edges[:, 0, 0]*edges[:, 1, 1] - edges[:, 0, 1]*edges[:, 1, 0]
+                    health = probe.measure(topo, coordinates=probe.reference, _triangles=triangles)
                     overlap = probe.check_overlaps(topo, include_existing=True,
                                                    coordinates=probe.reference)
-                    value = np.asarray([tuple(l[topo.uvl].uv) for l in topo.loops])
                     if (np.any(cross*chart['sign'] <= 2e-14) or not health['finite'] or
                             health['zero_edges'] or
                             overlap['self_overlaps'] or not np.array_equal(value[outside], best[outside]) or
