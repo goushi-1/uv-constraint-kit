@@ -215,7 +215,7 @@ struct Problem {
     }
     bool rejects_at_previous_triangle(const Vec& x) const {
 #ifdef _M_X64
-        if(!gpu || (!reciprocal && !p.prevent_flips) || gpu->invalid_triangle<0) return false;
+        if(!gpu || (!reciprocal && !p.prevent_flips) || gpu->invalid_triangles.ids.front()<0) return false;
         // Bundled PTX uses separate round-to-nearest double operations
         // without flush-to-zero. Use the shortcut only in that FP mode.
         // Restore the Blender thread's full control and exception flags
@@ -226,24 +226,30 @@ struct Problem {
         } fp;
         constexpr unsigned ieee_nearest = _MM_MASK_MASK;
         _mm_setcsr(ieee_nearest);
-        const I t=gpu->invalid_triangle;
-        const I a=p.tri[3*t],b=p.tri[3*t+1],c=p.tri[3*t+2];
-        const double* inv=&p.inverse[4*t];
-        double jacobian[4];
-        for(int axis=0;axis<2;++axis) {
-            const __m128d base=_mm_set_sd(x[2*a+axis]);
-            const __m128d u=_mm_sub_sd(_mm_set_sd(x[2*b+axis]),base);
-            const __m128d w=_mm_sub_sd(_mm_set_sd(x[2*c+axis]),base);
-            for(int column=0;column<2;++column) {
-                const volatile double u_term=_mm_cvtsd_f64(_mm_mul_sd(u,_mm_set_sd(inv[column])));
-                const volatile double w_term=_mm_cvtsd_f64(_mm_mul_sd(w,_mm_set_sd(inv[column+2])));
-                jacobian[2*axis+column]=_mm_cvtsd_f64(_mm_add_sd(_mm_set_sd(u_term),_mm_set_sd(w_term)));
+        auto fails_determinant=[&](I t) {
+            const I a=p.tri[3*t],b=p.tri[3*t+1],c=p.tri[3*t+2];
+            const double* inv=&p.inverse[4*t];
+            double jacobian[4];
+            for(int axis=0;axis<2;++axis) {
+                const __m128d base=_mm_set_sd(x[2*a+axis]);
+                const __m128d u=_mm_sub_sd(_mm_set_sd(x[2*b+axis]),base);
+                const __m128d w=_mm_sub_sd(_mm_set_sd(x[2*c+axis]),base);
+                for(int column=0;column<2;++column) {
+                    const volatile double u_term=_mm_cvtsd_f64(_mm_mul_sd(u,_mm_set_sd(inv[column])));
+                    const volatile double w_term=_mm_cvtsd_f64(_mm_mul_sd(w,_mm_set_sd(inv[column+2])));
+                    jacobian[2*axis+column]=_mm_cvtsd_f64(_mm_add_sd(_mm_set_sd(u_term),_mm_set_sd(w_term)));
+                }
             }
+            for(double component:jacobian) if(!std::isfinite(component)) return false;
+            const volatile double left=jacobian[0]*jacobian[3],right=jacobian[1]*jacobian[2];
+            const double determinant=left-right;
+            return std::isfinite(determinant) && determinant<=1e-6;
+        };
+        for(const I triangle:gpu->invalid_triangles.ids) {
+            if(triangle<0) break;
+            if(fails_determinant(triangle)) return true;
         }
-        for(double component:jacobian) if(!std::isfinite(component)) return false;
-        const volatile double left=jacobian[0]*jacobian[3],right=jacobian[1]*jacobian[2];
-        const double determinant=left-right;
-        return std::isfinite(determinant) && determinant<=1e-6;
+        return false;
 #else
         return false;
 #endif

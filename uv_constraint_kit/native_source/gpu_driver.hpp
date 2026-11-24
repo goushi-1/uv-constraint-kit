@@ -121,11 +121,23 @@ struct CudaRuntime {
 static CudaRuntime* gpu_runtime=nullptr;
 static std::string gpu_ptx_path;
 
+
+// Only IDs of triangles already found infeasible by a completed GPU check.
+struct RecentTriangles {
+    std::array<I,8> ids{{-1,-1,-1,-1,-1,-1,-1,-1}};
+    void remember(I triangle) {
+        auto at=std::find(ids.begin(),ids.end(),triangle);
+        if(at==ids.end()) --at;
+        std::move_backward(ids.begin(),at,at+1);
+        ids.front()=triangle;
+    }
+};
+
 struct GpuSession {
     std::unique_lock<std::recursive_mutex> lock;
     CudaRuntime& driver;
     I n,nt;
-    I invalid_triangle=-1;
+    RecentTriangles invalid_triangles;
     CUdeviceptr uv=0,triangles=0,j=0,inverse=0,weights=0,result=0;
     CUdeviceptr adjacency_offsets=0,adjacency_entries=0,vertex_gradient=0;
     void* staging_in=nullptr;
@@ -218,7 +230,7 @@ struct GpuSession {
         for(I t=0;t<nt;++t) sum+=terms[t];
         if((reciprocal || prevent) && !std::isfinite(sum)) {
             for(I t=0;t<nt;++t) if(!std::isfinite(terms[t])) {
-                invalid_triangle=t;
+                invalid_triangles.remember(t);
                 break;
             }
         }
