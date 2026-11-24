@@ -4,16 +4,16 @@
 
 **在 Blender 中，把需要控制的 UV 边保持为直线、圆形或方形，让岛屿其余部分围绕这些约束调整。**
 
-> **1.7.58 正式版：Windows x64 CPU+GPU，附原生读取器。**
-> [下载安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.58/uv_constraint_kit-1.7.58.zip)
+> **1.7.65 正式版：Windows x64 CPU+GPU，附原生读取器。**
+> [下载安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.65/uv_constraint_kit-1.7.65.zip)
 > · [查看验收范围](docs/VALIDATION.md)。
 
 选中一段边，可以添加水平、垂直或直线约束；选中一个完整闭合环，可以把开孔变圆，
 或把边界整理成长方形。开启「标记后自动优化」时，添加或解除约束后，相关 UV 岛会随之
 优化。约束会保留下来，供后续优化继续使用，而不只是当次把选区对齐。
 
-[1.7.58 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.58)
-提供 **`uv_constraint_kit-1.7.58.zip`**。需要 **Blender 5.2+**。
+[1.7.65 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.65)
+提供 **`uv_constraint_kit-1.7.65.zip`**。需要 **Blender 5.2+**。
 [安装包身份](release_checks.json)。
 [查看已知问题](docs/KNOWN_ISSUES.md)。
 符合条件的大型求解会自动使用 GPU；小网格和部分特殊求解仍使用 CPU。GPU 需要
@@ -21,11 +21,12 @@ NVIDIA 计算能力 8.9+ 显卡及支持 CUDA 12.4+ 的驱动。预构建扩展�
 Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 已发布的版本见[历史发行版](https://github.com/goushi-1/uv-constraint-kit/releases)。
 
-## 1.7.58 的变化
+## 1.7.65 的变化
 
-stable ABI 读取器新增可选的实时逐面 UV 面积计算；核心和安全检查共享初始数值 UV 输入及每个候选三角形数组。求解公式、顺序和检查均保留。CPU 和 GPU 二进制沿用已发布的 1.7.57，读取器重新编译；旧读取器缺少该方法时仍回退 Python。没有新增用户功能。
-
-最终包通过 21 项验收。直接对照 1.7.57，540 对完整操作耗时下降 5.587%，密集用例 18 对下降 7.092%。这些是本机有限观测，部分小用例变慢，不承诺通用提速或低于一秒；详见[验收记录](docs/VALIDATION.md)。
+- **精确 H/V 子空间交接与续延**：新增精确子空间交接，并在高密无约束 `clear` 路径直接启用重叠护栏松弛，彻底消除凹湾边界自重叠。
+- **`float32` 安全边界守卫与活跃集接触钉固**：消除 `float64 -> float32` 写回导致的边界交叉与凹湾单点锁死，将 `coastal` / `rocks` 最大拉伸降低 `89%–99.8%`。
+- **打包口径统一**：`scripts/package.py` 与 `tests/test_package.py` 补齐 `numeric_stage`，与 `blender --command extension build` 达成 48/48 成员逐字节一致。
+- **Blender 5.3.0 实测通过**：31 用例（62 操作）P2 门禁全过（零重叠/零交叉/零翻转，`27/31` 标记达精确零残差）；12 项 CPU-0 绑核 ABBA+BAAB 总中位耗时下降 `16.43%`（`35.71s -> 29.84s`）；完成 `1.7.62 -> 1.7.65` 隔离覆盖升级、F9 与 CPU/GPU 双后端验收。
 
 ## 从已有 UV 开始
 
@@ -163,8 +164,8 @@ stable ABI 读取器新增可选的实时逐面 UV 面积计算；核心和安�
 
 ## 从源码构建
 
-Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.7.58 重新编译了 CPython stable ABI 读取器；CPU 和 GPU 二进制沿用 1.7.57。原生构建面向
-**Windows x64 / MSVC**；宿主检查使用 Blender 5.2.3。从源码构建 CUDA 引擎需要
+Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.7.65 更新了 CPU 与 GPU 引擎（`gpu_metric.cu` 未改动），并在 `scripts/package.py` 中补齐 `numeric_stage`。原生构建面向
+**Windows x64 / MSVC**；宿主检查使用 Blender 5.3.0。从源码构建 CUDA 引擎需要
 CUDA Toolkit / NVRTC 12.4；预构建包只需要兼容 NVIDIA 驱动。读取器运行时使用
 Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
 以下命令是独立的完整重建示例，并未用于生成此发行包。
@@ -172,7 +173,7 @@ Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.58.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.7.65.zip
 ```
 
 `--reader` 必须同时提供 `--python-include`（其中有 `Python.h`）和
@@ -205,7 +206,7 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 
 ## 版本区分
 
-- 1.7.58 为正式版，最终包及所列验收已通过。
+- 1.7.65 为当前正式版，已完成隔离 Blender 5.3.0 升级、P2 62 操作及 ABBA+BAAB 验收。
 - 1.7.57 为上一发行版，其记录见 [v1.7.57 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.57/release_checks.json)。
 - 更早结果分别记录在[验收记录](docs/VALIDATION.md)。
 

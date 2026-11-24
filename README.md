@@ -5,8 +5,8 @@
 **Keep the UV edges you care about straight or shaped while the rest of the
 island adjusts around them, inside Blender.**
 
-> **Version 1.7.58 — Windows x64 CPU+GPU with native reader.**
-> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.58/uv_constraint_kit-1.7.58.zip)
+> **Version 1.7.65 — Windows x64 CPU+GPU with native reader.**
+> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.65/uv_constraint_kit-1.7.65.zip)
 > · [Validation scope](docs/VALIDATION.md).
 
 Select an edge run and give it a horizontal, vertical or straight-line
@@ -15,8 +15,8 @@ cutout. With **Optimize after marking** enabled, the affected island updates
 when you add or remove a constraint. Constraints remain available for later
 optimization, rather than being a one-time alignment.
 
-The [1.7.58 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.58)
-provides **`uv_constraint_kit-1.7.58.zip`**. Requires **Blender 5.2+**.
+The [1.7.65 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.65)
+provides **`uv_constraint_kit-1.7.65.zip`**. Requires **Blender 5.2+**.
 [Package identity](release_checks.json).
 [Known issues](docs/KNOWN_ISSUES.md).
 Eligible large solves use the GPU automatically; small meshes and some special
@@ -26,11 +26,12 @@ not require the CUDA Toolkit. Other hardware and unsupported GPU setups use the
 CPU path. Published builds remain in the
 [release history](https://github.com/goushi-1/uv-constraint-kit/releases).
 
-## What changed in 1.7.58
+## What changed in 1.7.65
 
-The stable-ABI reader adds optional live per-face UV area calculation. Core and safety share the initial numeric UV input and each candidate triangle array. Solver formulas and order remain unchanged, and no checks were removed. CPU and GPU binaries are unchanged from published 1.7.57; the reader was rebuilt. Older readers without the method retain the Python fallback. No new user-facing features are introduced.
-
-The final package passed 21 gates. In direct local comparisons against 1.7.57, 540 complete-operation pairs took 5.587% less time and 18 dense pairs took 7.092% less. Some small cases regressed; these limited observations are not a general speed or sub-second guarantee. See [validation](docs/VALIDATION.md).
+- **Exact H/V subspace handoff & continuation**: Added direct exact-subspace handoff and overlap-safe guarded relaxation on unconstrained dense `clear` paths, eliminating concave boundary self-overlaps.
+- **`float32`-safe boundary guard & active-set contact pinning**: Prevented `float64 -> float32` writeback boundary crossings and stalled concave-border solves, cutting `coastal`/`rocks` max stretch by `89%–99.8%`.
+- **Packaging parity**: Aligned `scripts/package.py` and `tests/test_package.py` to include `numeric_stage` (48/48 member parity with `blender --command extension build`).
+- **Local Blender 5.3.0 verification**: Passed 31-case (62-op) P2 quality gates (`0` overlaps/crossings/flips, `27/31` exact-zero mark residuals), 12-op CPU-0 pinned ABBA+BAAB (`-16.43%` total median wall time, `35.71s -> 29.84s`), and isolated `1.7.62 -> 1.7.65` upgrade/F9/CPU+GPU acceptance.
 
 ## Start with an existing UV layout
 
@@ -196,8 +197,8 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 ## Building from source
 
 Python handles Blender's interface, selection, undo and overlays; C++17 engines
-handle numeric solves. Version 1.7.58 rebuilds the CPython stable-ABI reader; CPU and GPU binaries are unchanged from 1.7.57. Native builds target
-**Windows x64 / MSVC**; host checks used Blender 5.2.3. Building the CUDA engine
+handle numeric solves. Version 1.7.65 updates both the CPU and GPU engines (`gpu_metric.cu` unchanged) and adds `numeric_stage` to `scripts/package.py`. Native builds target
+**Windows x64 / MSVC**; host checks used Blender 5.3.0. Building the CUDA engine
 from source requires CUDA Toolkit / NVRTC 12.4; the prebuilt ZIP needs only a
 supported NVIDIA driver. The reader uses Blender's bundled Python at runtime.
 Neither Python nor CUDA runtime files are distributed.
@@ -207,7 +208,7 @@ produce this release.
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.58.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.7.65.zip
 ```
 
 `--reader` requires `--python-include` containing `Python.h` and
@@ -247,7 +248,7 @@ tool. GPU execution is limited to eligible paths and does not guarantee a speedu
 
 ## Versions
 
-- 1.7.58 is the current release; final package checks passed.
+- 1.7.65 is the current release; isolated Blender 5.3.0 upgrade, P2 62-op, and ABBA+BAAB checks passed.
 - 1.7.57 is the previous release; its record is at the [v1.7.57 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.57/release_checks.json).
 - Earlier results are recorded separately in [validation](docs/VALIDATION.md).
 
