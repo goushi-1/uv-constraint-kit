@@ -551,6 +551,7 @@ class UVTopology:
         # This mapping contains UV groups; the mesh tessellation itself is
         # unchanged by coordinate writes and remains valid in this instance.
         self.__dict__.pop('_triangle_groups', None)
+        self.__dict__.pop('_border_loops_cache', None)
 
     def loop_triangles(self):
         """Reuse the immutable mesh tessellation within this topology only.
@@ -573,6 +574,36 @@ class UVTopology:
                 for tri in self.loop_triangles()
             )
         return rows
+
+    def _loop_edges_array(self):
+        """Cached per-loop mesh edge indices when radial connectivity is complete."""
+        edges = getattr(self, '_loop_edges', None)
+        if edges is None:
+            structure = getattr(self, '_radial_connectivity', None)
+            if structure is None:
+                return None
+            offsets, radial = structure
+            if len(radial) != self.loop_count:
+                return None
+            counts = np.diff(offsets)
+            arr = np.empty(self.loop_count, dtype=np.int64)
+            arr[radial] = np.repeat(np.arange(len(counts), dtype=np.int64), counts)
+            edges = self._loop_edges = arr
+        return edges
+
+    def _triangle_arrays(self):
+        """Cached (tri_faces[nt], tri_loops[nt, 3]) int64 arrays for this topology."""
+        arrays = getattr(self, '_triangle_arrays_cache', None)
+        if arrays is None:
+            rows = self.triangle_rows()
+            if rows:
+                tri_faces = np.asarray([fi for fi, _ in rows], dtype=np.int64)
+                tri_loops = np.asarray([pos for _, pos in rows], dtype=np.int64).reshape(-1, 3)
+            else:
+                tri_faces = np.empty(0, dtype=np.int64)
+                tri_loops = np.empty((0, 3), dtype=np.int64)
+            arrays = self._triangle_arrays_cache = (tri_faces, tri_loops)
+        return arrays
 
     # -- UV vertices ------------------------------------------------------
 
@@ -1900,7 +1931,20 @@ def island_area(topo, faces, *, coordinates=None):
     """Summed |UV area| of the given faces."""
     uvl = topo.uvl
     if coordinates is None:
-        value = mesh_reader.island_area((topo.bm.faces[fi] for fi in sorted(faces)), uvl)
+        if len(faces) >= 4096:
+            from . import numeric_stage
+            if numeric_stage._load() is not None:
+                coords = np.asarray(mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64)
+                value = numeric_stage.read_area(topo, faces, coords)
+                if value is not None:
+                    return value
+        seq = topo.bm.faces if len(faces) == len(topo.bm.faces) else (topo.bm.faces[fi] for fi in sorted(faces))
+        value = mesh_reader.island_area(seq, uvl)
+        if value is not None:
+            return value
+    elif isinstance(coordinates, np.ndarray):
+        from . import numeric_stage
+        value = numeric_stage.read_area(topo, faces, coordinates)
         if value is not None:
             return value
     total = 0.0
@@ -1955,7 +1999,73 @@ def face_islands(topo, faces):
 
 def selection_border_loops(topo, faces):
     """UV boundaries, including cuts inside one otherwise connected island."""
-    wanted=set(faces)
+    wanted=frozenset(faces)
+    cache=getattr(topo,'_border_loops_cache',None)
+    if cache is None:
+        cache=topo._border_loops_cache={}
+    cached=cache.get(wanted)
+    if cached is not None:
+        return list(cached)
+    edges_arr = topo._loop_edges_array() if hasattr(topo, '_loop_edges_array') else None
+    if edges_arr is not None:
+        all_faces = len(wanted) == len(topo.bm.faces)
+        radial_conn = getattr(topo, '_radial_connectivity', None)
+        if all_faces and radial_conn is not None and len(radial_conn[1]) == topo.loop_count:
+            offsets, radial = radial_conn
+            counts = np.diff(offsets)
+            g = np.asarray(topo.loop_to_vgroup, dtype=np.int64)
+            nxt = topo._loop_next_array
+            parts = []
+            m1 = counts == 1
+            if np.any(m1):
+                parts.append(radial[offsets[:-1][m1]])
+            m2 = counts == 2
+            if np.any(m2):
+                o2 = offsets[:-1][m2]
+                p0 = radial[o2]
+                p1 = radial[o2 + 1]
+                a0, b0 = g[p0], g[nxt[p0]]
+                a1, b1_g = g[p1], g[nxt[p1]]
+                seam = ~(((a0 == a1) & (b0 == b1_g)) | ((a0 == b1_g) & (b0 == a1)))
+                if np.any(seam):
+                    parts.append(p0[seam])
+                    parts.append(p1[seam])
+            m3 = counts > 2
+            if np.any(m3):
+                for edge_idx in np.flatnonzero(m3):
+                    copies = {}
+                    for p in radial[offsets[edge_idx]:offsets[edge_idx + 1]].tolist():
+                        a, b = g[p], g[nxt[p]]
+                        key = (a, b) if a <= b else (b, a)
+                        copies.setdefault(key, []).append(p)
+                    extra = [ps[0] for ps in copies.values() if len(ps) == 1]
+                    if extra:
+                        parts.append(np.asarray(extra, dtype=np.int64))
+            result = tuple(np.sort(np.concatenate(parts)).tolist()) if parts else ()
+            cache[wanted] = result
+            return list(result)
+        if all_faces:
+            pos = np.arange(topo.loop_count, dtype=np.int64)
+        else:
+            pos = np.flatnonzero(np.isin(topo.loop_faces, sorted(wanted)))
+        if not len(pos):
+            cache[wanted] = ()
+            return []
+        g = np.asarray(topo.loop_to_vgroup, dtype=np.int64)
+        a = g[pos]
+        b = g[topo._loop_next_array[pos]]
+        keys = np.empty(len(pos), dtype=[('e', np.int64), ('lo', np.int64), ('hi', np.int64)])
+        keys['e'] = edges_arr[pos]
+        keys['lo'] = np.minimum(a, b)
+        keys['hi'] = np.maximum(a, b)
+        order = np.argsort(keys, kind='quicksort')
+        sk = keys[order]
+        diff = np.empty(len(sk) + 1, dtype=bool)
+        diff[0] = diff[-1] = True
+        diff[1:-1] = sk[1:] != sk[:-1]
+        result = tuple(np.sort(pos[order[diff[:-1] & diff[1:]]]).tolist())
+        cache[wanted] = result
+        return list(result)
     copies={}
     for fi in sorted(wanted):
         face = topo.bm.faces[fi]
@@ -1964,7 +2074,9 @@ def selection_border_loops(topo, faces):
             a,b=topo.loop_edge_vgroups(p)
             key=(loop.edge.index,min(a,b),max(a,b))
             copies.setdefault(key,[]).append(p)
-    return [positions[0] for positions in copies.values() if len(positions)==1]
+    result=tuple(positions[0] for positions in copies.values() if len(positions)==1)
+    cache[wanted]=result
+    return list(result)
 
 
 def loop_direction_deg(topo, position):
@@ -2105,13 +2217,14 @@ def rotate_faces_uv(topo, faces, degrees, center=None):
 def blend_towards(topo, snapshot, faces, amount):
     """Pull a face set's UVs back towards `snapshot` by `amount` (0 = untouched).
 
-    `snapshot` is a `_loop_uv_snapshot`. Keyed per loop, so the blend is exact
-    wherever it is applied and simply skipped where the snapshot has no entry.
+    `snapshot` is a `_loop_uv_snapshot` or `(loop_count, 2)` ndarray. Keyed per loop,
+    so the blend is exact wherever it is applied and simply skipped where missing.
     """
     amount = max(0.0, min(1.0, float(amount)))
     uvl = topo.uvl
+    is_array = isinstance(snapshot, np.ndarray)
     for position, loop in _uv_loops(topo, faces):
-        was = snapshot.get(position)
+        was = snapshot[position] if is_array else snapshot.get(position)
         if was is None:
             continue
         uv = loop[uvl].uv
@@ -2294,14 +2407,28 @@ def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0,
     Returns {theta_deg, scale, applied}.
     """
     uvl = topo.uvl
-    rows = _uv_loops(topo, faces)
-    pairs = [(reference[p], loop) for p, loop in rows if p in reference]
-    if len(pairs) < 2:
-        return {"applied": False}
-
-    P = np.asarray([(r[0], r[1]) for r, _l in pairs], dtype=np.float64)
-    Q = np.asarray(mesh_reader.read_uv([loop for _r, loop in pairs], uvl),
-                   dtype=np.float64)
+    if isinstance(reference, np.ndarray):
+        if len(faces) == len(topo.bm.faces):
+            loops = topo.loops
+            P = reference
+        else:
+            mask = np.isin(topo.loop_faces, list(faces))
+            positions = np.flatnonzero(mask)
+            if len(positions) < 2:
+                return {"applied": False}
+            loops = [topo.loops[p] for p in positions]
+            P = reference[positions]
+        if len(loops) < 2:
+            return {"applied": False}
+        Q = np.asarray(mesh_reader.read_uv(loops, uvl), dtype=np.float64)
+    else:
+        rows = _uv_loops(topo, faces)
+        pairs = [(reference[p], loop) for p, loop in rows if p in reference]
+        if len(pairs) < 2:
+            return {"applied": False}
+        loops = [_l for _r, _l in pairs]
+        P = np.asarray([(r[0], r[1]) for r, _l in pairs], dtype=np.float64)
+        Q = np.asarray(mesh_reader.read_uv(loops, uvl), dtype=np.float64)
     pc = P.mean(axis=0)
     qc = Q.mean(axis=0)
     dx = Q[:, 0] - qc[0]
@@ -2322,21 +2449,25 @@ def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0,
 
     scale = 1.0
     if target_area > 0.0:
-        have = island_area(topo, faces)
+        if isinstance(reference, np.ndarray) and len(faces) == len(topo.bm.faces):
+            have = island_area(topo, faces, coordinates=Q)
+        else:
+            have = island_area(topo, faces)
         if have > 0.0:
             scale = math.sqrt(target_area / have)
     if not (1e-3 < scale < 1e3):
         scale = 1.0
 
+    new_uv = np.column_stack((pc[0] + scale * rx, pc[1] + scale * ry))
     if _skip_same_uv:
         # Blender stores UVs as float32. Compare the resulting bits, including
         # the sign of zero, before suppressing an otherwise identical write.
         with np.errstate(over='ignore', invalid='ignore'):
-            rounded = np.column_stack((pc[0] + scale * rx, pc[1] + scale * ry)).astype(np.float32)
+            rounded = new_uv.astype(np.float32)
         if np.isfinite(rounded).all() and _same_uv_bits(rounded, Q):
             return {"applied": True, "theta_deg": math.degrees(theta), "scale": scale}
-    for i, (_r, loop) in enumerate(pairs):
-        loop[uvl].uv = (pc[0] + scale * rx[i], pc[1] + scale * ry[i])
+    for loop, uv in zip(loops, new_uv.tolist()):
+        loop[uvl].uv = uv
     return {"applied": True, "theta_deg": math.degrees(theta),
             "scale": scale}
 
@@ -2584,7 +2715,7 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
                     _recovery_orientation=None, _recovery_guarded_faces=(),
                     _quality_before=None, _quality_after=True, _contact_faces=(),
                     _geometry_cache=None, _direct_subspace=False,
-                    _require_positive_det=False):
+                    _require_positive_det=False, _update_mesh=True):
     """Optimize the current parameterization, without resetting its solution."""
     from . import metric
     topo = _topo
@@ -2594,7 +2725,7 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
     else:
         bm=topo.bm
     faces=set(faces)
-    reference=_loop_uv_snapshot(topo,faces)
+    reference=np.asarray(mesh_reader.read_uv(topo.loops,topo.uvl),dtype=np.float64)
     before=quality_metrics(topo,faces) if _quality_before is None else _quality_before
     islands=face_islands(topo,faces)
     count=0
@@ -2690,7 +2821,8 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
     if aborted:
         return count,0,dict(islands=len(islands),before=before,after=None,
                               aborted_projection=True,wrote_any=wrote_any)
-    bmesh.update_edit_mesh(obj.data)
+    if _update_mesh:
+        bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
     return count,0,dict(islands=len(islands),before=before,
                         after=quality_metrics(topo,faces) if _quality_after else None)
 
@@ -2891,15 +3023,14 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     healthy_roots={root for root,signs in chart_signs.items() if signs-{0} in ({1},{-1})}
     healthy_mask=np.asarray([root in healthy_roots for root in chart_roots]) & oriented
     healthy_input=bool(np.any(healthy_mask))
+    repaired_probes = {}
     def capture_health(topo, loop_coordinates=None):
         # Capture afresh for each trial; no coordinate cache crosses writes.
-        coordinates = probe.capture(topo, coordinates=loop_coordinates)
-        triangles = (loop_coordinates[triangle_indices]
-                     if isinstance(loop_coordinates, np.ndarray) and triangle_positions else
-                     np.asarray([coordinates[tri] for tri in triangle_positions]))
-        health = probe.measure(topo, coordinates=coordinates,
+        triangles = probe._capture_triangles(topo, coordinates=loop_coordinates)
+        view = probe._triangle_view(triangles)
+        health = probe.measure(topo, coordinates=view,
                                loop_coordinates=loop_coordinates, _triangles=triangles)
-        return coordinates, health, triangles
+        return view, health, triangles
 
     def valid(topo, health, coordinates, triangles, loop_coordinates=None, *, _ignore_residual=False):
         def uv_at(p):
@@ -2979,10 +3110,20 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 reason = 'new_island_overlap'
         if reason is None and recovery_report is not None:
             for chart in recovery_report['repaired']:
-                repaired_probe = safety.AcceptanceProbe(module, topo, set(chart['faces']),
-                                                        coordinates=loop_coordinates)
-                remaining = repaired_probe.check_overlaps(
-                    topo, include_existing=True, coordinates=repaired_probe.reference)
+                chart_faces = set(chart['faces'])
+                if chart_faces == faces and not probe.static:
+                    remaining = probe.check_overlaps(
+                        topo, include_existing=True, coordinates=coordinates)
+                else:
+                    key = (id(topo), tuple(chart['faces']))
+                    repaired_probe = repaired_probes.get(key)
+                    if repaired_probe is None:
+                        repaired_probe = safety.AcceptanceProbe(module, topo, chart_faces,
+                                                                coordinates=loop_coordinates)
+                        repaired_probes[key] = repaired_probe
+                    remaining = repaired_probe.check_overlaps(
+                        topo, include_existing=True,
+                        coordinates=None if loop_coordinates is None else repaired_probe._capture_triangles(topo, coordinates=loop_coordinates))
                 if remaining['self_overlaps']:
                     reason = 'input_recovery_failed'
                     break
@@ -3008,9 +3149,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         target = saved if value is None else value
         if _skip_same_uv and _same_uv_bits(mesh_reader.read_uv(loops, layer), target):
             return
-        for loop, uv in zip(loops, target):
+        rows = target.tolist() if isinstance(target, np.ndarray) else target
+        for loop, uv in zip(loops, rows):
             loop[layer].uv = uv
-        bmesh.update_edit_mesh(obj.data)
+        bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
 
     def interpolation(candidate, alpha, positions, *, scale_pinned=False):
         nonlocal active_trial, trial_layout
@@ -3143,8 +3285,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             return (seed_values if seed_values is not None else saved) if best_values is None else best_values
 
         def read_loop_tuples():
-            coords = mesh_reader.read_uv(topo.loops, topo.uvl)
-            return list(map(tuple, coords.tolist())) if isinstance(coords, np.ndarray) else coords
+            return np.array(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64, copy=True)
 
         def try_exact_subspace():
             nonlocal best_values, best_result, best_deviation, warm_values, warm_deviation
@@ -3152,9 +3293,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 _topo=topo, _constraint_strength=None, _quality_before=quality_before,
                 _quality_after=False, _geometry_cache=prepared_geometry,
                 _direct_subspace=True, _require_positive_det=require_pos,
-                **dict(settings, _contact_faces=contact_faces))
+                _update_mesh=False, **dict(settings, _contact_faces=contact_faces))
             if guarded[2].get('aborted_projection'):
-                restore(warm_values, _skip_same_uv=True)
+                if guarded[2].get('wrote_any'):
+                    restore(warm_values, _skip_same_uv=True)
                 return False
             coordinates, health, triangles = capture_health(topo)
             if valid(topo, health, coordinates, triangles) and health['max_deviation'] < best_deviation:
@@ -3180,7 +3322,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             guarded = _rebuild_islands(context, obj, faces, constraint_positions,
                 _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
                 _quality_after=False, _geometry_cache=prepared_geometry,
-                **dict(settings, _contact_faces=contact_faces))
+                _update_mesh=False, **dict(settings, _contact_faces=contact_faces))
             if guarded[0] == 0 and warm_values is not fallback_values():
                 warm_values = fallback_values()
                 warm_deviation = best_deviation
@@ -3188,7 +3330,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 guarded = _rebuild_islands(context, obj, faces, constraint_positions,
                     _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
                     _quality_after=False, _geometry_cache=prepared_geometry,
-                    **dict(settings, _contact_faces=contact_faces))
+                    _update_mesh=False, **dict(settings, _contact_faces=contact_faces))
             coordinates, health, triangles = capture_health(topo)
             accepted = valid(topo, health, coordinates, triangles) and health['max_deviation'] < best_deviation
             if accepted and contact_faces and (not health['constraints_limited'] or (medium_probe and stage == 0)):
@@ -3293,15 +3435,22 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     recovery_report = recalled['report']
                 else:
                     prepared = recovery.prepare(module, topo, recovery_plan, fixed_positions)
-                    # Native parameterization must not inherit live caller handles.
+                    # Native parameterization must not inherit live caller handles
+                    # across native unwrap; _topo_box returns topo only if safe.
+                    topo_box = [topo]
                     loop = layer = None
                     del bm, topo, uvl
                     recovery_report = recovery.seed(module, context, obj, recovery_plan,
                                                     saved, pins, fixed_positions, settings,
-                                                    _prepared=prepared)
-                    bm = bmesh.from_edit_mesh(obj.data)
-                    uvl = uv_layer(bm)
-                    topo = UVTopology(bm, uvl)
+                                                    _prepared=prepared, _topo_box=topo_box)
+                    if topo_box:
+                        topo = topo_box.pop()
+                        bm = topo.bm
+                        uvl = topo.uvl
+                    else:
+                        bm = bmesh.from_edit_mesh(obj.data)
+                        uvl = uv_layer(bm)
+                        topo = UVTopology(bm, uvl)
                 if recovery_report['failed']:
                     restore()
                     if settings.get('prevent_flips', False) or settings.get('prevent_overlap', False):
@@ -3337,7 +3486,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                             original_areas[root] = chart['area']
                 if recovery_report['repaired']:
                     healthy_input=bool(np.any(healthy_mask))
-                    seed_values = [tuple(l[uvl].uv) for l in topo.loops]
+                    seed_values = np.array(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64, copy=True)
                     # Preserve the recovered chart's embedding through the
                     # final solve. This guards only its own boundary; the
                     # user's cross-island overlap option stays independent.
@@ -3364,6 +3513,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 contact_faces.clear()
             if best_result is not None:
                 restore(best_values, _skip_same_uv=True)
+                bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
                 best_result[2]['after'] = quality_metrics(topo, faces) if _report_quality else {}
                 return best_result
             if seed_values is None:
@@ -3419,6 +3569,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                         contact_faces.clear()
                     if best_result is not None and not best_result[2]['health']['constraints_limited']:
                         restore(best_values, _skip_same_uv=True)
+                        bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
                         best_result[2]['after'] = quality_metrics(topo, faces) if _report_quality else {}
                         return best_result
                     # No complete clean contact result: retain the originally

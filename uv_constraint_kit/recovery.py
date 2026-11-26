@@ -48,13 +48,13 @@ def recall(core, topo, faces, positions, fixed, saved, pins, settings, state):
         return None
     for chart in state['report']['repaired']:
         probe = safety.AcceptanceProbe(core, topo, set(chart['faces']), coordinates=seed)
-        triangles = np.asarray(list(probe.reference.values()))
+        triangles = probe._ref_array
         edges = triangles[:, 1:]-triangles[:, :1]
         cross = edges[:, 0, 0]*edges[:, 1, 1]-edges[:, 0, 1]*edges[:, 1, 0]
         zero_edges = any(np.linalg.norm(seed[p]-seed[topo.next_position(p)]) < 1e-10
                          for p in core.constrained_loops(topo.bm, set(chart['faces'])))
         if (np.any(cross*chart['sign'] <= 2e-14) or zero_edges or
-                probe.check_overlaps(topo, include_existing=True, coordinates=probe.reference)['self_overlaps']):
+                probe.check_overlaps(topo, include_existing=True, coordinates=triangles)['self_overlaps']):
             return None
     return dict(seed=state['seed'], report=deepcopy(state['report']))
 
@@ -127,7 +127,7 @@ def plan(core, topo, faces, settings, *, _coordinates=None, _initial_probe=None)
             # No UV writes occur between this probe's construction and the
             # existing-overlap check; reuse its exact current input values.
             overlap = probe.check_overlaps(topo, include_existing=True,
-                                           coordinates=probe.reference)
+                                           coordinates=probe._ref_array)
             if not overlap['self_overlaps']:
                 if overlap['overlap_check_complete']:
                     result['clean_faces'].extend(sorted(island))
@@ -202,7 +202,7 @@ def prepare(core, topo, plan, fixed_positions):
     return {tuple(chart['faces']): _chart_state(core, topo, chart, fixed_positions)}
 
 
-def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _prepared=None):
+def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _prepared=None, _topo_box=None):
     """Try bounded local and global initializers; leave only fully valid seeds."""
     if context.edit_object != obj or len(context.objects_in_mode_unique_data) != 1:
         raise RuntimeError('Recovery requires a single edit mesh')
@@ -220,30 +220,21 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
 
     report = dict(repaired=[], failed=[], skipped=plan['skipped'])
-    bm = bmesh.from_edit_mesh(obj.data)
-    core.prepare_bm(bm)
-    selected = core._capture_selection(bm)
-    uv_faces = [f.uv_select for f in bm.faces]
-    selection_valid = bm.uv_select_sync_valid
     ts = context.scene.tool_settings
-    tools = {p: getattr(ts, p) for p in
-             ('use_uv_select_sync', 'uv_select_mode', 'use_edge_path_live_unwrap')}
-    tools['mesh_select_mode'] = tuple(ts.mesh_select_mode)
+    ui_saved = None
     best = np.asarray(saved, dtype=float).copy()
-    del bm
+    numeric_topology = _topo_box.pop() if _topo_box else None
+    last_topo = numeric_topology
     dirty = False
     try:
         for chart in plan['charts']:
             island = set(chart['faces'])
             state = (_prepared or {}).get(tuple(chart['faces']))
             if state is None:
-                topo = topology()
-                state = _chart_state(core, topo, chart, fixed_positions)
-                numeric_topology = topo
-                topo = None
-            else:
-                numeric_topology = None
-                topo = None
+                if numeric_topology is None:
+                    numeric_topology = topology()
+                    last_topo = numeric_topology
+                state = _chart_state(core, numeric_topology, chart, fixed_positions)
             connectivity, islands = state['connectivity'], state['islands']
             runs, target, outside = state['runs'], state['target'], state['outside']
             held = state['held']
@@ -252,6 +243,10 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
             # actual pins and locked borders fix both coordinates of a point.
             native_fixed = state['native_fixed']
             target_set, native_fixed_set = set(target), set(native_fixed)
+            chart_tri_idx = (
+                np.asarray([pos for fi, pos in numeric_topology.triangle_rows() if fi in island], dtype=np.intp).reshape(-1, 3)
+                if numeric_topology is not None else None
+            )
             # Numeric attempts preserve mesh topology. Keep this wrapper only
             # until native unwrap; failed array-only repairs need no mesh reset.
             failure = 'no_feasible_initialization'
@@ -273,6 +268,12 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                 try:
                     if method in ('LOCAL', 'METRIC') and numeric_topology is None:
                         numeric_topology = topology()
+                        last_topo = numeric_topology
+                    if method in ('LOCAL', 'METRIC') and chart_tri_idx is None:
+                        chart_tri_idx = np.asarray(
+                            [pos for fi, pos in numeric_topology.triangle_rows() if fi in island],
+                            dtype=np.intp,
+                        ).reshape(-1, 3)
                     if method == 'LOCAL':
                         from . import untangle, native_engine
                         topo = numeric_topology
@@ -299,11 +300,19 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                     else:
                         # Native unwrap can replace the edit mesh. No cached
                         # topology or BMesh wrapper may survive this boundary.
-                        numeric_topology = topo = None
-                        dirty = True
-                        sparse_dirty = False
+                        numeric_topology = topo = last_topo = None
                         bm = bmesh.from_edit_mesh(obj.data)
                         core.prepare_bm(bm)
+                        if ui_saved is None:
+                            selected = core._capture_selection(bm)
+                            uv_faces = [f.uv_select for f in bm.faces]
+                            selection_valid = bm.uv_select_sync_valid
+                            tools = {p: getattr(ts, p) for p in
+                                     ('use_uv_select_sync', 'uv_select_mode', 'use_edge_path_live_unwrap')}
+                            tools['mesh_select_mode'] = tuple(ts.mesh_select_mode)
+                            ui_saved = (selected, uv_faces, selection_valid, tools)
+                        dirty = True
+                        sparse_dirty = False
                         uvl = core.uv_layer(bm)
                         loops = core.loops_in_order(bm)
                         ts.use_edge_path_live_unwrap = False
@@ -343,14 +352,27 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                         continue
                     if method != 'METRIC':
                         raw[native_fixed] = best[native_fixed]
+                    if method != 'CONFORMAL' and chart_tri_idx is not None and len(chart_tri_idx):
+                        raw_tris = raw[chart_tri_idx]
+                        raw_edges = raw_tris[:, 1:] - raw_tris[:, :1]
+                        raw_cross = raw_edges[:, 0, 0]*raw_edges[:, 1, 1] - raw_edges[:, 0, 1]*raw_edges[:, 1, 0]
+                        if np.any(raw_cross*chart['sign'] <= 0):
+                            failure = 'seed_validation'
+                            continue
                     dirty = True
                     sparse_dirty = True
-                    land(raw, target)
-                    if method in ('LOCAL', 'METRIC'):
+                    if method == 'METRIC':
                         topo = numeric_topology
                         topo.refresh_uv()
+                        last_topo = topo
                     else:
-                        topo = topology()
+                        land(raw, target)
+                        if method == 'LOCAL':
+                            topo = numeric_topology
+                            topo.refresh_uv()
+                        else:
+                            topo = topology()
+                        last_topo = topo
                     if topo.loop_to_vgroup != connectivity or topo.face_island != islands:
                         failure = 'uv_connectivity_changed'
                         continue
@@ -378,22 +400,26 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                     else:
                         pose_area = (core.mesh_area3d(topo, island) if settings.get('keep_metric', False)
                                      else target_area)
-                        core.restore_pose(topo, island, {p: tuple(best[p]) for p in target},
+                        core.restore_pose(topo, island, best,
                                           allow_rotation=(method not in ('LOCAL', 'METRIC')), target_area=pose_area)
                     # All checks below read the same post-pose coordinates.
                     value = np.array(core.mesh_reader.read_uv(topo.loops, topo.uvl), dtype=float, copy=True)
                     probe = safety.AcceptanceProbe(core, topo, island, coordinates=value)
-                    triangle_positions = np.asarray([pos for _, pos, _ in probe.target], dtype=np.intp).reshape(-1, 3)
-                    triangles = value[triangle_positions]
+                    triangles = probe._ref_array
                     edges = triangles[:, 1:] - triangles[:, :1]
                     cross = edges[:, 0, 0]*edges[:, 1, 1] - edges[:, 0, 1]*edges[:, 1, 0]
-                    health = probe.measure(topo, coordinates=probe.reference, _triangles=triangles)
-                    overlap = probe.check_overlaps(topo, include_existing=True,
-                                                   coordinates=probe.reference)
-                    if (np.any(cross*chart['sign'] <= 2e-14) or not health['finite'] or
-                            health['zero_edges'] or
-                            overlap['self_overlaps'] or not np.array_equal(value[outside], best[outside]) or
+                    if (np.any(cross*chart['sign'] <= 2e-14) or
+                            not np.array_equal(value[outside], best[outside]) or
                             not np.array_equal(value[list(fixed_positions)], np.asarray(saved)[list(fixed_positions)])):
+                        failure = 'seed_validation'
+                        continue
+                    health = probe.measure(topo, coordinates=probe._triangle_view(triangles), _triangles=triangles)
+                    if not health['finite'] or health['zero_edges']:
+                        failure = 'seed_validation'
+                        continue
+                    overlap = probe.check_overlaps(topo, include_existing=True,
+                                                   coordinates=triangles)
+                    if overlap['self_overlaps']:
                         failure = 'seed_validation'
                         continue
                     best = value.copy()
@@ -410,7 +436,7 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                     topo = None
             if not accepted:
                 report['failed'].append(dict(faces=chart['faces'], reason=failure))
-            numeric_topology = topo = None
+                numeric_topology = topo = last_topo = None
             if dirty:
                 land(best, target if sparse_dirty else None)
                 dirty = False
@@ -418,17 +444,23 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
         numeric_topology = topo = None
         if dirty:
             land(best)
-        bm = bmesh.from_edit_mesh(obj.data)
-        core.prepare_bm(bm)
-        uvl = core.uv_layer(bm)
-        loops = core.loops_in_order(bm)
-        for loop, pin in zip(loops, pins):
-            loop[uvl].pin_uv = pin
-        for prop, value in tools.items():
-            setattr(ts, prop, value)
-        core._apply_selection(bm, selected, loops=loops)
-        for face, value in zip(bm.faces, uv_faces):
-            face.uv_select = value
-        bm.uv_select_sync_valid = selection_valid
-        bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+            last_topo = None
+        if ui_saved is not None:
+            selected, uv_faces, selection_valid, tools = ui_saved
+            bm = bmesh.from_edit_mesh(obj.data)
+            core.prepare_bm(bm)
+            uvl = core.uv_layer(bm)
+            loops = core.loops_in_order(bm)
+            for loop, pin in zip(loops, pins):
+                loop[uvl].pin_uv = pin
+            for prop, value in tools.items():
+                setattr(ts, prop, value)
+            core._apply_selection(bm, selected, loops=loops)
+            for face, value in zip(bm.faces, uv_faces):
+                face.uv_select = value
+            bm.uv_select_sync_valid = selection_valid
+            bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+        if (_topo_box is not None and not report['failed'] and not dirty
+                and last_topo is not None and getattr(last_topo.bm, 'is_valid', False)):
+            _topo_box.append(last_topo)
     return report

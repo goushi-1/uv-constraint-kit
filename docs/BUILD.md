@@ -1,8 +1,8 @@
 # Build from source / 从源码构建
 
-The 1.7.58 release adds an optional stable-ABI reader method for live per-face UV area and shares initial numeric UV input and candidate triangle arrays in core and safety. Solver formulas, ordering and checks remain unchanged. The reader was rebuilt; CPU and GPU binaries are unchanged from published 1.7.57. Older readers retain the Python fallback. The final package passed 21 gates; identity is recorded in [release_checks.json](../release_checks.json).
+The 1.7.66 release updates both the CPU and GPU engines (`gpu_metric.cu` and `mesh_reader.cpp` unchanged) and adds `--numeric` to `scripts/build_native.py` to build `uvck_numeric_stage` and emit `numeric_stage.json` for `scripts/package.py --require-numeric`. The final archive has 48 members matching `blender --command extension build`; identity is recorded in [release_checks.json](../release_checks.json).
 
-1.7.58 正式版新增读取器逐面 UV 面积方法，并共享初始数值 UV 输入及候选三角数组；求解公式、顺序和检查保留。读取器重新编译，CPU/GPU 二进制沿用 1.7.57，旧读取器仍回退 Python。最终包通过 21 项验收，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
+1.7.66 正式版更新了 CPU 与 GPU 引擎（`gpu_metric.cu` 与 `mesh_reader.cpp` 未改动），并为 `scripts/build_native.py` 新增 `--numeric` 参数以编译 `uvck_numeric_stage` 并生成 `numeric_stage.json`，对接 `scripts/package.py --require-numeric`。最终包共 48 个成员且与 `blender --command extension build` 逐字节一致，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
 
 ## Requirements / 工具
 
@@ -91,10 +91,12 @@ Provide a Python development include directory containing `Python.h` and the
 stable-ABI import library named exactly `python3.lib`:
 
 ```sh
-python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
+python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --numeric --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --output dist/uv_constraint_kit-1.7.58.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.7.66.zip
 ```
+
+`--numeric` requires NumPy in the active Python interpreter (for example Blender's bundled Python) and emits `numeric_stage.json` alongside `uvck_numeric_<sha16>.dll`; `--require-numeric` fails packaging if that sidecar or metadata is missing or mismatches `numeric_stage.cpp`.
 
 `--reader` requires both `--python-include` and `--python-library`; the latter
 must be `python3.lib`, not a versioned import library such as `python313.lib`.

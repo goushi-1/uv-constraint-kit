@@ -7,7 +7,8 @@
 | Accepted candidate 1.7.53 | Operation-local geometry and CPU workspace reuse. Exact-output, CPU/GPU, dense host and memory observations are recorded below. 已验收性能对照候选。 |
 | Previous published 1.7.55 | Recovery precheck input reuse; final package, GPU, GUI and modal checks passed. 上一已发布版，验收记录见下文。 |
 | Previous published release, 1.7.57 | CPU native reference-frame batching; solver equations unchanged. Final package, numeric, integration, GPU, GUI and modal checks passed. 已发布版，列出的最终验收均已通过。 |
-| Current release, 1.7.58 | Final ZIP and 21 gates passed. 当前正式版，最终包与 21 项验收通过。 |
+| Previous published release, 1.7.65 | P3 exact subspace handoff, `float32`-safe boundary guard, active-set contact pinning, and `numeric_stage` packaging parity (48 members). |
+| Current release, 1.7.66 | P3-E overhead cuts (CSR spatial hash, vectorized probes/borders), P3-A early subspace handoff, lazy P3-B analytic step (`nt >= 32768`), and `build_native.py --numeric`. 当前正式版：全量 P2 62/62 通过、8 轮 ABBA+BAAB 确定性通过（`-57.73%` vs 1.7.62、`-42.21%` vs 1.7.65）。 |
 | Earlier previews and `experimental/numeric-trials` | Historical or experimental tracks; their reports do not validate the current package and are not cumulative speed claims. 历史／实验路径，单独保留证据边界。 |
 
 Historical timing values are observations on a particular machine, not a
@@ -44,7 +45,7 @@ included. 旧数据只用于说明开发状态，不替代本仓库的可复跑�
 Historical CPU and CPU+GPU summaries are retained in
 [`publication_checks.json`](../publication_checks.json) and
 [`gpu_publication_checks.json`](../gpu_publication_checks.json); they describe
-1.7.42, not the 1.7.57 release. The 1.7.58 final archive identity and gates are recorded in [release_checks.json](../release_checks.json).
+1.7.42, not the 1.7.66 release. The 1.7.66 final archive identity and gates are recorded in [release_checks.json](../release_checks.json).
 These summaries omit machine paths and raw logs.
 A passed automated check is not user acceptance of every GUI transformation or
 production mesh.
@@ -89,7 +90,20 @@ not establish acceptance for every machine, asset or workflow.
 
 公开恢复输入测试的 384 项是 live BMesh 与给定数字输入、沿用旧 cross oracle 的比较，不使用私有 1.7.54 基线；`--require-native` 要求读取器，但含 NaN 的 topology 用例允许现有 Python fallback。另有独立的 576 项私有 1.7.54 对 1.7.55 直接对照。性能数据是特定机器和有限用例的观测，不承诺通用提速或低于一秒；这些数据与下方历史 1.7.53 对 1.7.51 结果分开，不相加。检查结果仅覆盖所列主机和用例，不代表所有机器、资产或工作流。
 
-## Current release: 1.7.58 / 当前发行版
+## Current release: 1.7.66 / 当前发行版
+
+The 1.7.66 release adds `scripts/build_native.py --numeric`, P3-E Python/BMesh/probe/CSR-overlap overhead cuts, P3-A early subspace handoff, and lazy P3-B analytic flip-free bounds (`nt >= 32768`) with `base_tol = 0.015` for `nt >= 32768`. `gpu_metric.cu`, `mesh_reader.cpp`, and `numeric_stage.cpp` binaries are source-matched and unchanged.
+
+| Evidence | Status |
+| --- | --- |
+| Final ZIP | 48 members, 48/48 byte-for-byte parity between `blender --command extension build` and `scripts/package.py --require-gpu --require-reader --require-numeric` |
+| Unit & tree checks | `test_safety.py` (18/18), `test_native.py --gpu` (CPU + GPU + bad-PTX retry), `test_package.py` (10 tests), `check_public_tree.py` (`source_only=true`, 80 files) |
+| Blender 5.3.0 host tests | 7/7 passed (`test_host`, `test_selection_host`, `test_transaction_state_host`, `test_recovery_input_host`, `test_gpu_host`, `test_gui_host`, `test_modal_host`) |
+| P2 31-case (62-op) suite vs 1.7.62 | Passed: `hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals |
+| 8-run CPU-0 pinned ABBA+BAAB (1.7.62 → 1.7.66) | Passed: `determinism_ok=true`, `hard_failures=0`, `soft_failures=0`; 12-op total median `40.7890s → 17.2432s` (`-57.73%`; `-42.21%` vs `1.7.65`'s `29.8393s`); `coastal mark` `6.3110s`, `rocks mark` `5.8432s`; total evals `-63.48%`, GPU energy `-83.26%` |
+| Isolated Blender 5.3.0 lifecycle | Clean install + `1.7.65 -> 1.7.66` upgrade + mark/clear + undo/redo + CPU/GPU switch + F9 visual check |
+
+## Previous release: 1.7.58 / 上一发行版：1.7.58
 
 The rebuilt stable-ABI reader adds optional live per-face UV area calculation; old readers without the method retain Python fallback. CPU and GPU binaries are source-matched artifacts from 1.7.57. Core and safety share initial numeric UV input and each candidate triangle array. Solver formulas, ordering and checks remain unchanged.
 

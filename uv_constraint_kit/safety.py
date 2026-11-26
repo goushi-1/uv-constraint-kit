@@ -308,6 +308,19 @@ class _TrialSnapshot:
         self._row_values.clear()
 
 
+class _TriangleMapping:
+    """Lazy pos->triangle view over a contiguous (N, 3, 2) float64 array."""
+    def __init__(self, target, array):
+        self._target = target
+        self._array = array
+        self._index = None
+
+    def __getitem__(self, pos):
+        if self._index is None:
+            self._index = {p: i for i, (_fi, p, _root) in enumerate(self._target)}
+        return tuple(map(tuple, self._array[self._index[pos]].tolist()))
+
+
 class AcceptanceProbe:
     """Per-operation safety check for changed faces and their relevant peers."""
     def __init__(self, core, topo, faces, check_other_islands=False, *, triangles=None,
@@ -345,7 +358,58 @@ class AcceptanceProbe:
                 elif check_other_islands or self.roots[fi] in target_roots:
                     self.static.append(row)
         self.target_positions = sorted({p for _, pos, _ in self.target for p in pos})
-        self.reference = self.capture(topo, coordinates=coordinates)
+        self._reference_dict = None
+        self._target_idx = np.asarray([pos for _, pos, _ in self.target], dtype=np.intp).reshape(-1, 3)
+        if self.target:
+            slots, slot_order = np.unique(self._target_idx, return_inverse=True)
+            self._target_slots = slots.tolist()
+            self._target_slot_order = slot_order.reshape(-1, 3)
+        else:
+            self._target_slots = []
+            self._target_slot_order = np.empty((0, 3), dtype=np.intp)
+        self._ref_array = self._capture_triangles(topo, coordinates=coordinates)
+        self._init_target = list(self.target)
+        self._init_static = list(self.static)
+        self._init_loop_count = len(topo.loops)
+
+    @property
+    def reference(self):
+        if self._reference_dict is None:
+            if self._ref_array is not None and self.target:
+                self._reference_dict = {
+                    pos: tuple(map(tuple, row))
+                    for (_, pos, _), row in zip(self.target, self._ref_array.tolist())
+                }
+            else:
+                self._reference_dict = {}
+            self._ref_array = None
+        return self._reference_dict
+
+    @reference.setter
+    def reference(self, value):
+        self._reference_dict = value
+        self._ref_array = None
+
+    def _triangle_view(self, array):
+        return _TriangleMapping(self.target, array)
+
+    def _capture_triangles(self, topo, *, coordinates=None):
+        """Fresh contiguous (N, 3, 2) float64 triangle UV array."""
+        if not self.target:
+            return np.empty((0, 3, 2), dtype=np.float64)
+        if coordinates is not None:
+            if isinstance(coordinates, dict):
+                return np.ascontiguousarray(
+                    [[coordinates[p] for p in pos] for _, pos, _ in self.target],
+                    dtype=np.float64,
+                )
+            coords = np.asarray(coordinates, dtype=np.float64)
+            return np.ascontiguousarray(coords[self._target_idx], dtype=np.float64)
+        slot_uvs = np.asarray(
+            self.core.mesh_reader.read_uv([topo.loops[p] for p in self._target_slots], topo.uvl),
+            dtype=np.float64,
+        )
+        return np.ascontiguousarray(slot_uvs[self._target_slot_order], dtype=np.float64)
 
     def _trial_snapshot(self, coordinates, triangle_positions, loop_count, *, _layout=None):
         """Only an exact interpolation input and its ordered probe may opt in."""
@@ -388,13 +452,18 @@ class AcceptanceProbe:
         return {pos: tuple(points[p] for p in pos) for _, pos, _ in self.target}
 
     def measure(self, topo, *, coordinates=None, loop_coordinates=None, _triangles=None):
-        coordinates = (self.capture(topo, coordinates=loop_coordinates)
-                       if coordinates is None else coordinates)
+        if _triangles is None:
+            if coordinates is None:
+                _triangles = self._capture_triangles(topo, coordinates=loop_coordinates)
+            elif isinstance(coordinates, np.ndarray):
+                _triangles = coordinates
+            elif type(coordinates) is _TriangleMapping:
+                _triangles = coordinates._array
+            else:
+                _triangles = [coordinates[pos] for _, pos, _ in self.target]
         # A checked transaction can share this exact ordered snapshot
         # with its orientation guard. Other callers retain fresh packing.
-        flips, degenerate, finite = _triangle_health(
-            [coordinates[pos] for _, pos, _ in self.target]
-            if _triangles is None else _triangles)
+        flips, degenerate, finite = _triangle_health(_triangles)
         zero, deviation = 0, 0.0
         layer = self.core.constraint_layer(topo.bm)
         for pos in self.positions:
@@ -437,11 +506,14 @@ class AcceptanceProbe:
                     max_deviation=deviation, finite=finite,
                     scope='affected_triangles')
 
-    def _overlap_buffers(self, topo, current):
+    def _overlap_buffers(self, topo, current, *, include_existing=False):
         # Cache integer row metadata only. Coordinates and reference values
         # are packed afresh, including live static faces on every check.
-        if (type(self) is not AcceptanceProbe or type(current) is not dict
-                or type(self.reference) is not dict
+        is_array = (type(current) is np.ndarray and current.dtype == np.float64
+                    and current.shape == (len(self.target), 3, 2))
+        has_ref_array = self._reference_dict is None and self._ref_array is not None
+        if (type(self) is not AcceptanceProbe or (type(current) is not dict and not is_array)
+                or (not has_ref_array and type(self._reference_dict) is not dict)
                 or type(self.target) not in (list, tuple)
                 or type(self.static) not in (list, tuple)):
             return None
@@ -450,11 +522,14 @@ class AcceptanceProbe:
                                  and _same_sequence(self.static, layout['static'])):
             target, static = tuple(self.target), tuple(self.static)
             rows = target + static
-            if not rows or not all(type(r) is tuple and len(r) == 3
+            trusted = (len(topo.loops) == self._init_loop_count
+                       and self.target == self._init_target
+                       and self.static == self._init_static)
+            if not rows or (not trusted and not all(type(r) is tuple and len(r) == 3
                     and type(r[0]) is int and type(r[2]) is int
                     and type(r[1]) is tuple and len(r[1]) == 3
                     and all(type(p) is int and 0 <= p < len(topo.loops) for p in r[1])
-                    for r in rows):
+                    for r in rows)):
                 return None
             static_indices = np.asarray([r[1] for r in static], dtype=np.intp).reshape(-1, 3)
             slots, order = np.unique(static_indices, return_inverse=True)
@@ -469,17 +544,28 @@ class AcceptanceProbe:
         count = len(layout['target'])
         value = np.empty((len(layout['rows']), 3, 2), dtype=np.float64)
         if count:
-            value[:count] = [current[pos] for _fi, pos, _root in layout['target']]
+            if is_array:
+                value[:count] = current
+            else:
+                value[:count] = [current[pos] for _fi, pos, _root in layout['target']]
         if layout['static']:
             live = np.asarray(self.core.mesh_reader.read_uv(
                 [topo.loops[p] for p in layout['slots']], topo.uvl), dtype=np.float64)
             value[count:] = live[layout['order']]
-        previous = value.copy()
-        missing = object()
-        for i, (_fi, pos, _root) in enumerate(layout['rows']):
-            old = self.reference.get(pos, missing)
-            if old is not missing:
-                previous[i] = old
+        if include_existing:
+            previous = value
+        else:
+            previous = value.copy()
+            if has_ref_array:
+                if count:
+                    previous[:count] = self._ref_array
+            else:
+                missing = object()
+                ref_dict = self._reference_dict
+                for i, (_fi, pos, _root) in enumerate(layout['rows']):
+                    old = ref_dict.get(pos, missing)
+                    if old is not missing:
+                        previous[i] = old
         return [layout['faces'], layout['roots'], layout['changed'], value, previous]
 
     def check_overlaps(self, topo, *, include_existing=False, coordinates=None):
@@ -488,15 +574,17 @@ class AcceptanceProbe:
         if type(coordinates) is _TrialSnapshot:
             if (coordinates._mapping is None and coordinates.bound(self) and include_existing is True
                     and type(self.static) in (list, tuple) and not self.static
-                    and type(self.reference) is dict):
-                trial_native = native_engine._overlaps_trial(coordinates, self.reference, self.check_other_islands)
+                    and (self._reference_dict is None or type(self._reference_dict) is dict)):
+                trial_native = native_engine._overlaps_trial(coordinates, self._reference_dict or {}, self.check_other_islands)
                 native_done = True
                 if trial_native is not None:
                     kind, _ = trial_native
                     return dict(self_overlaps=int(kind == 1), island_overlaps=int(kind == 2),
                                 overlap_check_complete=kind == 0, scope='affected_triangles')
             coordinates = coordinates.materialize()
-        current = self.capture(topo) if coordinates is None else coordinates
+        if type(coordinates) is _TriangleMapping:
+            coordinates = coordinates._array
+        current = self._capture_triangles(topo) if coordinates is None else coordinates
         self_key = 'self_overlaps' if include_existing else 'novel_self_overlaps'
         island_key = ('island_overlaps' if include_existing
                       else 'novel_island_overlaps')
@@ -508,11 +596,14 @@ class AcceptanceProbe:
             return dict(novel_self_overlaps=0, novel_island_overlaps=0,
                         overlap_check_complete=True, scope='affected_triangles')
 
-        if not include_existing and all(current[pos] == self.reference[pos] for pos in current):
-            return dict(novel_self_overlaps=0, novel_island_overlaps=0,
-                        overlap_check_complete=True, scope='affected_triangles')
+        if not include_existing:
+            if type(current) is np.ndarray and self._reference_dict is None and self._ref_array is not None:
+                if np.array_equal(current, self._ref_array):
+                    return no_overlaps()
+            elif type(current) is dict and all(current[pos] == self.reference[pos] for pos in current):
+                return no_overlaps()
         if not native_done and native_engine._load() is not None:
-            buffers = self._overlap_buffers(topo, current)
+            buffers = self._overlap_buffers(topo, current, include_existing=include_existing)
             if buffers is not None:
                 trial_native = native_engine._overlaps_arrays(
                     buffers, self.check_other_islands, include_existing)
@@ -524,6 +615,8 @@ class AcceptanceProbe:
                     return {self_key: int(kind == 1), island_key: int(kind == 2),
                             'overlap_check_complete': False, 'scope': 'affected_triangles'}
 
+        if type(current) is np.ndarray:
+            current = {pos: tuple(map(tuple, row)) for (_, pos, _), row in zip(target, current.tolist())}
         records = []
         for fi, pos, root in target:
             records.append((fi, pos, root, current[pos], True))

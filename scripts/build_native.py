@@ -44,6 +44,7 @@ def main() -> None:
     parser.add_argument("--cuda-include", type=Path)
     parser.add_argument("--nvrtc-dir", type=Path)
     parser.add_argument("--reader", action="store_true", help="Also build the optional CPython stable-ABI reader")
+    parser.add_argument("--numeric", action="store_true", help="Also build the optional strict numeric-trial sidecar")
     parser.add_argument("--python-include", type=Path,
                         help="Directory containing Python.h for the stable-ABI reader")
     parser.add_argument("--python-library", type=Path,
@@ -51,6 +52,12 @@ def main() -> None:
     args = parser.parse_args()
     if os.name != "nt" or platform.machine().upper() not in {"AMD64", "X86_64"}:
         parser.error("The native engine currently requires Windows x64 and MSVC")
+    numpy_module = None
+    if args.numeric:
+        try:
+            import numpy as numpy_module
+        except ImportError:
+            parser.error("--numeric requires NumPy in the active Python environment (for example Blender's bundled Python)")
     if args.reader:
         if args.python_include is None or args.python_library is None:
             parser.error("--reader requires --python-include and --python-library")
@@ -72,7 +79,8 @@ def main() -> None:
     cmake_build = build / "cpu"
     configure = [cmake, "-S", str(SOURCE), "-B", str(cmake_build),
                  "-G", "Visual Studio 17 2022", "-A", "x64", "-DUVCK_BUILD_GPU=OFF",
-                 f"-DUVCK_BUILD_READER={'ON' if args.reader else 'OFF'}"]
+                 f"-DUVCK_BUILD_READER={'ON' if args.reader else 'OFF'}",
+                 f"-DUVCK_BUILD_NUMERIC_STAGE={'ON' if args.numeric else 'OFF'}"]
     if args.reader:
         configure.extend((f"-DUVCK_PYTHON_INCLUDE={args.python_include.resolve()}",
                           f"-DUVCK_PYTHON_LIBRARY={args.python_library.resolve()}"))
@@ -84,7 +92,7 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     # Only selected artifacts are active when a build directory is reused.
     # Old checksum-named binaries can stay; packaging follows metadata only.
-    for enabled, metadata in ((args.reader, "reader.json"), (args.gpu, "gpu.json")):
+    for enabled, metadata in ((args.reader, "reader.json"), (args.gpu, "gpu.json"), (args.numeric, "numeric_stage.json")):
         if not enabled:
             (output / metadata).unlink(missing_ok=True)
     filename = f"uvck_engine_{digest[:16]}.dll"
@@ -129,8 +137,28 @@ def main() -> None:
                 raise ValueError(f"GPU checksum mismatch: {key}")
             copy_artifact(source, output / name)
         shutil.copyfile(artifact_dir / "gpu.json", output / "gpu.json")
+    numeric_identity = None
+    if args.numeric:
+        run([cmake, "--build", str(cmake_build), "--config", "Release", "--target", "uvck_numeric_stage"])
+        numeric_compiled = cmake_build / "Release" / "uvck_numeric_stage.dll"
+        numeric_digest = sha256(numeric_compiled)
+        numeric_filename = f"uvck_numeric_{numeric_digest[:16]}.dll"
+        copy_artifact(numeric_compiled, output / numeric_filename)
+        numeric_identity = {
+            "abi": 1,
+            "library": numeric_filename,
+            "sha256": numeric_digest,
+            "source_sha256": sha256(SOURCE / "numeric_stage.cpp"),
+            "python_version": list(sys.version_info[:3]),
+            "numpy_version": numpy_module.__version__,
+            "optional": True,
+            "area_read_abi": 1,
+        }
+        (output / "numeric_stage.json").write_text(
+            json.dumps(numeric_identity, indent=2) + "\n", encoding="utf8")
     print(json.dumps({"engine_dir": str(output), "cpu": identity, "reader_requested": args.reader,
-                      "reader": reader_identity, "gpu_requested": args.gpu}, indent=2))
+                      "reader": reader_identity, "gpu_requested": args.gpu,
+                      "numeric_requested": args.numeric, "numeric": numeric_identity}, indent=2))
 
 
 if __name__ == "__main__":

@@ -65,11 +65,15 @@ struct Problem {
     std::unique_ptr<GpuSession> gpu;
     I evaluations=0;
     mutable I witness_i=-1,witness_j=-1;
-    mutable bool border_rejected=false;
+    mutable bool border_rejected=false,flip_rejected=false;
     const Vec* baseline_uv=nullptr;
-    explicit Problem(const Input& in):p(in),soft(in.strength>=0),jacobian(4*in.nt) {
+    double root_penalty_scale=1.;
+    struct BorderBound {double low,high,ylow,yhigh;I index;};
+    mutable std::vector<BorderBound> border_bounds;
+    explicit Problem(const Input& in):p(in),soft(in.strength>=0),jacobian(4*in.nt),
+            root_penalty_scale(std::sqrt(std::max(in.penalty_scale,1e-20))) {
         for(I r=0;r<p.nr;++r) if(p.kinds[r]!=1 && p.kinds[r]!=2) axes_only=false;
-        if(!soft && axes_only) for(I kind=1;kind<=2;++kind) {
+        if(axes_only) for(I kind=1;kind<=2;++kind) {
             std::vector<I> parent(p.n,-1), order;
             auto root=[&](I i) { while(parent[i]!=i) {parent[i]=parent[parent[i]]; i=parent[i];} return i; };
             for(I r=0;r<p.nr;++r) if(p.kinds[r]==kind && p.offsets[r]<p.offsets[r+1]) {
@@ -91,12 +95,74 @@ struct Problem {
         }
     }
     void init_gpu() {gpu=make_gpu_session(p);}
+    void project_hard_axes(Vec& x) const {
+        for(const auto& set:sets) {
+            double mean=set.anchor;
+            if(!set.anchored) {mean=0;for(I i:set.members) mean+=x[2*i+set.axis];mean/=set.members.size();}
+            for(I i:set.members) x[2*i+set.axis]=mean;
+        }
+        for(I i=0;i<p.n;++i) if(p.fixed[i]) {x[2*i]=p.held[2*i];x[2*i+1]=p.held[2*i+1];}
+    }
+    bool hard_subspace_ready(const Vec& x) {
+        Vec trial(x.size());
+        for(std::size_t k=0;k<x.size();++k) trial[k]=static_cast<double>(static_cast<float>(x[k]));
+        project_hard_axes(trial);
+        for(I t=0;t<p.nt;++t) {
+            I a=p.tri[3*t],b=p.tri[3*t+1],c=p.tri[3*t+2];const double* v=&p.inverse[4*t];
+            double ux=trial[2*b]-trial[2*a],wx=trial[2*c]-trial[2*a];
+            double uy=trial[2*b+1]-trial[2*a+1],wy=trial[2*c+1]-trial[2*a+1];
+            double j0=ux*v[0]+wx*v[2],j1=ux*v[1]+wx*v[3];
+            double j2=uy*v[0]+wy*v[2],j3=uy*v[1]+wy*v[3];
+            double d=j0*j3-j1*j2;
+            if(!std::isfinite(j0) || !std::isfinite(j1) || !std::isfinite(j2) || !std::isfinite(j3) ||
+                    !std::isfinite(d) || d<=1e-6)
+                return false;
+        }
+        I saved_wi=witness_i,saved_wj=witness_j;
+        bool saved_br=border_rejected;
+        const Vec* saved_base=baseline_uv;
+        baseline_uv=nullptr;
+        bool ok=borders_valid(trial);
+        baseline_uv=saved_base;
+        witness_i=saved_wi;witness_j=saved_wj;border_rejected=saved_br;
+        return ok;
+    }
+    double max_flip_free_step(const Vec& x,const Vec& projected) const {
+        double t_min=1.;
+        for(I t=0;t<p.nt;++t) {
+            I a=p.tri[3*t],b=p.tri[3*t+1],c=p.tri[3*t+2];
+            double u0x=x[2*b]-x[2*a],u0y=x[2*b+1]-x[2*a+1];
+            double v0x=x[2*c]-x[2*a],v0y=x[2*c+1]-x[2*a+1];
+            double A0=u0x*v0y-u0y*v0x;
+            if(!std::isfinite(A0) || A0==0.) continue;
+            double dux=(projected[2*b]-x[2*b])-(projected[2*a]-x[2*a]);
+            double duy=(projected[2*b+1]-x[2*b+1])-(projected[2*a+1]-x[2*a+1]);
+            double dvx=(projected[2*c]-x[2*c])-(projected[2*a]-x[2*a]);
+            double dvy=(projected[2*c+1]-x[2*c+1])-(projected[2*a+1]-x[2*a+1]);
+            double s=(A0>=0.)?1.:-1.;
+            double c0=s*A0;
+            double c1=s*(dux*v0y-duy*v0x+u0x*dvy-u0y*dvx);
+            double c2=s*(dux*dvy-duy*dvx);
+            double t_star=INF;
+            if(std::abs(c2)<=1e-20*(std::abs(c1)+c0)) {
+                if(c1<0.) t_star=-c0/c1;
+            } else if(c2<0.) {
+                double disc=std::max(0.,c1*c1-4.*c2*c0);
+                double q=std::sqrt(disc);
+                t_star=(c1>=0.)?(c1+q)/(-2.*c2):(2.*c0)/(-c1+q);
+            } else {
+                double disc=c1*c1-4.*c2*c0;
+                if(c1<0. && disc>=0.) t_star=(2.*c0)/(-c1+std::sqrt(disc));
+            }
+            if(t_star>0. && std::isfinite(t_star)) t_min=std::min(t_min,t_star);
+        }
+        return t_min;
+    }
     void project(Vec& x) const {
         if(!soft) {
-            if(axes_only) for(const auto& set:sets) {
-                double mean=set.anchor;
-                if(!set.anchored) {mean=0;for(I i:set.members) mean+=x[2*i+set.axis];mean/=set.members.size();}
-                for(I i:set.members) x[2*i+set.axis]=mean;
+            if(axes_only) {
+                project_hard_axes(x);
+                return;
             }
             else {
                 for(int pass=0;pass<32;++pass) {
@@ -144,7 +210,7 @@ struct Problem {
             const bool margin_guard=(p.prevent_overlap==1 && baseline_uv!=nullptr && p.overlap_space<=0.);
             double coord_scale=1.,local_margin=0.;
             if(margin_guard) {
-                coord_scale=std::max({1.0,std::sqrt(std::max(p.penalty_scale,1e-20)),
+                coord_scale=std::max({1.0,root_penalty_scale,
                                       std::abs(a[0]),std::abs(a[1]),std::abs(b[0]),std::abs(b[1]),
                                       std::abs(c[0]),std::abs(c[1]),std::abs(d[0]),std::abs(d[1])});
                 local_margin=6e-7*coord_scale;
@@ -186,13 +252,12 @@ struct Problem {
         // A broad phase only: retain the same exact pair predicate, including
         // shared vertices, touching edges and the requested spacing margin.
         // Tiny boundaries avoid sorting; nonfinite trials keep the old path.
-        struct Bound {double low,high;I index;};
-        std::vector<Bound> bounds;
+        border_bounds.clear();
         bool sweep=p.nb>=64;
         const bool margin_guard=(p.prevent_overlap==1 && baseline_uv!=nullptr && p.overlap_space<=0.);
         double max_abs_coord=0.;
         if(sweep) {
-            bounds.reserve(p.nb);
+            border_bounds.reserve(p.nb);
             for(I i=0;i<p.nb;++i) {
                 I a=p.border_edges[2*i],b=p.border_edges[2*i+1];
                 if(!std::isfinite(x[2*a]) || !std::isfinite(x[2*a+1]) ||
@@ -201,23 +266,30 @@ struct Problem {
                     max_abs_coord=std::max({max_abs_coord,std::abs(x[2*a]),std::abs(x[2*a+1]),
                                             std::abs(x[2*b]),std::abs(x[2*b+1])});
                 }
-                bounds.push_back({std::min(x[2*a],x[2*b]),std::max(x[2*a],x[2*b]),i});
+                border_bounds.push_back({std::min(x[2*a],x[2*b]),std::max(x[2*a],x[2*b]),
+                                         std::min(x[2*a+1],x[2*b+1]),std::max(x[2*a+1],x[2*b+1]),i});
             }
         }
         if(!sweep) {
             for(I i=0;i<p.nb;++i) for(I j=i+1;j<p.nb;++j) if(!pair_valid(i,j)) return false;
             return true;
         }
-        std::sort(bounds.begin(),bounds.end(),[](const Bound& a,const Bound& b) {
+        std::sort(border_bounds.begin(),border_bounds.end(),[](const BorderBound& a,const BorderBound& b) {
             return a.low<b.low || (a.low==b.low && a.index<b.index);
         });
         const double margin=margin_guard
-            ?std::max(p.overlap_space,6e-7*std::max({1.0,std::sqrt(std::max(p.penalty_scale,1e-20)),max_abs_coord}))
+            ?std::max(p.overlap_space,6e-7*std::max({1.0,root_penalty_scale,max_abs_coord}))
             :std::max(p.overlap_space,0.);
-        for(I i=0;i<p.nb;++i) for(I j=i+1;j<p.nb;++j) {
-            if(bounds[i].high+margin<bounds[j].low) break;
-            I a=bounds[i].index,b=bounds[j].index;
-            if(!pair_valid(std::min(a,b),std::max(a,b))) return false;
+        for(I i=0;i<p.nb;++i) {
+            const double hi=border_bounds[i].high+margin;
+            const double ylo=border_bounds[i].ylow,yhi=border_bounds[i].yhigh;
+            const I idx_i=border_bounds[i].index;
+            for(I j=i+1;j<p.nb;++j) {
+                if(hi<border_bounds[j].low) break;
+                if(yhi+margin<border_bounds[j].ylow || border_bounds[j].yhigh+margin<ylo) continue;
+                I a=idx_i,b=border_bounds[j].index;
+                if(!pair_valid(std::min(a,b),std::max(a,b))) return false;
+            }
         }
         return true;
     }
@@ -290,7 +362,7 @@ struct Problem {
         };
         for(const I triangle:gpu->invalid_triangles.ids) {
             if(triangle<0) break;
-            if(fails_determinant(triangle)) return true;
+            if(fails_determinant(triangle)) {flip_rejected=true;return true;}
         }
         return false;
 #else
@@ -298,24 +370,27 @@ struct Problem {
 #endif
     }
     double energy(const Vec& x) {
-        ++evaluations;double e=0;
+        flip_rejected=false;++evaluations;
+        if(p.prevent_overlap==1 && !borders_valid(x)) return INF;
+        double e=0;
         if(gpu) {
             try {e=gpu->energy(x,reciprocal,p.prevent_flips!=0,p.angle_length);}
             catch(const std::exception& error) {gpu_failure(error);gpu.reset();}
+            if(gpu && !std::isfinite(e)) {flip_rejected=true;return INF;}
         }
         if(!gpu) build_j(x);
         if(!gpu) for(I t=0;t<p.nt;++t) {
             const double* j=&jacobian[4*t];
             for(int k=0;k<4;++k) if(!std::isfinite(j[k])) return INF;
             double det=j[0]*j[3]-j[1]*j[2];
-            if((p.prevent_flips || reciprocal) && det<=1e-6) return INF;
+            if((p.prevent_flips || reciprocal) && det<=1e-6) {flip_rejected=true;return INF;}
             double norm=j[0]*j[0]+j[1]*j[1]+j[2]*j[2]+j[3]*j[3],squared=det*det+1e-16;
             double denominator=(p.prevent_flips || reciprocal)?det:std::sqrt(squared);
             double root=std::sqrt(std::max(norm+2*det,1e-20));
             double length=reciprocal?.5*(norm+norm/squared-4):norm-2*root+2;
             e+=((1-p.angle_length)*norm/denominator+p.angle_length*length)*p.weights[t];
         }
-        if(!borders_valid(x)) return INF;
+        if(p.prevent_overlap!=1 && !borders_valid(x)) return INF;
         penalty(x,&e,nullptr);return std::isfinite(e)?e:INF;
     }
     void gradient(const Vec& x,Vec& g) {
@@ -435,6 +510,21 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
             if(added) {problem.witness_i=-1;problem.witness_j=-1;history.clear();}
             return added;
         };
+        const bool early_subspace = (p.automatic && problem.soft && problem.axes_only
+            && p.nr>0 && p.ne>0 && p.prevent_overlap==1 && p.strength<1e6);
+        auto max_penalty_angle_tan = [&](const Vec& v) -> double {
+            double worst=0.;
+            for(I edge=0;edge<p.ne;++edge) {
+                I a=p.penalty_edges[2*edge],b=p.penalty_edges[2*edge+1];
+                I axis=p.penalty_axis[edge];
+                double along=std::abs(v[2*b+1-axis]-v[2*a+1-axis]);
+                double across=std::abs(v[2*b+axis]-v[2*a+axis]);
+                if(along<=1e-12) return INF;
+                worst=std::max(worst,across/along);
+            }
+            return worst;
+        };
+        const double initial_max_tan = early_subspace ? max_penalty_angle_tan(x) : 0.;
         I limit=p.automatic?1000:std::max<I>(1,p.iterations);
         for(I iteration=0;iteration<limit;++iteration) {
             if(p.automatic && max_abs(g)<1e-6) break;
@@ -482,9 +572,11 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
                 history.clear();
             }
             double step=1,next_e=INF;
-            bool accepted=false;
+            bool accepted=false,used_analytic=false;
+            const bool analytic_bound=(p.nt>=32768) && (p.prevent_flips || problem.reciprocal) && (problem.soft || problem.axes_only);
             problem.baseline_uv=keep_initial_border?&initial_uv:nullptr;
             problem.border_rejected=false;
+            problem.flip_rejected=false;
             for(int search=0;search<32;++search) {
                 for(std::size_t k=0;k<x.size();++k) candidate[k]=x[k]+step*direction[k];
                 problem.project(candidate);
@@ -493,7 +585,13 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
                     // The full kernel would return invalid energy. Count the
                     // trial and follow the same rejection/halving policy.
                     ++problem.evaluations;
-                    step*=.5;
+                    if(search==0 && !used_analytic && problem.flip_rejected && !problem.border_rejected && analytic_bound) {
+                        used_analytic=true;
+                        const double t_min=problem.max_flip_free_step(x,candidate);
+                        step=(t_min<1.)?std::min(0.5,std::max(0.8*t_min,1e-12)):0.5;
+                    } else {
+                        step*=.5;
+                    }
                     continue;
                 }
                 if(p.prevent_overlap==1 && problem.witness_i>=0 && std::isfinite(threshold) &&
@@ -504,7 +602,14 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
                     continue;
                 }
                 next_e=problem.energy(candidate);
-                if(next_e<=threshold) {accepted=true;break;}step*=.5;
+                if(next_e<=threshold) {accepted=true;break;}
+                if(search==0 && !used_analytic && problem.flip_rejected && !problem.border_rejected && analytic_bound) {
+                    used_analytic=true;
+                    const double t_min=problem.max_flip_free_step(x,candidate);
+                    step=(t_min<1.)?std::min(0.5,std::max(0.8*t_min,1e-12)):0.5;
+                } else {
+                    step*=.5;
+                }
             }
             problem.baseline_uv=nullptr;
             if(!accepted) {
@@ -549,7 +654,7 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
             if(p.automatic && (!problem.soft || overlap_progress) && stats->accepted%25==0) {
                 double reduction=checkpoint_energy-e;
                 checkpoint_energy=e;
-                double base_tol=(p.nt>=32768)?0.005:0.01;
+                double base_tol=(p.nt>=32768)?0.015:0.01;
                 double tolerance=overlap_progress?0.0001:base_tol;
                 bool direction_ready=true;
                 if(overlap_progress && p.strength>=1e6) {
@@ -561,6 +666,11 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
                         double across=std::abs(x[2*b+axis]-x[2*a+axis]);
                         if(along<=1e-12 || across>tangent*along) {direction_ready=false;break;}
                     }
+                }
+                if(early_subspace && stats->accepted>=25 &&
+                        max_penalty_angle_tan(x)<initial_max_tan-1e-5 &&
+                        problem.hard_subspace_ready(x)) {
+                    break;
                 }
                 if(direction_ready && (!overlap_progress || stats->accepted>=100) && reduction>=0 &&
                         reduction<=tolerance*std::max(std::abs(e),1e-12)) {

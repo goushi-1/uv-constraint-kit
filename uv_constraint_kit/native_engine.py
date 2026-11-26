@@ -422,11 +422,7 @@ def _overlaps_trial(snapshot, reference, check_other_islands=False):
                _array([r[2] for r in rows], np.int64),
                _array([True for r in rows], np.uint8),
                _array(snapshot.triangles).reshape(n, 3, 2)]
-    missing, previous = object(), []
-    for _fi, pos, _root in rows:
-        value = reference.get(pos, missing)
-        previous.append(snapshot.row(pos) if value is missing else value)
-    buffers.append(_array(previous).reshape(n, 3, 2))
+    buffers.append(buffers[3])
     output = np.zeros(2, dtype=np.int64)
     witness = getattr(getattr(snapshot, 'layout', None), '_overlap_witness', None)
     owned = (type(witness) is np.ndarray and witness.dtype == np.int64 and witness.shape == (3,)

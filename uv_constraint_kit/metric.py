@@ -79,6 +79,67 @@ def _axis_sets(arrays, held):
 
 def _prepare_geometry(core, topo, faces, shared_uv_groups=None):
     """Prepare immutable 3D frames for one solve or boundary continuation."""
+    if len(faces) >= 4096 and not shared_uv_groups and hasattr(topo, '_triangle_arrays'):
+        tri_faces, tri_loops = topo._triangle_arrays()
+        if len(faces) == len(topo.bm.faces):
+            sel_loops = tri_loops
+        else:
+            sel_loops = tri_loops[np.isin(tri_faces, sorted(faces))]
+        if not len(sel_loops):
+            return None
+        g = np.asarray(topo.loop_to_vgroup, dtype=np.int64)
+        tri_g = g[sel_loops]
+        distinct = (tri_g[:, 0] != tri_g[:, 1]) & (tri_g[:, 0] != tri_g[:, 2]) & (tri_g[:, 1] != tri_g[:, 2])
+        tri_g = tri_g[distinct]
+        if not len(tri_g):
+            return None
+        groups_arr, inv_flat = np.unique(tri_g, return_inverse=True)
+        groups = groups_arr.tolist()
+        tri_idx = inv_flat.reshape(-1, 3)
+        index = {gr: i for i, gr in enumerate(groups)}
+        representatives = [topo.vgroup_loops[gr][0] for gr in groups]
+        rep_loops = [topo.loops[p] for p in representatives]
+        prepared = native_engine.triangle_frames([loop.vert.co for loop in rep_loops], tri_idx)
+        if prepared is not None:
+            frames, eligible = prepared
+            del prepared
+            if not np.all(eligible):
+                frames = frames[eligible]
+            tri_arr = tri_idx[eligible]
+            group_triangles_arr = tri_g[eligible]
+            if not len(tri_arr):
+                return None
+            frames = np.asarray(frames)
+            local = (frames[:, 1:] - frames[:, :1]).transpose(0, 2, 1).copy()
+            areas = np.abs(np.linalg.det(local)) * .5
+            valid = ~(areas < 1e-16)
+            if not np.any(valid):
+                return None
+            tri = np.asarray(tri_arr, dtype=np.int64)[valid]
+            local, areas = local[valid], areas[valid]
+            group_triangles = group_triangles_arr[valid]
+            reference = np.asarray([topo.initial_uv[p] for p in representatives], dtype=float)[tri]
+            a, b = reference[:, 1] - reference[:, 0], reference[:, 2] - reference[:, 0]
+            reference_signed = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+            all_faces = len(faces) == len(topo.bm.faces)
+            pos = np.arange(topo.loop_count, dtype=np.int64) if all_faces else np.flatnonzero(np.isin(topo.loop_faces, list(faces)))
+            pg = g[pos]
+            idx = np.searchsorted(groups_arr, pg)
+            in_set = (idx < len(groups_arr)) & (groups_arr[np.minimum(idx, len(groups_arr) - 1)] == pg)
+            if all_faces and np.all(in_set):
+                write_loops = topo.loops
+                write_idx = idx.astype(np.intp, copy=False)
+            else:
+                valid_pos = pos[in_set]
+                write_loops = [topo.loops[p] for p in valid_pos.tolist()]
+                write_idx = idx[in_set].astype(np.intp, copy=False)
+            return dict(topo=topo, faces=frozenset(faces), groups=groups, index=index,
+                        tri=tri, local=local, inv_unit=np.linalg.inv(local), areas=areas,
+                        group_triangles=group_triangles, representatives=representatives,
+                        rep_loops=rep_loops, reference_signed=reference_signed,
+                        weights=areas/areas.sum(), write_targets=None,
+                        write_loops=write_loops, write_idx=write_idx)
+
     triangles = core.triangles_for_faces(topo, faces)
     groups = sorted({g for tri in triangles for g in tri})
     if not triangles:
@@ -127,10 +188,16 @@ def _prepare_geometry(core, topo, faces, shared_uv_groups=None):
     reference_signed = a[:, 0]*b[:, 1]-a[:, 1]*b[:, 0]
     write_targets = [(pos, i) for g, i in index.items() for pos in topo.vgroup_loops[g]
                      if topo.loop_faces[pos] in faces]
+    inv_unit = np.linalg.inv(local)
+    rep_loops = [topo.loops[p] for p in representatives]
+    write_loops = [topo.loops[pos] for pos, _ in write_targets]
+    write_idx = np.asarray([i for _, i in write_targets], dtype=np.intp)
     return dict(topo=topo, faces=frozenset(faces), groups=groups, index=index,
-                tri=tri, local=local, areas=areas, group_triangles=group_triangles,
-                representatives=representatives, reference_signed=reference_signed,
-                weights=areas/areas.sum(), write_targets=write_targets)
+                tri=tri, local=local, inv_unit=inv_unit, areas=areas,
+                group_triangles=group_triangles, representatives=representatives,
+                rep_loops=rep_loops, reference_signed=reference_signed,
+                weights=areas/areas.sum(), write_targets=write_targets,
+                write_loops=write_loops, write_idx=write_idx)
 
 
 def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
@@ -158,39 +225,41 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
     groups, index = _geometry['groups'], _geometry['index']
     tri, areas = _geometry['tri'], _geometry['areas']
     group_triangles = _geometry['group_triangles']
-    local = _geometry['local'].copy()
-    x=(np.array([tuple(topo.loops[p][topo.uvl].uv)
-                 for p in _geometry['representatives']],dtype=float)
-       if _coordinates is None else np.array(_coordinates,dtype=float,copy=True))
+    local = None
+    x = (np.asarray(core.mesh_reader.read_uv(_geometry['rep_loops'], topo.uvl), dtype=float)
+         if _coordinates is None else np.array(_coordinates, dtype=float, copy=True))
     assert x.shape == (len(groups), 2)
-    uv=x[tri]
-    signed=((uv[:,1,0]-uv[:,0,0])*(uv[:,2,1]-uv[:,0,1])-
-            (uv[:,1,1]-uv[:,0,1])*(uv[:,2,0]-uv[:,0,0]))
+    uv = x[tri]
+    signed = ((uv[:, 1, 0]-uv[:, 0, 0])*(uv[:, 2, 1]-uv[:, 0, 1]) -
+              (uv[:, 1, 1]-uv[:, 0, 1])*(uv[:, 2, 0]-uv[:, 0, 0]))
     # Boundary straightening can temporarily invert an adjacent triangle.
     # Its 3D frame must retain the input UV orientation, rather than making
     # that intermediate fold an intentional mirror in the optimization target.
-    reference_signed=_geometry['reference_signed']
-    signs=np.where(np.abs(reference_signed)>1e-14,np.sign(reference_signed),
-                   np.where(signed>=0,1.,-1.))
+    reference_signed = _geometry['reference_signed']
+    signs = np.where(np.abs(reference_signed) > 1e-14, np.sign(reference_signed),
+                     np.where(signed >= 0, 1., -1.))
     if _reference_sign is not None:
         # Only the checked recovery path supplies a chart-wide orientation,
         # after verifying consistent mesh winding and excluding intentional stacks.
         signs.fill(_reference_sign)
-    # Reflect the local coordinate system, preserving both edge lengths and
-    # their dot product. Negating one edge column changes the triangle shape.
-    local[:,1,:]*=signs[:,None]
-    density=np.sqrt(np.abs(signed).sum()*.5/areas.sum())
-    local*=max(density,1e-12)
-    if use_density_map:
-        layer=topo.bm.faces.layers.float.get('uvck_density')
-        if layer:
-            triangle_face={tuple(t):face for face in topo.bm.faces if face.index in faces
-                           for t in core.triangles_for_faces(topo,{face.index})}
-            for i,triangle in enumerate(tri):
-                group_triangle=group_triangles[i]
-                face=triangle_face[group_triangle]
-                local[i]*=max(float(face[layer]),1e-4)
-    inv=np.linalg.inv(local)
+    density = np.sqrt(np.abs(signed).sum()*.5/areas.sum())
+    scale = max(density, 1e-12)
+    density_layer = topo.bm.faces.layers.float.get('uvck_density') if use_density_map else None
+    if not density_layer and len(tri) >= 32768:
+        inv = _geometry['inv_unit'] / scale
+        inv[:, :, 1] *= signs[:, None]
+    else:
+        local = _geometry['local'].copy()
+        local[:, 1, :] *= signs[:, None]
+        local *= scale
+        if density_layer:
+            triangle_face = {tuple(t): face for face in topo.bm.faces if face.index in faces
+                             for t in core.triangles_for_faces(topo, {face.index})}
+            for i, triangle in enumerate(tri):
+                group_triangle = tuple(int(v) for v in group_triangles[i])
+                face = triangle_face[group_triangle]
+                local[i] *= max(float(face[density_layer]), 1e-4)
+        inv = np.linalg.inv(local)
     weights=_geometry['weights']
     arrays=[]
     for kind, positions in runs:
@@ -218,9 +287,14 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
     # Do not infer pins again from transient UV flags in the numeric solver.
     boundary=[]
     if prevent_overlap:
-        for p in core.selection_border_loops(topo,faces):
-            a,b=topo.loop_edge_vgroups(p)
-            if a in index and b in index:boundary.append((index[a],index[b]))
+        cached_boundary = _geometry.get('_boundary')
+        if cached_boundary is None:
+            cached_boundary = []
+            for p in core.selection_border_loops(topo,faces):
+                a,b=topo.loop_edge_vgroups(p)
+                if a in index and b in index:cached_boundary.append((index[a],index[b]))
+            _geometry['_boundary'] = cached_boundary
+        boundary = cached_boundary
     native = native_engine.solve(
         x, tri, inv, weights, arrays, held, axis_penalties, boundary,
         density, angle_length, constraint_strength, penalty_scale, overlap_space,
@@ -239,18 +313,21 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
             with np.errstate(over='ignore', invalid='ignore'):
                 rounded = solved.astype(np.float32).astype(float)
             return len(tri), int((signed < 0).sum()), rounded
-        write_targets = _geometry['write_targets']
-        if _skip_same_uv and write_targets and core._same_uv_bits(solved, x):
+        write_loops = _geometry['write_loops']
+        write_idx = _geometry['write_idx']
+        if _skip_same_uv and write_loops and core._same_uv_bits(solved, x):
             # A group representative can be unchanged while its other loops
             # differ. The original would still write to these loops.
-            positions, groups = zip(*write_targets)
-            active = [topo.loops[pos] for pos in positions]
-            current = core.mesh_reader.read_uv(active, topo.uvl)
-            if core._same_uv_bits(current, solved[np.asarray(groups, dtype=np.intp)]):
+            current = core.mesh_reader.read_uv(write_loops, topo.uvl)
+            if core._same_uv_bits(current, solved[write_idx]):
                 return len(tri), int((signed < 0).sum())
-        for pos, i in write_targets:
-            topo.loops[pos][topo.uvl].uv = solved[i]
+        for loop, uv in zip(write_loops, solved[write_idx].tolist()):
+            loop[topo.uvl].uv = uv
         return len(tri), int((signed < 0).sum())
+    if local is None:
+        local = _geometry['local'].copy()
+        local[:, 1, :] *= signs[:, None]
+        local *= scale
     scatter_index=np.concatenate((tri[:,0],tri[:,1],tri[:,2]))
     axes_only = all(kind in (C_HORIZONTAL, C_VERTICAL) for kind, _ in arrays)
     axis_sets = _axis_sets(arrays, held) if axes_only else []

@@ -20,10 +20,15 @@ ROOT = Path(__file__).resolve().parents[1]
 CPU_ENGINE_DIR = ROOT / "build" / "native" / "bin" / "windows-x64"
 GPU_ENGINE_DIR = ROOT / "build" / "native_gpu" / "bin" / "windows-x64"
 PACKAGE_SCRIPT = ROOT / "scripts" / "package.py"
+BUILD_NATIVE_SCRIPT = ROOT / "scripts" / "build_native.py"
 
 spec = importlib.util.spec_from_file_location("uvck_package", PACKAGE_SCRIPT)
 package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
+
+build_spec = importlib.util.spec_from_file_location("uvck_build_native", BUILD_NATIVE_SCRIPT)
+build_native = importlib.util.module_from_spec(build_spec)
+build_spec.loader.exec_module(build_native)
 
 
 def run_package(*arguments: str) -> tuple[int, str]:
@@ -245,6 +250,56 @@ class PackageTests(unittest.TestCase):
                     self.assertEqual(digest, identity[checksum_key], member)
                 packaged_identity = json.loads(archive.read("bin/windows-x64/gpu.json"))
                 self.assertEqual(packaged_identity, identity)
+
+    def test_build_native_numeric_flag_and_metadata_contract(self):
+        import os
+        import types
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary:
+            build_dir = Path(temporary) / "native"
+            output_dir = build_dir / "bin" / "windows-x64"
+            cmake_cpu = build_dir / "cpu"
+            release_dir = cmake_cpu / "Release"
+            release_dir.mkdir(parents=True, exist_ok=True)
+            engine_bytes = b"mock engine dll"
+            numeric_bytes = b"mock numeric dll"
+            (release_dir / "uvck_engine.dll").write_bytes(engine_bytes)
+            (release_dir / "uvck_numeric_stage.dll").write_bytes(numeric_bytes)
+            commands = []
+
+            def fake_run(cmd):
+                commands.append(cmd)
+                return ""
+
+            fake_np = types.SimpleNamespace(__version__="2.3.4")
+            stdout = io.StringIO()
+            with patch.object(build_native.shutil, "which", return_value="cmake"), \
+                 patch.object(build_native, "run", side_effect=fake_run), \
+                 patch.dict(sys.modules, {"numpy": fake_np}), \
+                 patch.object(sys, "argv", [str(BUILD_NATIVE_SCRIPT), "--build-dir", str(build_dir), "--numeric"]), \
+                 contextlib.redirect_stdout(stdout):
+                if os.name != "nt":
+                    self.skipTest("build_native requires Windows x64")
+                build_native.main()
+            summary = json.loads(stdout.getvalue())
+            self.assertTrue(summary["numeric_requested"])
+            self.assertIsNotNone(summary["numeric"])
+            self.assertTrue(any("-DUVCK_BUILD_NUMERIC_STAGE=ON" in c for c in commands))
+            self.assertTrue(any("uvck_numeric_stage" in c for c in commands))
+            meta = json.loads((output_dir / "numeric_stage.json").read_text(encoding="utf8"))
+            self.assertEqual(meta["abi"], 1)
+            self.assertEqual(meta["area_read_abi"], 1)
+            self.assertEqual(meta["numpy_version"], "2.3.4")
+            self.assertEqual(meta["python_version"], list(sys.version_info[:3]))
+            self.assertTrue((output_dir / meta["library"]).is_file())
+
+            # Re-running without --numeric clears stale numeric_stage.json
+            stdout2 = io.StringIO()
+            with patch.object(build_native.shutil, "which", return_value="cmake"), \
+                 patch.object(build_native, "run", side_effect=fake_run), \
+                 patch.object(sys, "argv", [str(BUILD_NATIVE_SCRIPT), "--build-dir", str(build_dir)]), \
+                 contextlib.redirect_stdout(stdout2):
+                build_native.main()
+            self.assertFalse((output_dir / "numeric_stage.json").exists())
 
 
 def main() -> None:

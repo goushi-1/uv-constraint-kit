@@ -1,21 +1,20 @@
 {
-  "version": "1.7.58",
+  "version": "1.7.66",
   "status": "passed",
-  "release_track": "Windows x64 CPU + GPU + native reader",
-  "date": "2026-10-27",
+  "release_track": "Windows x64 CPU + GPU + numeric_stage + native reader",
+  "date": "2026-11-26",
   "package": {
-    "filename": "uv_constraint_kit-1.7.58.zip",
-    "sha256": "09f1ae1a5994d9e746538b87fbec650cf2530a1aabf6a121ba849404ce43d23a",
-    "bytes": 538881,
-    "members": 44
+    "filename": "uv_constraint_kit-1.7.66.zip",
+    "sha256": "15e8bde4e6b056f529866d4de4592dda6644c8e9a80daab05e8f784236d13db6",
+    "bytes": 610452,
+    "members": 48,
+    "extension_build_and_package_script_parity": true
   },
-  "baseline_public_commit": "d3b40a8b8f3f0cae202ca9a7e57dbdbd113aca0a",
-  "blender": "5.2.3 LTS",
-  "blender_build": "e13b728c6880",
+  "blender": "5.3.0",
   "gates": {
     "package_identity": {
       "status": "passed",
-      "members": 44,
+      "members": 48,
       "crc": true,
       "source_and_extracted_match": true,
       "sensitive_pattern_scan": true,
@@ -26,13 +25,18 @@
       "components": [
         "CPU",
         "CUDA GPU",
+        "numeric_stage",
         "stable-ABI reader"
       ],
-      "reused_validated_artifacts": true,
-      "unified_fresh_rebuild": false,
-      "cpu_from_release": "1.7.57",
-      "reader_from_candidate": "area1.7.58",
-      "gpu_from_release": "1.7.57"
+      "rebuilt_components": [
+        "CPU",
+        "CUDA GPU host",
+        "numeric_stage"
+      ],
+      "reused_source_matched_artifacts": [
+        "CUDA PTX (gpu_metric.cu unchanged)",
+        "stable-ABI reader (mesh_reader.cpp unchanged)"
+      ]
     },
     "native_numeric": {
       "status": "passed",
@@ -42,324 +46,55 @@
     },
     "packaging_regression": {
       "status": "passed",
-      "cases": 7,
-      "skipped": 0,
-      "requires_gpu_and_reader": true
+      "cases": 10,
+      "requires_gpu_reader_numeric": true
     },
     "safety_numeric": {
       "status": "passed",
       "cases": 18,
       "numpy_error_policy_preserved": true
     },
-    "blender_gpu_host": {
+    "blender_host_suite": {
       "status": "passed",
-      "operations": 9,
-      "natural_gpu_operations": 3,
-      "cpu_gpu_uv_max_delta": 0,
-      "reader_loaded": true,
-      "stable_abi_runtime_verified": true
-    },
-    "blender_host": {
-      "status": "passed",
-      "cases": 5,
-      "reader_required": true
-    },
-    "blender_selection": {
-      "status": "passed",
-      "cases": 9,
-      "reader_required": true
-    },
-    "confirmed_gui_native": {
-      "status": "passed",
-      "groups": 7
-    },
-    "confirmed_gui_python": {
-      "status": "passed",
-      "groups": 7
-    },
-    "mouse_modal_native": {
-      "status": "passed",
-      "gestures": 24,
-      "mouse_move_samples": 144,
-      "sync_modes": [
-        "on",
-        "off"
+      "tests": [
+        "test_host",
+        "test_selection_host",
+        "test_transaction_state_host",
+        "test_recovery_input_host",
+        "test_gpu_host",
+        "test_gui_host",
+        "test_modal_host"
       ],
-      "scopes": [
-        "whole_island",
-        "partial"
-      ],
-      "actions": [
-        "G",
-        "R",
-        "S"
-      ],
-      "endings": [
-        "confirm",
-        "cancel"
-      ],
-      "confirmation_undo_redo": true,
-      "modal_draw_calls": 312,
-      "os_mouse_moved": false
+      "passed_count": 7
     },
-    "mouse_modal_python": {
+    "p2_quality_suite": {
       "status": "passed",
-      "gestures": 24,
-      "mouse_move_samples": 144,
-      "sync_modes": [
-        "on",
-        "off"
-      ],
-      "scopes": [
-        "whole_island",
-        "partial"
-      ],
-      "actions": [
-        "G",
-        "R",
-        "S"
-      ],
-      "endings": [
-        "confirm",
-        "cancel"
-      ],
-      "confirmation_undo_redo": true,
-      "modal_draw_calls": 312,
-      "os_mouse_moved": false
+      "baseline_version": "1.7.62",
+      "cases": 31,
+      "operations": 62,
+      "hard_failures": 0,
+      "soft_failures": 0,
+      "self_overlaps": 0,
+      "boundary_crossings": 0,
+      "new_flips": 0,
+      "exact_zero_mark_residuals": 27
     },
-    "geometry_host_integration": {
+    "abba_baab_cpu0_benchmark": {
       "status": "passed",
-      "groups": 4,
-      "baseline": "validated area58 source",
-      "exact": true,
-      "cases": [
-        "multi_island",
-        "fixed_boundary",
-        "actual_fill_holes",
-        "actual_shared_stack"
-      ],
-      "actual_builtin_unwrap": true,
-      "actual_solver": true,
-      "source_and_package_unchanged": true,
-      "public_synthetic_regression_passed": true,
-      "lifecycle_registration_covered_separately": true
-    },
-    "direct_complete_operations": {
-      "status": "passed",
-      "baseline_label": "published1.7.57 archive",
-      "candidate_label": "exact1.7.58 archive",
-      "pairs": 540,
-      "exact_fields": 22,
-      "native_solver_events_exact": 918,
-      "profiling": false,
-      "baseline": {
-        "operations": 540,
-        "total_seconds": 66.12007180003275,
-        "median_seconds": 0.136394150009437,
-        "p95_seconds": 0.3160616000095615,
-        "maximum_seconds": 0.4287996000057319
-      },
-      "candidate": {
-        "operations": 540,
-        "total_seconds": 62.42578419999336,
-        "median_seconds": 0.1257343499964918,
-        "p95_seconds": 0.309869599994272,
-        "maximum_seconds": 0.4064157999964664
-      },
-      "change_percent": -5.587240756803835,
-      "phases": [
-        {
-          "phase": 1,
-          "baseline_seconds": 32.926584200089565,
-          "candidate_seconds": 31.078582099973573,
-          "change_percent": -5.612492595302266
-        },
-        {
-          "phase": 2,
-          "baseline_seconds": 33.19348759994318,
-          "candidate_seconds": 31.347202100019786,
-          "change_percent": -5.562191964204921
-        }
-      ]
-    },
-    "direct_dense_operations": {
-      "status": "passed",
-      "triangles": 18432,
-      "pairs": 18,
-      "order": "ABBA",
-      "exact_outputs_and_statistics": true,
-      "baseline": {
-        "operations": 18,
-        "total_seconds": 13.160164599990821,
-        "median_seconds": 0.5607378999993671,
-        "p95_seconds": 1.1191895000083605,
-        "maximum_seconds": 1.1191895000083605
-      },
-      "candidate": {
-        "operations": 18,
-        "total_seconds": 12.22682620001433,
-        "median_seconds": 0.5121080500030075,
-        "p95_seconds": 1.0742033999995328,
-        "maximum_seconds": 1.0742033999995328
-      },
-      "change_percent": -7.0921483761467785,
-      "phases": [
-        {
-          "phase": 1,
-          "baseline_seconds": 6.632373999993433,
-          "candidate_seconds": 6.179528200023924,
-          "change_percent": -6.827808564021831
-        },
-        {
-          "phase": 2,
-          "baseline_seconds": 6.527790599997388,
-          "candidate_seconds": 6.0472979999904055,
-          "change_percent": -7.360723243897793
-        }
-      ]
-    },
-    "public_uv_area": {
-      "status": "passed",
-      "cases": 698,
-      "optional_fallback_cases": 16,
-      "native_method": true,
-      "live_and_numeric": true,
-      "errors_propagated": true,
-      "invalid_face_rejected": true,
-      "main_thread_guard": true
-    },
-    "public_transaction_state": {
-      "status": "passed",
-      "cases": 12,
-      "native_and_python_readers": true,
-      "shared_health_matches_original": true,
-      "independent_numeric_snapshots": true,
-      "outside_corruption_rollback": true,
-      "health_exception_rollback": true,
-      "existing_partial_mix_safe_rejections": 2,
-      "rejected_solves_not_counted_as_completed_alignments": true
-    },
-    "public_triangle_frames": {
-      "status": "passed",
-      "numeric_cases": 104,
-      "geometry_faces": 4,
-      "abi_sentinels": 2,
-      "oracle_bytes_equal": true
-    },
-    "public_recovery_input": {
-      "status": "passed",
-      "cases": 384,
-      "fresh_after_writes": true,
-      "live_and_numeric_parity": true
-    },
-    "source_stage_memory_observations": {
-      "status": "passed",
-      "runtime_identical_except_manifest": true,
-      "triangles": 32768,
-      "comparison_baseline": "area58 source, not public57",
-      "observations": [
-        {
-          "backend": "cpu",
-          "exact": true,
-          "triangles": 32768,
-          "peak_working_set_change_mib": 1.03125,
-          "private_usage_change_mib": -1.58984375,
-          "scope": "Single observed process per variant; no portable speed or memory bound claim."
-        },
-        {
-          "backend": "auto",
-          "exact": true,
-          "triangles": 32768,
-          "peak_working_set_change_mib": 1.9140625,
-          "private_usage_change_mib": -10.98046875,
-          "scope": "Single observed process per variant; no portable speed or memory bound claim."
-        }
-      ],
-      "memory_bound_or_leak_proof": false,
-      "additional_numeric_arrays_operation_local": true
-    },
-    "license_notices_preserved": {
-      "status": "passed",
-      "gpl": true,
-      "required_univ_attribution_retained": true,
-      "prior_notices_byte_identical": true
+      "baseline_version": "1.7.62",
+      "runs": 8,
+      "operations_per_run": 12,
+      "determinism_ok": true,
+      "hard_failures": 0,
+      "soft_failures": 0,
+      "baseline_12op_median_s": 40.7889954,
+      "candidate_12op_median_s": 17.243195,
+      "time_delta_pct_vs_1_7_62": -57.7259,
+      "time_delta_pct_vs_1_7_65": -42.2131,
+      "eval_delta_pct_vs_1_7_62": -63.4791,
+      "gpu_energy_delta_pct_vs_1_7_62": -83.2562,
+      "coastal_mark_median_s": 6.311037,
+      "rocks_mark_median_s": 5.843205
     }
-  },
-  "runtime_sha256": {
-    "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-    "NOTICE": "8a1fabeb3017c1febdbecbf9c9c1a01c6def4126a4a911ff3cd6531636426446",
-    "THIRD_PARTY_NOTICES.md": "202c611c2ef7397f31a02b561f23fa948d1787c6ef9f21045a5bd389985614b8",
-    "__init__.py": "5bf3566728a1d8c33674c9016f27c19631ce2434463f5e8bac66c35cc1199d62",
-    "bin/windows-x64/engine.json": "642900f52a7aea8919eeb931d10d32ea4e773974600a48c4150e56516c2ad6a1",
-    "bin/windows-x64/gpu.json": "483be60fcf9c70a8e4917f0aa81476630668f4395cac0d3e3a19c75d7181d72c",
-    "bin/windows-x64/reader.json": "dd3c0d76726530b7ef1fb9315c285fe63dbdeb3c402c168ffea0b014d528cf6e",
-    "bin/windows-x64/uvck_engine_f9a89db0ea4f2781.dll": "f9a89db0ea4f27817e366a6dc3aa82f58c9c7e87639cea63b79b5d4eda71ad7b",
-    "bin/windows-x64/uvck_gpu_79935224145298e7.dll": "79935224145298e7b34621251bc000ad718f19edb6624a2b394ed2350e7bf473",
-    "bin/windows-x64/uvck_gpu_9cc973ed423fa3b2.ptx": "9cc973ed423fa3b25d0039c12fd28447ca22168a65ee5ce4fde57154ae08c825",
-    "bin/windows-x64/uvck_reader_ca64874205afd1c0.pyd": "ca64874205afd1c0aec5fa92d77b3b8a24f2fc75ddc7875bfb74ac9d9a94dadb",
-    "blender_manifest.toml": "d4af7cc50157c90ea21ee5deb523f0a5316e7f1549794c1b0cbf4ff5b446b104",
-    "circle.py": "0afc4fca63185d97a317aeca31d66a09d6b6a56fb6f03545f69b5989c8872b39",
-    "circle_ops.py": "b3aa8529fb60bf527d5dacee82cc113e9505270952bda2391c1242c777c7e81a",
-    "const.py": "fec58634525ec9d88e07111cc1a9566beae3fbcf0f0bb3393b3caa6c7945d18b",
-    "core.py": "c19e554e4dcdffdad430ddd75ede0840ba803c19cef99e6a8f2ba05e6efd7363",
-    "i18n.py": "40f2c3a755a6a2bb7b6275b9fde0658b29f12ad6b2fac03e23aa6a4f51dc7768",
-    "live_symmetry.py": "3946c570b2cfb682af2f9813afc9dbacf73535a4d735eba3386734c24bd965e7",
-    "mesh_reader.py": "53259a6eb94673908cdaf83af95acb7b29fb828941e8cd6eea38095b18401aab",
-    "metric.py": "35327ac9388c8dcaf532f88de5c6c7a887af0e7d24e1a98f00c544f1335e5682",
-    "native_engine.py": "b905f5d5278c6b072bc61b8d383cfb03d2f490777576be52dda02a36c82e4171",
-    "native_source/CMakeLists.txt": "b01a8187ff27912441ea334a52c69f3f5953236fea37126658b45d80f2495e70",
-    "native_source/build_gpu.py": "a3092b5e7347476db6a1e51b16a37ce7a3d0335d803f08bf0f914ad344dc0271",
-    "native_source/engine.cpp": "da8409ae19667f55c046c581adb9c8c4fc63f4ff26bf2bf248a0228997e42323",
-    "native_source/engine_gpu.cpp": "fb62e8886eb82c0911686bdcf33e4826dc7f15331f16c83710b90d0abfb6f5ea",
-    "native_source/gpu_driver.hpp": "e552b318744fcfae3b9b12cda0caa7ed1fd2b5a910ee2d0fb7fd13dc2559f5ac",
-    "native_source/gpu_metric.cu": "788b9d7930130366015b67b7ad05b30c74021127f6f929ca1adc12665b4f345a",
-    "native_source/mesh_reader.cpp": "ee82f3223e99b74be768cbbe47725bf886e08eeca9dc39fe5a1a2011a3b2b5c9",
-    "ops.py": "f9fc5a7a484169e7b563fd5d608474708fa3f7e12bfa94694b1ea3d8d19553bb",
-    "overlay.py": "087143b5b7b9b1277890302c73fb2a81df8acd3cf5d15621a786c6b153c94be8",
-    "prefs.py": "a968b181335a1db31751b5bb500282e625c2de4d40c99ff5c1d29b70ecb82561",
-    "proxy.py": "d1a0313719c2f269e7e62656e254080576a2876cc803286d0bb541d32a4ab667",
-    "quad_grid.py": "5f92c6d2aadf3b231952ade7a3ea532b6f0a4dcdf7d1cd1b0b5061c2035e1e4a",
-    "quadrify.py": "7889e8de93a877541ea6979f60ab20605596a365a3a1f6adc922a6716334218c",
-    "recovery.py": "0e1e9f03ef07204980eb92077ffcd44723dadb98c130f0f3704eb0de003a4c84",
-    "rectangle.py": "00d2c6d570e1e46bd7cea6ad30da1aad7038c8c56cbafcaebd575b8afaf551d2",
-    "refine.py": "c3e43a81a10e79e4ff00da4521860f16fcaa19e38c1668c296f4db2eb9ad060a",
-    "safety.py": "98f7f1e37cf0e9f63c40711ce4a329a64f322ed8a40bfe693dc12cbf14b98f2d",
-    "shape_constraints.py": "450c144dc465a77d8d6e8ad3a5a6a4eab9684e8e5883f13eb9a1af1ecce81734",
-    "shape_ops.py": "768d3e9f3a71ceb961fe29f6f60859591051df082fc0d4a4d1290b4ab0074bfc",
-    "symmetry.py": "a404c11fbefce8867d7a36b23953b437d0078796e755fc9259342e1bd00d9976",
-    "terms_zh.py": "553ebe497c2f187c2fa74faf143eff3be566a651507a10eb579733d60ab8939c",
-    "ui.py": "d760a09ffa09224e202d0f97469c8ea666b46b14d4dfa90ab861346bec973249",
-    "untangle.py": "9f5f89e3abe0acd2725771e0db5f03c1624c690cf0888dddda730d1193fe76fd"
-  },
-  "source_test_sha256": {
-    "tests/test_geometry_host.py": "d78a9038a1d13f2a784e25bc9ed80c546a74db770fcc19cb7b1b1e59bcf96a4d",
-    "tests/test_gpu_host.py": "1eb997b4a5a148266b5030027cd193904c24d9791fdc7acdf11454576810c85e",
-    "tests/test_gui_host.py": "4e8e2ef33e34be2237468ba4601a9c535bacd4e8aacb2b8f1e72e77aa079c4a2",
-    "tests/test_host.py": "2960a0c8fac3a08430c7d33d517c34aa7b60f0b728fac057581894099c242bcc",
-    "tests/test_modal_host.py": "465ed1d9077473d25459b4b9282bb9a67e55574810ae4f4882074e442a56188f",
-    "tests/test_native.py": "7b37845d3ffed6127c8e24bfcda32c333a702b95c9e11eaa46fd87ae6433f4a7",
-    "tests/test_package.py": "271ad8eebc3c2dcea3f38c2058affa510c1c8308b5a68eff793fe3a026ab4c00",
-    "tests/test_quad_grid_host.py": "ea21cb5cf3d38aba951827a5d3c5c518e918d2c17cc02dbf9484fb43d8633de2",
-    "tests/test_recovery_input_host.py": "ef99d1c0ce38cddf535c0a7b82af61e40a57a96382f038804b4a9a6592f74f57",
-    "tests/test_safety.py": "86d6ff6ddecc56003d50173d562204ed0778678b7d8e8d590504d2b39b52eb7e",
-    "tests/test_selection_host.py": "98707cf4500ad927cbef2ec65fcafa5828d456f1c8cde24cfc23ac9a7c80d70d",
-    "tests/test_transaction_state_host.py": "256803960019256d1ca8d534f0189c0b702868ec5359b8ed67732f279344b75f",
-    "tests/test_triangle_frames_host.py": "6e9b4ad5e62f08ae5760735efe9288a3f812bd2f96d35e41c14587c5070f35aa",
-    "tests/test_uv_area_host.py": "7b81f22ca7de0cb2b84900a6ca8059b92e339548f6b961b0eb137eaea82c66d0",
-    "scripts/build_native.py": "545c54e05b2b11ee8e2997666bc97b768dd24203eb747947822695a4ad67e19b",
-    "scripts/check_public_tree.py": "60ebeeb9d4a25812ffcb1d55de9c9f3ac0662075b0f2a4cb498eca1aa40c5671",
-    "scripts/generate_examples.py": "f37c442988da937898e86d55f4f20ee28d18830b55088d1fc99d7a045760d1ab",
-    "scripts/package.py": "b2aac2b2faba435d8a17079a8855691cdddca04173d66a70949cb84401427c56"
-  },
-  "scope": [
-    "Final archive was tested through extraction; user installation and preferences were not changed.",
-    "Timing is direct57-to-final58, not a sum of area/shared-snapshot experiments; not a portable or sub-second guarantee.",
-    "Factory GUI queued events are automated; third-party add-ons and manual user-installed interaction remain unverified.",
-    "Two historical triangle conflicts and a documented partial-mix rejection remain; no new solver algorithm is claimed.",
-    "CPU/GPU artifacts are source-matched public57 artifacts; only the area-reader component was rebuilt; no unified rebuild is claimed.",
-    "Memory numbers are one-pair source-stage observations with another baseline, not a bound or proof of no leak."
-  ],
-  "user_install_modified": false,
-  "user_scene_saved": false,
-  "user_preferences_saved": false
+  }
 }

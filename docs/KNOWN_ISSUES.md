@@ -1,6 +1,6 @@
 # Known issues / 已知问题
 
-The 1.7.58 final ZIP passed the recorded 21 gates. It retains solver formulas, order and safety checks. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
+The 1.7.66 final ZIP passed all recorded unit, host, P2 (62-op), ABBA+BAAB, and isolated Blender 5.3.0 acceptance gates. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
 
 - **Grid tool topology.** The public quadrification replacement has a narrower
   supported topology than general UV tools. An integer-grid chart can contain
