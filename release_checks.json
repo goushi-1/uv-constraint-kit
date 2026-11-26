@@ -1,20 +1,20 @@
 {
-  "version": "1.8.0",
+  "version": "1.9.0",
   "status": "passed",
   "release_track": "Windows x64 CPU + GPU + numeric_stage + native reader",
   "date": "2026-11-26",
   "package": {
-    "filename": "uv_constraint_kit-1.8.0.zip",
-    "sha256": "2414bdc34a49c50f7c8de55754ac0343f09d25b30944a3f5a6acfe674271ba60",
-    "bytes": 619563,
-    "members": 49,
+    "filename": "uv_constraint_kit-1.9.0.zip",
+    "sha256": "a35efcc4a32bdec8f9087248ca0afa449fa54e43e328036df74a9a2a887861a7",
+    "bytes": 630007,
+    "members": 51,
     "extension_build_and_package_script_parity": true
   },
   "blender": "5.3.0",
   "gates": {
     "package_identity": {
       "status": "passed",
-      "members": 49,
+      "members": 51,
       "crc": true,
       "source_and_extracted_match": true,
       "sensitive_pattern_scan": true,
@@ -56,7 +56,8 @@
       "status": "passed",
       "tests": [
         "test_host",
-        "test_v180_host",
+        "test_v190_host",
+        "test_v190_modal_host",
         "test_quad_grid_host",
         "test_selection_host",
         "test_transaction_state_host",
@@ -65,7 +66,7 @@
         "test_gui_host",
         "test_modal_host"
       ],
-      "passed_count": 9
+      "passed_count": 10
     },
     "p2_quality_suite": {
       "status": "passed",
@@ -87,14 +88,14 @@
       "determinism_ok": true,
       "hard_failures": 0,
       "soft_failures": 0,
-      "baseline_12op_median_s": 41.09565305,
-      "candidate_12op_median_s": 17.51012545,
-      "time_delta_pct_vs_1_7_62": -57.3918,
-      "time_delta_pct_vs_1_7_65": -41.3186,
-      "eval_delta_pct_vs_1_7_62": -63.4791,
-      "gpu_energy_delta_pct_vs_1_7_62": -83.2562,
-      "coastal_mark_median_s": 6.41605205,
-      "rocks_mark_median_s": 5.90719095
+      "baseline_12op_median_s": 39.361501350000005,
+      "candidate_12op_median_s": 16.84814335,
+      "time_delta_pct_vs_1_7_62": -57.196390452215304,
+      "time_delta_pct_vs_1_7_65": -43.5371,
+      "eval_delta_pct_vs_1_7_62": -63.47907725321888,
+      "gpu_energy_delta_pct_vs_1_7_62": -83.25619834710743,
+      "coastal_mark_median_s": 6.1914636000000005,
+      "rocks_mark_median_s": 5.668831300000001
     }
   }
 }

@@ -403,22 +403,12 @@ TERMS = {
     'no safe initialization could repair the input UVs while preserving constraints': '保留约束时未找到可安全修复当前 UV 的初始展开',
     'Protection settings limited alignment; remaining deviation %.3f deg': '保护设置限制了对齐程度，剩余偏差 %.3f 度',
     'No visible selected UV or mesh faces to optimize': '当前没有可见的 UV 面可供优化',
-    # -- 1.8.0 presets, auto H/V, distribute edges, partial quadrify -------
+    # -- 1.8.0 / 1.9.0 presets, distribute edges, partial quadrify, interactive --
     'Solve presets': '求解预设',
     'Show or hide pre-mark solver preset switches in the sidebar panel': '在侧边栏面板中展开或折叠标记前求解预设开关',
     'Default Prevent Overlaps setting applied before marking or optimizing': '标记或优化前默认启用的防止重叠开关',
     'Default Fix Boundary setting applied before marking or optimizing': '标记或优化前默认启用的固定边界开关',
     'Default Use Density Map setting applied before marking or optimizing': '标记或优化前默认启用的密度贴图开关',
-    'Auto Constrain H/V': '自动水平/垂直约束',
-    'Automatically mark near-horizontal and near-vertical UV edges within an angle threshold (uses selected edges, or falls back to selected island borders)':
-        '按角度阈值自动标记接近水平和垂直的 UV 边（优先使用局部选中边，无局部边选中时自动回退为选中岛屿外轮廓边界）',
-    'Angle threshold': '角度阈值',
-    'Maximum angle in degrees from horizontal or vertical': '与水平或垂直方向允许的最大偏差角度（度）',
-    'Include sharp edges': '包含锐边',
-    'Also include mesh edges marked sharp inside the selected islands': '同时纳入选中岛屿内部标记为锐边的模型边',
-    'Select UV edges or an island first': '请先选中 UV 边或 UV 岛屿',
-    'No UV edges within %.1f deg of horizontal or vertical': '在 %.1f° 阈值内未找到接近水平或垂直的 UV 边',
-    'Auto constrained: %d horizontal, %d vertical': '已自动标记约束：水平 %d 条，垂直 %d 条',
     'Distribute Edges': '边均匀分布',
     'Redistribute vertices along selected UV edge chains evenly or by 3D edge lengths, then safely relax the rest of the island':
         '沿选中的 UV 边链按等距或 3D 边长比例重新分布顶点，并安全松弛岛屿其余部分',
@@ -440,4 +430,34 @@ TERMS = {
     'Quad chart has a conflicting closed grid cycle': '四边形岛存在极点或冲突闭环；在含极点岛上请先选中无极点四边条带',
     'Quad chart cannot form a consistent integer grid': '四边形岛无法构成一致的整数网格；在含极点岛上请先选中无极点四边条带',
     'Select the complete connected UV chart': '请选择完整连通的 UV 岛',
+    'Constrained Drag': '约束拖拽',
+    'Preview dragging selected UVs interactively, then run a high-precision constrained solve on confirm (LMB confirm, RMB/Esc cancel, X/Y lock axis)':
+        '交互预览拖拽所选 UV，松手确认后执行高精度保约束重解（左键确认，右键/Esc 取消，X/Y 锁定轴向）',
+    'Drag offset': '拖拽偏移',
+    'UV translation applied to the selected handle vertices': '施加在选中拉手顶点上的 UV 平移偏移量',
+    'Preserve island area': '保持岛屿面积',
+    "Keep the island's original UV area after dragging": '拖拽确认后恢复岛屿原始 UV 面积',
+    'Select UV vertices, edges, or faces to drag first': '请先选中要拖拽的 UV 点、边或面',
+    'Drag offset must be finite': '拖拽偏移量必须为有限数值',
+    'Dragged vertices conflict with an existing shape constraint': '拖拽顶点与已有形状约束冲突，已还原',
+    'Dragged vertices would flip or collapse a locked triangle': '拖拽会导致锁定三角形翻转或塌缩，已还原',
+    'Dragged UV layout could not resolve without flipping triangles': '拖拽后无法在不翻转三角形的前提下求解，已还原',
+    'Dragged UV layout could not preserve the island area': '拖拽后无法保持岛屿面积，已还原',
+    'Dragged UV layout conflicts with constraints or would overlap': '拖拽结果与约束冲突或产生重叠，已还原',
+    'Dragged UV layout failed safety or overlap checks': '拖拽结果未通过安全或重叠检查，已还原',
+    'Constrained Drag: dU %.4f, dV %.4f%s | LMB: Confirm & Solve | RMB/Esc: Cancel | X/Y: Lock axis':
+        '约束拖拽：dU %.4f, dV %.4f%s | 左键确认重解 | 右键/Esc 取消 | X/Y 锁轴',
+    'Relax Brush': '松弛笔刷',
+    'Paint in the UV editor to smoothly relax UV distortion with whole-island distance falloff while preserving constraints, pins, and flip-free safety':
+        '在 UV 编辑器内涂抹，按整岛距离权重衰减平滑松弛畸变，同时严格保持约束、固定点与无翻转安全',
+    'Brush radius (px)': '笔刷半径（像素）',
+    'Brush radius in screen pixels (adjust with Wheel or [ / ])': '屏幕像素单位的笔刷半径（滚轮或 [ / ] 调节）',
+    'Brush strength': '笔刷强度',
+    'Relaxation strength per brush dab (adjust with Shift+Wheel)': '每次涂抹步进的松弛强度（Shift+滚轮调节）',
+    'Step iterations': '单步迭代次数',
+    'Solver iterations per brush dab': '每次涂抹步进的求解迭代次数',
+    'Restore original island UV area at the end of each stroke': '每笔涂抹结束后恢复岛屿原始 UV 面积',
+    'No visible editable UV islands for Relax Brush': '当前没有可供松弛笔刷操作的可见 UV 岛',
+    'Relax Brush | Radius: %.0f px ([/] or Wheel) | Strength: %.2f (Shift+Wheel) | LMB: Paint | RMB/Enter: Finish | Esc: Cancel':
+        '松弛笔刷 | 半径：%.0f px（[/] 或滚轮）| 强度：%.2f（Shift+滚轮）| 左键涂抹 | 右键/回车完成 | Esc 取消',
 }

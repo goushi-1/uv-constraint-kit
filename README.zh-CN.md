@@ -4,16 +4,16 @@
 
 **在 Blender 中，把需要控制的 UV 边保持为直线、圆形或方形，让岛屿其余部分围绕这些约束调整。**
 
-> **1.8.0 正式版：Windows x64 CPU+GPU，附原生读取器。**
-> [下载安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.8.0/uv_constraint_kit-1.8.0.zip)
+> **1.9.0 正式版：Windows x64 CPU+GPU，附原生读取器。**
+> [下载安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.9.0/uv_constraint_kit-1.9.0.zip)
 > · [查看验收范围](docs/VALIDATION.md)。
 
 选中一段边，可以添加水平、垂直或直线约束；选中一个完整闭合环，可以把开孔变圆，
 或把边界整理成长方形。开启「标记后自动优化」时，添加或解除约束后，相关 UV 岛会随之
 优化。约束会保留下来，供后续优化继续使用，而不只是当次把选区对齐。
 
-[1.8.0 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.8.0)
-提供 **`uv_constraint_kit-1.8.0.zip`**。需要 **Blender 5.2+**。
+[1.9.0 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.9.0)
+提供 **`uv_constraint_kit-1.9.0.zip`**。需要 **Blender 5.2+**。
 [安装包身份](release_checks.json)。
 [查看已知问题](docs/KNOWN_ISSUES.md)。
 符合条件的大型求解会自动使用 GPU；小网格和部分特殊求解仍使用 CPU。GPU 需要
@@ -21,13 +21,14 @@ NVIDIA 计算能力 8.9+ 显卡及支持 CUDA 12.4+ 的驱动。预构建扩展�
 Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 已发布的版本见[历史发行版](https://github.com/goushi-1/uv-constraint-kit/releases)。
 
-## 1.8.0 的变化
+## 1.9.0 的变化
 
-- **默认折叠的「求解预设」抽屉**：在 UV 编辑器与 3D 视图侧边栏新增默认折叠的「求解预设」开关组（`防止重叠`、`固定边界条件`、`使用密度贴图`），自动作为标记与优化前的默认参数且可由 F9 随时覆盖，不改变既有默认行为与外部饼菜单算子 ID。
-- **自动水平/垂直约束（`uv.uvck_auto_constrain_hv`）**：按角度阈值（默认 `20°`）自动标记接近水平和垂直的 UV 边；优先作用于当前局部选中边，无局部边选中时自动回退为选中岛屿外轮廓边界；F9 提供可选的「包含锐边」（默认关闭），并遵循全局「标记后自动优化」开关。
+- **约束拖拽（`uv.uvck_constrained_drag`）**：采用「拖拽中轻量实时预览 + 松手确认后高精度保约束重解」模式；拖拽阶段仅移动所选拉手顶点（`O(selected)`，支持 `X`/`Y` 锁轴、`右键`/`Esc` 精确还原），确认后（`左键`/`回车`/`空格`）执行高精度保约束求解并严格保持 H/V/Aligned/形状约束、固定点与无翻转/防重叠安全，F9 可精调偏移量与求解选项。
+- **松弛笔刷（`uv.uvck_relax_brush`）**：UV 编辑器交互式保约束松弛笔刷，采用整岛平滑高斯距离衰减（无硬圈边界）；`左键` 涂抹、`滚轮`/`[`/`]` 调节屏幕像素半径、`Shift+滚轮` 调节强度、`右键`/`回车`/`空格` 一次撤回确认、`Esc` 精确还原，全程严格保持 H/V/Aligned/形状约束、固定点与向量化无翻转/防重叠安全。
+- **默认折叠的「求解预设」抽屉**：在 UV 编辑器与 3D 视图侧边栏新增默认折叠的「求解预设」开关组（`防止重叠`、`固定边界条件`、`使用密度贴图`），自动作为标记、优化与交互工具的默认参数且可由 F9 随时覆盖，不改变既有默认行为与外部饼菜单算子 ID。
 - **边均匀分布（`uv.uvck_distribute_edges`）**：一次性轻量工具，支持沿选中 UV 边链按**等距分布**或**按模型边长**比例重新分布顶点，随后安全松弛岛屿其余部分；不新增持久约束类型与覆盖着色，保持固定点、既有约束与岛屿面积。
 - **实用化局部条带四边形化（`Quadrify`）**：规则纯四边形岛保持 `quad_grid.py` 精确整数网格路径；在混合面或含极点岛屿上，支持对选中的无极点四边条带执行拉直固定，并安全松弛其余面。
-- **Blender 5.3.0 实测通过**：沿用经源校验的 `1.7.66` 原生 CPU/GPU/读取器/`numeric_stage` 二进制（49/49 成员与 `blender --command extension build` 逐字节一致）；9/9 宿主测试（含新增无头 UI/i18n/图标与新功能测试 `test_v180_host.py`）、31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`17.5101s` 总中位耗时，较 `1.7.62` 降 `57.39%`，较 `1.7.65` 降 `41.32%`；`coastal mark` `6.4161s`、`rocks mark` `5.9072s`）；并完成 `1.7.66 -> 1.8.0` 隔离升级/F9/CPU+GPU 验收。
+- **Blender 5.3.0 实测通过**：沿用经源校验的 `1.7.66` 原生 CPU/GPU/读取器/`numeric_stage` 二进制（51/51 成员与 `blender --command extension build` 逐字节一致）；10/10 宿主测试（含无头 UI/i18n/图标与新功能测试 `test_v190_host.py` 及事件模拟交互测试 `test_v190_modal_host.py`）、31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`16.8481s` 总中位耗时，较 `1.7.62` 降 `57.20%`，较 `1.7.65` 降 `43.54%`；`coastal mark` `6.1915s`、`rocks mark` `5.6688s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
 
 ## 从已有 UV 开始
 
@@ -165,7 +166,7 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 
 ## 从源码构建
 
-Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.8.0 沿用经源校验的 `1.7.66` CPU/GPU 引擎、数值阶段辅助库与原生读取器二进制，并继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
+Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.9.0 沿用经源校验的 `1.7.66` CPU/GPU 引擎、数值阶段辅助库与原生读取器二进制，并继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
 **Windows x64 / MSVC**；宿主检查使用 Blender 5.3.0。从源码构建 CUDA 引擎需要
 CUDA Toolkit / NVRTC 12.4；预构建包只需要兼容 NVIDIA 驱动。读取器运行时使用
 Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
@@ -174,7 +175,7 @@ Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --numeric --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.8.0.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.9.0.zip
 ```
 
 `--reader` 必须同时提供 `--python-include`（其中有 `Python.h`）和
@@ -192,7 +193,8 @@ python tests/test_native.py --engine-dir build/native/bin/windows-x64
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_quad_grid_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_selection_host.py
-blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v180_host.py
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_host.py
+blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/v190-modal.json
 ```
 
 测试只生成合成网格，请在独立工厂配置进程中运行；不保存用户场景或偏好。
@@ -207,7 +209,7 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 
 ## 版本区分
 
-- 1.8.0 为当前正式版：新增默认折叠「求解预设」抽屉、`uv.uvck_auto_constrain_hv`、`uv.uvck_distribute_edges` 与局部条带 `Quadrify`，完成 9/9 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB（`-57.39%` vs 1.7.62、`-41.32%` vs 1.7.65）与隔离 Blender 5.3.0 升级验收。
+- 1.9.0 为当前正式版：新增 `uv.uvck_constrained_drag`（约束拖拽）、`uv.uvck_relax_brush`（松弛笔刷）、默认折叠「求解预设」抽屉、`uv.uvck_distribute_edges` 与局部条带 `Quadrify`，完成 10/10 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB（`-57.20%` vs 1.7.62、`-43.54%` vs 1.7.65）与隔离 Blender 5.3.0 升级验收。
 - 1.7.66 为上一里程碑（P3-E/P3-A/P3-B 提速与 `build_native.py --numeric`）。
 - 1.7.65 为上一公开标签发行版，其记录见 [v1.7.65 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json)。
 - 更早结果分别记录在[验收记录](docs/VALIDATION.md)。

@@ -168,27 +168,6 @@ def write_constraint_marks(bm, positions, kind, *, _loop_count=None):
     return batch
 
 
-def write_constraint_mark_map(bm, mark_map, *, _loop_count=None):
-    """Write a {loop_position: kind} mapping for non-aligned marks atomically."""
-    if not mark_map:
-        return 0
-    positions = list(mark_map)
-    count = sum(len(face.loops) for face in bm.faces) if _loop_count is None else _loop_count
-    if min(positions) < 0 or max(positions) >= count:
-        raise IndexError('Constraint loop position is outside the mesh')
-    if any(kind not in (C_NONE, C_HORIZONTAL, C_VERTICAL) for kind in mark_map.values()):
-        raise ValueError('Constraint mark map supports none, horizontal, and vertical kinds only')
-    constraint_layer(bm, create=True)
-    prepare_bm(bm)
-    layer, groups = constraint_layer(bm), aligned_group_layer(bm)
-    loops = loops_in_order(bm)
-    for position, kind in mark_map.items():
-        loops[position][layer] = kind
-        if groups is not None:
-            loops[position][groups] = 0
-    return len(mark_map)
-
-
 # Counting in edit mode cannot go through the Mesh datablock (its attributes
 # are stale while the object is in edit mode), so results are cached briefly.
 _stats_cache = {"key": None, "value": (0, {}), "time": 0.0}

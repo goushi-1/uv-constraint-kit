@@ -19,8 +19,6 @@ class _ConstraintButtons:
         row.operator("uv.uvck_constrain_vertical", icon="EDGESEL")
         row = col.row(align=True)
         row.operator("uv.uvck_constrain_aligned", icon="EDGESEL")
-        row = col.row(align=True)
-        row.operator("uv.uvck_auto_constrain_hv", icon="SNAP_GRID")
 
         col = layout.column(align=True)
         col.operator("uv.uvck_unconstrain", icon="X")
@@ -47,6 +45,10 @@ class _ConstraintButtons:
                 sub.prop(prefs, "preset_prevent_overlap")
                 sub.prop(prefs, "preset_fix_boundary")
                 sub.prop(prefs, "preset_use_density_map")
+
+        row = layout.row(align=True)
+        row.operator("uv.uvck_constrained_drag", icon="EMPTY_ARROWS")
+        row.operator("uv.uvck_relax_brush", icon="BRUSH_DATA")
 
         row = layout.row(align=True)
         row.operator("uv.uvck_symmetrize", icon="MOD_MIRROR")
@@ -114,11 +116,12 @@ def _draw_menu(self, context):
     layout.operator("uv.uvck_constrain_horizontal", icon="EDGESEL")
     layout.operator("uv.uvck_constrain_vertical", icon="EDGESEL")
     layout.operator("uv.uvck_constrain_aligned", icon="EDGESEL")
-    layout.operator("uv.uvck_auto_constrain_hv", icon="SNAP_GRID")
     layout.separator()
     layout.operator("uv.uvck_unconstrain", icon="X")
     layout.separator()
     layout.operator("uv.uvck_optimize", icon="UV_SYNC_SELECT")
+    layout.operator("uv.uvck_constrained_drag", icon="EMPTY_ARROWS")
+    layout.operator("uv.uvck_relax_brush", icon="BRUSH_DATA")
     layout.operator("uv.uvck_circularize", icon="MESH_CIRCLE")
     layout.operator("uv.uvck_symmetrize", icon="MOD_MIRROR")
     layout.operator("uv.uvck_rectify", icon="MESH_PLANE")

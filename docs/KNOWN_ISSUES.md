@@ -1,6 +1,6 @@
 # Known issues / 已知问题
 
-The 1.8.0 final ZIP passed all recorded unit, 9/9 host (including `test_v180_host.py`), P2 (62-op), ABBA+BAAB, and isolated Blender 5.3.0 acceptance gates. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
+The 1.9.0 final ZIP passed all recorded unit, 10/10 host (including `test_v190_host.py` and `test_v190_modal_host.py`), P2 (62-op), ABBA+BAAB, and isolated Blender 5.3.0 acceptance gates. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
 
 - **Grid tool topology.** Whole-island integer-grid quadrification requires regular
   pure-quad charts (regular grid holes are allowed). On mixed-polygon or

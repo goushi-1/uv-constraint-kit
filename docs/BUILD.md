@@ -1,8 +1,8 @@
 # Build from source / 从源码构建
 
-The 1.8.0 release reuses the source-matched `1.7.66` CPU, GPU, `numeric_stage`, and stable-ABI reader binaries unchanged and adds `distribute.py` to the `scripts/package.py` allowlist. The final archive has 49 members matching `blender --command extension build`; identity is recorded in [release_checks.json](../release_checks.json).
+The 1.9.0 release reuses the source-matched `1.7.66` CPU, GPU, `numeric_stage`, and stable-ABI reader binaries unchanged and adds `distribute.py`, `constrained_drag.py`, and `relax_brush.py` to the `scripts/package.py` allowlist. The final archive has 51 members matching `blender --command extension build`; identity is recorded in [release_checks.json](../release_checks.json).
 
-1.8.0 正式版沿用经源校验未改动的 `1.7.66` CPU、GPU、`numeric_stage` 与原生读取器二进制，并在 `scripts/package.py` 打包清单中纳入 `distribute.py`。最终包共 49 个成员且与 `blender --command extension build` 逐字节一致，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
+1.9.0 正式版沿用经源校验未改动的 `1.7.66` CPU、GPU、`numeric_stage` 与原生读取器二进制，并在 `scripts/package.py` 打包清单中纳入 `distribute.py`、`constrained_drag.py` 与 `relax_brush.py`。最终包共 51 个成员且与 `blender --command extension build` 逐字节一致，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
 
 ## Requirements / 工具
 
@@ -93,7 +93,7 @@ stable-ABI import library named exactly `python3.lib`:
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --numeric --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.8.0.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.9.0.zip
 ```
 
 `--numeric` requires NumPy in the active Python interpreter (for example Blender's bundled Python) and emits `numeric_stage.json` alongside `uvck_numeric_<sha16>.dll`; `--require-numeric` fails packaging if that sidecar or metadata is missing or mismatches `numeric_stage.cpp`.
@@ -132,6 +132,7 @@ default is a short console result without creating a report file.
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_quad_grid_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_selection_host.py
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_host.py
 ```
 
 These background commands create disposable synthetic meshes and do not save a
@@ -176,6 +177,7 @@ mouse. Run both reader routes:
 ```sh
 blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/modal-native.json --reader native
 blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/modal-python.json --reader python
+blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/v190-modal.json
 ```
 
 The final 1.7.54 run covered 24 gesture combinations per route: UV sync on/off,

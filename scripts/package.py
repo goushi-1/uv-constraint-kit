@@ -12,9 +12,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDON = ROOT / "uv_constraint_kit"
-RUNTIME = """__init__.py blender_manifest.toml circle_ops.py circle.py const.py core.py distribute.py
+RUNTIME = """__init__.py blender_manifest.toml circle_ops.py circle.py const.py constrained_drag.py core.py distribute.py
 i18n.py LICENSE live_symmetry.py metric.py native_engine.py numeric_stage.py ops.py overlay.py prefs.py
-proxy.py quad_grid.py quadrify.py recovery.py rectangle.py refine.py safety.py shape_constraints.py
+proxy.py quad_grid.py quadrify.py recovery.py rectangle.py refine.py relax_brush.py safety.py shape_constraints.py
 shape_ops.py symmetry.py terms_zh.py ui.py untangle.py mesh_reader.py""".split()
 NATIVE_SOURCE = "CMakeLists.txt build_gpu.py engine.cpp engine_gpu.cpp gpu_driver.hpp gpu_metric.cu mesh_reader.cpp numeric_stage.cpp".split()
 
