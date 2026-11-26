@@ -280,9 +280,8 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
                     warm_dev, warm_p50, warm_p90 = dev, p50, p90
                 if ex_dev <= 0.05 and is_better(dev, p50, p90):
                     best_uv, best_dev, best_p50, best_p90 = cand, dev, p50, p90
-                if ex_dev <= 0.05 and dev <= 0.05:
-                    break
-                # Try snapping cleanly to exact H/V subspace once nearly straight.
+                # Try polishing/snapping cleanly onto exact H/V subspace without
+                # artificial contact-barrier repulsion once nearly straight.
                 if dev < 5.0 or (existing_pos and ex_dev > 0.05 and p90 < 4.0):
                     n_ex, _ = metric.solve(
                         core, topo, island, held, runs, 1, angle_length=1.0,
@@ -292,13 +291,15 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
                     if n_ex:
                         fit_after_solve()
                         cand_ex, dev_ex, p50_ex, p90_ex, ex_dev_ex = eval_candidate(require_existing_exact=True)
-                        if cand_ex is not None and is_better(dev_ex, p50_ex, p90_ex):
+                        if cand_ex is not None and (is_better(dev_ex, p50_ex, p90_ex) or dev_ex <= 0.05):
                             best_uv, best_dev, best_p50, best_p90 = cand_ex, dev_ex, p50_ex, p90_ex
                             warm = cand_ex
                             warm_dev, warm_p50, warm_p90 = dev_ex, p50_ex, p90_ex
                             if dev_ex <= 0.05:
                                 break
                     write_uv_array(warm)
+                if ex_dev <= 0.05 and dev <= 0.05:
+                    break
             else:
                 write_uv_array(warm)
                 if not exclude_poles and strength == 1.0 and warm is base_uv:

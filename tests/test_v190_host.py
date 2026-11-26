@@ -464,6 +464,84 @@ def test_prevent_overlap_neighbor_nudge():
     del t
 
 
+def test_stepped_border_prevent_overlap_no_foldback():
+    # Two vertical border runs separated by a narrow 1-edge horizontal step must
+    # straighten cleanly under prevent_overlap=True without 180-deg edge
+    # fold-back or corner stretch explosion (bull_right_18 regression).
+    verts = []
+    vid = {}
+    for y in range(13):
+        cols = 7 if y <= 6 else 6
+        for x in range(cols):
+            vid[(x, y)] = len(verts)
+            px = float(x) * 0.025 if x <= 5 else 5 * 0.025 + 0.006
+            py = float(y) * 0.025
+            verts.append((px, py, 0.0))
+    faces = []
+    for y in range(12):
+        max_x = 6 if y < 6 else 5
+        for x in range(max_x):
+            faces.append((vid[(x, y)], vid[(x + 1, y)], vid[(x + 1, y + 1)], vid[(x, y + 1)]))
+
+    def uv_fn(_fi, _vi, co):
+        u = co.x + 0.009 * math.sin((co.y - 0.15) * 9.0) + 0.06 * (co.y - 0.15)
+        v = co.y
+        return (u, v)
+
+    for prevent_flips in (False, True):
+        obj = make_mesh(verts, faces, uv_fn)
+        t = topo_of(obj)
+        core.constraint_layer(t.bm, create=True)
+        del t
+        t = topo_of(obj)
+        layer = core.constraint_layer(t.bm)
+        upper_v = {(vid[(5, y)], vid[(5, y + 1)]) for y in range(6, 12)}
+        lower_v = {(vid[(6, y)], vid[(6, y + 1)]) for y in range(0, 6)}
+        target_edges = {frozenset(pair) for pair in (upper_v | lower_v)}
+        for lp in t.loops:
+            if frozenset((lp.vert.index, lp.link_loop_next.vert.index)) in target_edges:
+                lp[layer] = core.C_VERTICAL
+        for f in t.bm.faces:
+            f.select = True
+            f.uv_select = True
+        t.bm.uv_select_sync_valid = True
+        bpy.context.scene.tool_settings.use_uv_select_sync = True
+        del t
+
+        res = bpy.ops.uv.uvck_optimize(
+            "EXEC_DEFAULT",
+            prevent_overlap=True,
+            prevent_flips=prevent_flips,
+            use_density_map=True,
+        )
+        assert "FINISHED" in res, res
+        last = ops.last_optimize_result
+        assert last["status"] == "COMPLETED" and last["max_deviation"] <= 0.05, last
+
+        t = topo_of(obj)
+        v_uv = {}
+        for lp in t.loops:
+            v_uv[lp.vert.index] = (float(lp[t.uvl].uv.x), float(lp[t.uvl].uv.y))
+        for y in range(6, 12):
+            assert v_uv[vid[(5, y + 1)]][1] > v_uv[vid[(5, y)]][1] + 1e-3, (
+                prevent_flips, y, v_uv[vid[(5, y)]], v_uv[vid[(5, y + 1)]]
+            )
+        for y in range(0, 6):
+            assert v_uv[vid[(6, y + 1)]][1] > v_uv[vid[(6, y)]][1] + 1e-3, (
+                prevent_flips, y, v_uv[vid[(6, y)]], v_uv[vid[(6, y + 1)]]
+            )
+        p5 = v_uv[vid[(5, 6)]]
+        p6 = v_uv[vid[(6, 6)]]
+        step_len = math.hypot(p6[0] - p5[0], p6[1] - p5[1])
+        assert p6[0] > p5[0] and step_len < 0.015, (prevent_flips, p5, p6, step_len)
+        probe = safety.AcceptanceProbe(core, t, set(range(len(faces))), check_other_islands=True)
+        ov = probe.check_overlaps(t, include_existing=True)
+        assert ov["self_overlaps"] == 0 and ov["island_overlaps"] == 0, ov
+        qm = core.quality_metrics(t, set(range(len(faces))))
+        assert qm["flips"] == 0 and qm["edge_spread"] < 1.0, (prevent_flips, qm)
+        del t
+
+
 addon.register()
 try:
     if args.require_native:
@@ -475,6 +553,7 @@ try:
         test_partial_quad_strip_quadrify,
         test_whole_island_quad_flow_poled_island,
         test_prevent_overlap_neighbor_nudge,
+        test_stepped_border_prevent_overlap_no_foldback,
     ):
         test()
 finally:
@@ -483,7 +562,7 @@ finally:
 
 print(json.dumps(dict(
     passed=True,
-    cases=6,
+    cases=7,
     blender=bpy.app.version_string,
     native_required=args.require_native,
     scene_saved=False,

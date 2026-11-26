@@ -24,11 +24,11 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 ## 1.9.0 的变化
 
 - **整岛四边流 DAG 四边形化（`Quadrify`）**：规则纯四边形岛保持 `quad_grid.py` 精确整数网格路径；针对含内部极点与凹口的整块纯四边形岛，新增整岛无环四边流（Quad-Flow DAG）求解路径（解决 `"Different UV vertices occupy the same grid point"` 报错，严格保持固定点、用户已有约束、岛屿面积与零翻转/零重叠）；在混合多边形岛上仍保留局部无极点四边条带拉直路径。
-- **高可靠「防止重叠」约束求解**：勾选「防止重叠」后保留软接触屏障与 `SoftMetric` 预条件器，并在软阶段收敛后补充精确子空间吸附；当未固定单岛已实现 0 自交、0 翻转且仅擦碰邻岛时，自动执行最小刚体平移避让，显著提升复杂凹岛开启防重叠时的约束成功率。
+- **高可靠「防止重叠」约束求解**：勾选「防止重叠」后，优先在严格 0 翻转 / 0 自交 / 最小邻岛避让校验下尝试纯净精确子空间求解；回退至软接触屏障与 `SoftMetric` 预条件器时从温和起点（`st=1.0`）起步并在收敛后执行精确子空间抛光（避免阶梯状边界 180° 折返与角部拉伸突刺）；当未固定单岛已实现 0 自交、0 翻转且仅擦碰邻岛时，自动执行最小刚体平移避让。
 - **CPU / GPU / Python 全链路大幅提速**：重新编译 `uvck_engine`（零重哈希与亲和度感知多线程重叠检测、解析 CCD 边界步长、`n <= 8192` 启用 `SoftMetric`、L-BFGS 原地历史复用）与 `uvck_gpu` 宿主层（GPU 与锁页暂存缓冲跨阶段缓存、FNV-1a 常量复用、解析 CCD 边界步长），并向量化 `island_area` / `recovery` / `UVTopology` 与 `Quadrify` 的原生 `AcceptanceProbe` 安全检查。
 - **默认折叠的「求解预设」抽屉**：在 UV 编辑器与 3D 视图侧边栏新增默认折叠的「求解预设」开关组（`防止重叠`、`固定边界条件`、`使用密度贴图`），自动作为标记与优化的默认参数且可由 F9 随时覆盖，不改变既有默认行为与外部饼菜单算子 ID。
 - **边均匀分布（`uv.uvck_distribute_edges`）**：一次性轻量工具，支持沿选中 UV 边链按**等距分布**或**按模型边长**比例重新分布顶点，随后安全松弛岛屿其余部分；不新增持久约束类型与覆盖着色，保持固定点、既有约束与岛屿面积。
-- **Blender 5.3.0 实测通过**：49/49 成员与 `blender --command extension build` 逐字节一致；9/9 宿主测试全过（含 `test_v190_host.py` 无头 UI/图标/汉化、含极点整岛 Quadrify、防重叠邻岛避让与边均匀分布）；31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`11.2343s` 总中位耗时，较 `1.7.62` 降 `67.71%` / 提速 `3.10x`，较 `1.7.65` 降 `62.35%`；`coastal mark` `3.5481s`、`rocks mark` `3.7499s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
+- **Blender 5.3.0 实测通过**：49/49 成员与 `blender --command extension build` 逐字节一致；9/9 宿主测试全过（含 `test_v190_host.py` 无头 UI/图标/汉化、含极点整岛 Quadrify、防重叠邻岛避让与阶梯边界防折返、边均匀分布）；31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`11.1936s` 总中位耗时，较 `1.7.62` 降 `69.43%` / 提速 `3.27x`，较 `1.7.65` 降 `62.49%`；`coastal mark` `3.6174s`、`rocks mark` `3.6651s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
 
 ## 从已有 UV 开始
 
@@ -209,7 +209,7 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 
 ## 版本区分
 
-- 1.9.0 为当前正式版：新增整岛四边流 DAG `Quadrify`、高可靠「防止重叠」接触求解与自动邻岛避让、重建 CPU/GPU/Python 全链路提速（较 `1.7.62` 降 `67.71%` / `3.10x`）、默认折叠「求解预设」抽屉与 `uv.uvck_distribute_edges`，完成 9/9 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB 与隔离 Blender 5.3.0 升级验收。
+- 1.9.0 为当前正式版：新增整岛四边流 DAG `Quadrify`、高可靠「防止重叠」接触求解与精确子空间抛光/自动邻岛避让、重建 CPU/GPU/Python 全链路提速（较 `1.7.62` 降 `69.43%` / `3.27x`）、默认折叠「求解预设」抽屉与 `uv.uvck_distribute_edges`，完成 9/9 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB 与隔离 Blender 5.3.0 升级验收。
 - 1.7.66 为上一里程碑（P3-E/P3-A/P3-B 提速与 `build_native.py --numeric`）。
 - 1.7.65 为上一公开标签发行版，其记录见 [v1.7.65 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json)。
 - 更早结果分别记录在[验收记录](docs/VALIDATION.md)。

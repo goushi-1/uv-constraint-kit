@@ -3370,10 +3370,12 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         prepared_geometry = None if settings.get('fill_holes') else {}
         strengths = ((1., 100., 1e4, 1e6) if settings.get('auto_iterations', True)
                      else (1e6,))
-        # Only the existing clean, whole-chart H/V contact route probes
-        # a stronger starting penalty. A rejected probe restores the seed and
-        # executes the original ramp. No state survives this one operation.
+        # Only the existing clean, whole-chart H/V contact route (without
+        # explicit prevent_overlap) probes a stronger starting penalty. When
+        # prevent_overlap is active, start gently at st=1.0 so stepped borders
+        # never snap into high-distortion folded corners.
         medium_probe = bool(_allow_medium and contact_faces and contact_eligible
+                            and not settings.get('prevent_overlap', False)
                             and settings.get('auto_iterations', True))
         probe_accepted = False
         if medium_probe:
@@ -3408,26 +3410,34 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     ok = valid(topo, health, coordinates, triangles)
             return ok, coordinates, health, triangles
 
-        def try_exact_subspace(override_contact=None):
+        def try_exact_subspace(override_contact=None, allow_polish=False,
+                               override_overlap=None, override_require_pos=None):
             nonlocal best_values, best_result, best_deviation, warm_values, warm_deviation
             c_faces = contact_faces if override_contact is None else override_contact
+            req_pos = require_pos if override_require_pos is None else override_require_pos
+            trial_settings = dict(settings, _contact_faces=c_faces)
+            if override_overlap is not None:
+                trial_settings['prevent_overlap'] = override_overlap
             guarded = _rebuild_islands(context, obj, faces, constraint_positions,
                 _topo=topo, _constraint_strength=None, _quality_before=quality_before,
                 _quality_after=False, _geometry_cache=prepared_geometry,
-                _direct_subspace=True, _require_positive_det=require_pos,
+                _direct_subspace=True, _require_positive_det=req_pos,
                 _update_mesh=False, _has_pins=has_any_pins,
-                **dict(settings, _contact_faces=c_faces))
+                **trial_settings)
             if guarded[2].get('aborted_projection'):
                 if guarded[2].get('wrote_any'):
                     restore(warm_values, _skip_same_uv=True)
                 return False
             coordinates, health, triangles = capture_health(topo)
             ok, coordinates, health, triangles = validate_with_nudge(coordinates, health, triangles)
-            if ok and contact_faces and not settings.get('prevent_overlap', False):
+            if ok and (contact_faces or override_overlap is False):
                 overlap = probe.check_overlaps(topo, include_existing=True, coordinates=coordinates)
                 health.update(overlap)
                 ok = bool(overlap['overlap_check_complete'] and not overlap['self_overlaps'])
-            if ok and health['max_deviation'] < best_deviation:
+            improved = (health['max_deviation'] < best_deviation or
+                        (allow_polish and not health['constraints_limited']
+                         and health['max_deviation'] <= max(best_deviation, 0.05)))
+            if ok and improved:
                 best_values = read_loop_tuples()
                 best_deviation = health['max_deviation']
                 warm_values = best_values
@@ -3442,6 +3452,11 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             return False
 
         if fast_subspace and try_exact_subspace():
+            return best_values, best_result
+        if (allow_exact_snap and contact_faces and settings.get('prevent_overlap', False)
+                and (try_exact_subspace(override_contact=(), override_overlap=False,
+                                        override_require_pos=bool(settings.get('prevent_flips', False)))
+                     or try_exact_subspace(override_contact=()))):
             return best_values, best_result
 
         for stage, strength in enumerate(strengths):
@@ -3484,8 +3499,11 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 best_result = guarded[0], health['flips'], guarded[2]
                 if fast_subspace and health['max_deviation'] > 1e-4 and try_exact_subspace():
                     break
-                if (allow_exact_snap and contact_faces and 0.05 < health['max_deviation'] < 2.0
-                        and try_exact_subspace(override_contact=())):
+                if (allow_exact_snap and contact_faces
+                        and ((settings.get('prevent_overlap', False) and health['max_deviation'] < 2.0)
+                             or 0.05 < health['max_deviation'] < 2.0)
+                        and try_exact_subspace(override_contact=(),
+                                               allow_polish=bool(settings.get('prevent_overlap', False)))):
                     break
                 if not health['constraints_limited']:
                     break

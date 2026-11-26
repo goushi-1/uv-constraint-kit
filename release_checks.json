@@ -2,11 +2,11 @@
   "version": "1.9.0",
   "status": "passed",
   "release_track": "Windows x64 CPU + GPU + numeric_stage + native reader",
-  "date": "2026-11-26",
+  "date": "2026-11-27",
   "package": {
     "filename": "uv_constraint_kit-1.9.0.zip",
-    "sha256": "c3ffad6d4b6f25f36ae529339fb91dbbf3b8dfa2da5ada920a4a0b2432ff3a99",
-    "bytes": 642944,
+    "sha256": "f80b0e8e60f62cd876b9dfa94b7b69ecdcf052c0ac8266dd4370a9d6b845d7be",
+    "bytes": 643215,
     "members": 49,
     "extension_build_and_package_script_parity": true
   },
@@ -89,14 +89,14 @@
       "determinism_ok": true,
       "hard_failures": 0,
       "soft_failures": 0,
-      "baseline_12op_median_s": 34.78736155,
-      "candidate_12op_median_s": 11.2342703,
-      "time_delta_pct_vs_1_7_62": -67.7058857026195,
-      "time_delta_pct_vs_1_7_65": -62.3508,
+      "baseline_12op_median_s": 36.61277095,
+      "candidate_12op_median_s": 11.19356325,
+      "time_delta_pct_vs_1_7_62": -69.42716172647403,
+      "time_delta_pct_vs_1_7_65": -62.4872,
       "eval_delta_pct_vs_1_7_62": -67.1137339055794,
       "gpu_energy_delta_pct_vs_1_7_62": -85.32231404958678,
-      "coastal_mark_median_s": 3.54807395,
-      "rocks_mark_median_s": 3.7498691
+      "coastal_mark_median_s": 3.61740325,
+      "rocks_mark_median_s": 3.6650504
     }
   }
 }
