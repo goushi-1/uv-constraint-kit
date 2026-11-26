@@ -2,6 +2,7 @@
 // UV Constraint Kit CPU engine. No Blender/Python objects cross this C ABI.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cfenv>
 #include <cstring>
@@ -15,12 +16,20 @@
 #include <map>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #define API extern "C" __declspec(dllexport)
 #else
 #define API extern "C" __attribute__((visibility("default")))
@@ -242,6 +251,44 @@ struct Problem {
             }
             if(p.overlap_space>0 && std::min({distance(a,c,d),distance(b,c,d),distance(c,a,b),distance(d,a,b)})<p.overlap_space) return false;
             return true;
+    }
+    double max_border_pair_step(const Vec& x0,const Vec& x1,I i,I j) const {
+        if(i<0 || j<0 || i>=p.nb || j>=p.nb) return 1.;
+        const I ia=p.border_edges[2*i],ib=p.border_edges[2*i+1],ic=p.border_edges[2*j],id=p.border_edges[2*j+1];
+        if(ia==ic || ia==id || ib==ic || ib==id) return 1.;
+        double best=1.;
+        auto check_pt_seg=[&](I ip,I iq,I ir) {
+            const double p0x=x0[2*ip],p0y=x0[2*ip+1],dpx=x1[2*ip]-p0x,dpy=x1[2*ip+1]-p0y;
+            const double q0x=x0[2*iq],q0y=x0[2*iq+1],dqx=x1[2*iq]-q0x,dqy=x1[2*iq+1]-q0y;
+            const double r0x=x0[2*ir],r0y=x0[2*ir+1],drx=x1[2*ir]-r0x,dry=x1[2*ir+1]-r0y;
+            const double ux=r0x-q0x,uy=r0y-q0y,dux=drx-dqx,duy=dry-dqy;
+            const double vx=p0x-q0x,vy=p0y-q0y,dvx=dpx-dqx,dvy=dpy-dqy;
+            const double a=dux*dvy-duy*dvx;
+            const double b=(ux*dvy-uy*dvx)+(dux*vy-duy*vx);
+            const double c=ux*vy-uy*vx;
+            auto test_root=[&](double t) {
+                if(!(t>1e-12 && t<best)) return;
+                const double ex=ux+t*dux,ey=uy+t*duy;
+                const double px=vx+t*dvx,py=vy+t*dvy;
+                const double len2=ex*ex+ey*ey;
+                if(len2<=1e-24) {best=t;return;}
+                const double s=(px*ex+py*ey)/len2;
+                if(s>=-0.05 && s<=1.05) best=t;
+            };
+            if(std::abs(a)<=1e-18) {
+                if(std::abs(b)>1e-18) test_root(-c/b);
+            } else {
+                const double disc=b*b-4.*a*c;
+                if(disc>=0.) {
+                    const double sd=std::sqrt(disc);
+                    test_root((-b-sd)/(2.*a));
+                    test_root((-b+sd)/(2.*a));
+                }
+            }
+        };
+        check_pt_seg(ia,ic,id);check_pt_seg(ib,ic,id);
+        check_pt_seg(ic,ia,ib);check_pt_seg(id,ia,ib);
+        return best;
     }
     bool borders_valid(const Vec& x) const {
         if(!p.prevent_overlap) return true;
@@ -577,7 +624,10 @@ static SoftMetric make_soft_metric(const Problem& problem) noexcept {
     try {
         const Input& p=problem.p;
         if(!p.automatic || !problem.soft || !problem.axes_only || !problem.reciprocal
-                || p.angle_length!=1. || p.ne<=0 || p.prevent_overlap!=2 || p.strength<0. || p.strength>100.) return {};
+                || p.angle_length!=1. || p.ne<=0 || p.strength<0.) return {};
+        const bool orig_contact=(p.prevent_overlap==2 && p.strength<=100.);
+        const bool fast_small=(p.prevent_overlap>=1 && p.n<=8192 && p.strength<=1e6);
+        if(!orig_contact && !fast_small) return {};
         const I n=2*p.n;
         std::vector<std::map<I,double>> rows(n);
         for(I t=0;t<p.nt;++t) {
@@ -678,9 +728,10 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
         if(!std::isfinite(e)) return 1; // Do not publish even the initial projection.
         Vec g;problem.gradient(x,g);
         struct History {Vec s,y;double rho;};std::vector<History> history;
-        Vec q,direction,candidate,next_g;std::vector<double> coefficients;
+        history.reserve(8);
+        Vec q,direction,candidate,next_g,change(x.size()),y(x.size());std::vector<double> coefficients;
         const SoftMetric soft_metric=make_soft_metric(problem);
-        const bool contact_progress=soft_metric.enabled();
+        const bool contact_progress=(p.prevent_overlap==2 && soft_metric.enabled());
         // Soft stages with the explicit overlap guard can stall against a
         // boundary while line search still accepts vanishing improvements.
         // Hand control back to the existing stronger-penalty continuation.
@@ -766,7 +817,7 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                 slope=dot(g,direction);
                 history.clear();
             }
-            double step=1,next_e=INF;candidate.resize(x.size());bool accepted=false,used_analytic=false;
+            double step=1,next_e=INF;candidate.resize(x.size());bool accepted=false,used_analytic=false,used_border_ccd=false;
             const bool analytic_bound=(p.nt>=32768) && (p.prevent_flips || problem.reciprocal) && (problem.soft || problem.axes_only);
             problem.baseline_uv=keep_initial_border?&initial_uv:nullptr;
             problem.border_rejected=false;
@@ -781,12 +832,22 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                         !problem.border_pair_valid(candidate,problem.witness_i,problem.witness_j)) {
                     problem.border_rejected=true;
                     ++problem.evaluations;
-                    step*=.5;
+                    if(search==0 && !used_border_ccd) {
+                        used_border_ccd=true;
+                        const double t_ccd=problem.max_border_pair_step(x,candidate,problem.witness_i,problem.witness_j);
+                        step=(t_ccd<1.)?std::min(0.5,std::max(0.75*t_ccd,1e-12)):0.5;
+                    } else {
+                        step*=.5;
+                    }
                     continue;
                 }
                 next_e=problem.energy(candidate);
                 if(next_e<=threshold) {accepted=true;break;}
-                if(search==0 && !used_analytic && problem.flip_rejected && !problem.border_rejected && analytic_bound) {
+                if(search==0 && !used_border_ccd && problem.border_rejected && problem.witness_i>=0) {
+                    used_border_ccd=true;
+                    const double t_ccd=problem.max_border_pair_step(x,candidate,problem.witness_i,problem.witness_j);
+                    step=(t_ccd<1.)?std::min(0.5,std::max(0.75*t_ccd,1e-12)):0.5;
+                } else if(search==0 && !used_analytic && problem.flip_rejected && !problem.border_rejected && analytic_bound) {
                     used_analytic=true;
                     const double t_min=problem.max_flip_free_step(x,candidate);
                     step=(t_min<1.)?std::min(0.5,std::max(0.8*t_min,1e-12)):0.5;
@@ -805,9 +866,20 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
             if(pinned_border_count>0) {
                 for(I v=0;v<p.n;++v) if(contact_pinned[v]) {next_g[2*v]=0.;next_g[2*v+1]=0.;}
             }
-            Vec change(x.size()),y(x.size());
             for(std::size_t k=0;k<x.size();++k) {change[k]=candidate[k]-x[k];y[k]=next_g[k]-g[k];}
-            double sy=dot(change,y);if(sy>1e-14) {history.push_back({std::move(change),std::move(y),1/sy});if(history.size()>8) history.erase(history.begin());}
+            double sy=dot(change,y);
+            if(sy>1e-14) {
+                History entry{std::move(change),std::move(y),1/sy};
+                if(history.size()==8) {
+                    change=std::move(history.front().s);
+                    y=std::move(history.front().y);
+                    history.erase(history.begin());
+                } else {
+                    change.resize(x.size());
+                    y.resize(x.size());
+                }
+                history.push_back(std::move(entry));
+            }
             double improvement=e-next_e;x.swap(candidate);e=next_e;g.swap(next_g);++stats->accepted;
             if(p.automatic && improvement<=1e-10*std::max(1.,std::abs(e))) {
                 if(try_pin_witness()) continue;
@@ -1184,7 +1256,9 @@ static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint
             }
             return -1;
         };
+        std::vector<std::size_t> tri_off(n+1,0);
         for(I i=0;i<n;++i) {
+            tri_off[i]=entry_cid.size();
             const auto& b=boxes[i];
             if(!b.valid || b.large) continue;
             for(I x=b.ix0;x<=b.ix1;++x) for(I y=b.iy0;y<=b.iy1;++y) {
@@ -1194,6 +1268,7 @@ static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint
                 entry_tri.push_back(i);
             }
         }
+        tri_off[n]=entry_cid.size();
         std::vector<std::size_t> cell_off(cell_counts.size()+1,0);
         for(std::size_t c=0;c<cell_counts.size();++c)
             cell_off[c+1]=cell_off[c]+static_cast<std::size_t>(cell_counts[c]);
@@ -1203,19 +1278,21 @@ static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint
             cell_tris[cursor[entry_cid[k]]++]=entry_tri[k];
         const auto filtered_orientation=orientation_filter_mode();
         I tested=0,kind=0;
-        std::vector<I> seen(n,-1), candidates;
-        // Recovery scans the same triangle more than once, so deduplicate per
-        // visit instead of using the triangle index as the epoch.
-        I visit=0;
-        auto gather=[&](I i) {
+        auto gather_into=[&](I i,std::vector<std::int32_t>& seen_buf,std::int32_t& visit_buf,std::vector<I>& cand_buf) {
             const auto& a=boxes[i];
-            const I epoch=OrderedPair?visit++:i;
-            candidates.clear();
+            const I fa=faces[i];
+            const std::int32_t epoch=visit_buf++;
+            if(epoch==std::numeric_limits<std::int32_t>::max()-1) {
+                std::fill(seen_buf.begin(),seen_buf.end(),-1);
+                visit_buf=1;
+            }
+            cand_buf.clear();
             auto add_boxes=[&](const std::vector<BoxLite>& rows) {
                 for(const auto& lb:rows) {
-                    if(a.x0<lb.x1 && lb.x0<a.x1 && a.y0<lb.y1 && lb.y0<a.y1 && seen[lb.idx]!=epoch) {
-                        seen[lb.idx]=epoch;
-                        candidates.push_back(lb.idx);
+                    if(lb.idx!=i && faces[lb.idx]!=fa &&
+                       a.x0<lb.x1 && lb.x0<a.x1 && a.y0<lb.y1 && lb.y0<a.y1 && seen_buf[lb.idx]!=epoch) {
+                        seen_buf[lb.idx]=epoch;
+                        cand_buf.push_back(lb.idx);
                     }
                 }
             };
@@ -1225,37 +1302,95 @@ static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint
             } else {
                 auto big=large_boxes.find(a.bucket);
                 if(big!=large_boxes.end()) add_boxes(big->second);
-                for(I x=a.ix0;x<=a.ix1;++x) for(I y=a.iy0;y<=a.iy1;++y) {
-                    const I cid=find_cell({a.bucket,x,y});
-                    if(cid>=0) {
-                        const std::size_t start=cell_off[cid],end=cell_off[cid+1];
-                        for(std::size_t k=start;k<end;++k) {
-                            const I j=cell_tris[k];
-                            if(seen[j]!=epoch) {seen[j]=epoch;candidates.push_back(j);}
+                for(std::size_t e=tri_off[i];e<tri_off[i+1];++e) {
+                    const I cid=entry_cid[e];
+                    const std::size_t s0=cell_off[cid],s1=cell_off[cid+1];
+                    for(std::size_t k=s0;k<s1;++k) {
+                        const I j=cell_tris[k];
+                        if(j==i || faces[j]==fa) continue;
+                        const auto& b=boxes[j];
+                        if(a.x0<b.x1 && b.x0<a.x1 && a.y0<b.y1 && b.y0<a.y1 && seen_buf[j]!=epoch) {
+                            seen_buf[j]=epoch;
+                            cand_buf.push_back(j);
                         }
                     }
                 }
             }
         };
-        auto current_overlaps=[&](I i,I j) {
-            const auto& a=boxes[i];
-            const auto& b=boxes[j];
-            if(j==i || !b.valid || faces[i]==faces[j] ||
-                a.x0>=b.x1 || b.x0>=a.x1 || a.y0>=b.y1 || b.y0>=a.y1) return false;
-            ++tested;
+        auto test_pair=[&](I i,I j,I& local_tested) {
+            ++local_tested;
             return triangles_overlap(read_triangle(current+6*i),read_triangle(current+6*j),filtered_orientation);
         };
+        auto worker_count=[](I span) noexcept -> unsigned {
+            if(span<8192) return 1u;
+            unsigned hc=std::thread::hardware_concurrency();
+            if(hc<=1u) return 1u;
+#ifdef _WIN32
+            DWORD_PTR proc_mask=0,sys_mask=0;
+            if(GetProcessAffinityMask(GetCurrentProcess(),&proc_mask,&sys_mask) && proc_mask!=0) {
+                unsigned allowed=0u;
+                for(DWORD_PTR m=proc_mask;m;m&=(m-1)) ++allowed;
+                if(allowed<hc) hc=allowed;
+            }
+#endif
+            return std::min<unsigned>(8u,std::max<unsigned>(1u,hc));
+        };
+        struct ThreadJoiner {
+            std::vector<std::thread>& threads;
+            ~ThreadJoiner() { for(auto& w:threads) if(w.joinable()) w.join(); }
+        };
+        std::vector<std::int32_t> seen(n,-1);
+        std::vector<I> candidates;
+        std::int32_t visit=0;
         if constexpr (OrderedPair) {
             auto has_pair=[&](I start,I end) -> I {
-                for(I i=start;i<end;++i) {
-                    if(!boxes[i].valid) continue;
-                    gather(i);
-                    // An earlier partner is skipped only when both rows are
-                    // active. Preserve clipping argument order on every probe.
-                    for(I j:candidates)
-                        if((j>=i || j<start) && current_overlaps(i,j)) return i;
+                const unsigned nthreads=worker_count(end-start);
+                if(nthreads<=1u) {
+                    for(I i=start;i<end;++i) {
+                        if(!boxes[i].valid) continue;
+                        gather_into(i,seen,visit,candidates);
+                        // An earlier partner is skipped only when both rows are
+                        // active. Preserve clipping argument order on every probe.
+                        for(I j:candidates)
+                            if((j>=i || j<start) && test_pair(i,j,tested)) return i;
+                    }
+                    return -1;
                 }
-                return -1;
+                std::atomic<I> best_hit{end};
+                std::vector<I> local_tested(nthreads,0);
+                std::vector<std::thread> workers;
+                workers.reserve(nthreads);
+                const I span=end-start;
+                {
+                    ThreadJoiner guard{workers};
+                    for(unsigned t=0;t<nthreads;++t) {
+                        const I c0=start+(span*static_cast<I>(t))/static_cast<I>(nthreads);
+                        const I c1=start+(span*static_cast<I>(t+1))/static_cast<I>(nthreads);
+                        workers.emplace_back([&,t,c0,c1]() {
+                            std::vector<std::int32_t> t_seen(n,-1);
+                            std::vector<I> t_cand;
+                            std::int32_t t_visit=0;
+                            I t_tested=0;
+                            for(I i=c0;i<c1;++i) {
+                                if((i&63)==0 && i>=best_hit.load(std::memory_order_relaxed)) break;
+                                if(!boxes[i].valid) continue;
+                                gather_into(i,t_seen,t_visit,t_cand);
+                                for(I j:t_cand) {
+                                    if((j>=i || j<start) && test_pair(i,j,t_tested)) {
+                                        I prev=best_hit.load(std::memory_order_relaxed);
+                                        while(i<prev && !best_hit.compare_exchange_weak(prev,i,std::memory_order_relaxed)) {}
+                                        local_tested[t]=t_tested;
+                                        return;
+                                    }
+                                }
+                            }
+                            local_tested[t]=t_tested;
+                        });
+                    }
+                }
+                for(I c:local_tested) tested+=c;
+                const I hit=best_hit.load();
+                return hit<end ? hit : -1;
             };
             const I first_hit=has_pair(0,n);
             if(first_hit<0) {output[0]=0;output[1]=tested;return 0;}
@@ -1266,30 +1401,96 @@ static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint
                 if(h>=0) end=h+1;
                 else start=middle;
             }
-            gather(start);
+            gather_into(start,seen,visit,candidates);
             I partner=n;
             // For the single active row the legacy partner probes all have the
             // same argument order. Choose the smallest passing original index.
-            for(I j:candidates) if(j<partner && current_overlaps(start,j)) partner=j;
+            for(I j:candidates) if(j<partner && test_pair(start,j,tested)) partner=j;
             if(partner==n) return -4;
             witness[0]=start;witness[1]=partner;
             output[0]=1;output[1]=tested;
             return 0;
         }
-        for(I i=0;i<n;++i) {
-            if(!changed[i] || !boxes[i].valid) continue;
-            gather(i);
-            for(I j:candidates) {
-                if((changed[j] && j<i) || (!other && roots[i]!=roots[j]) || !current_overlaps(i,j)) continue;
-                if(!existing && triangles_overlap(read_triangle(reference+6*i),read_triangle(reference+6*j),filtered_orientation)) continue;
-                const I found=roots[i]==roots[j]?1:2;
-                if(!other) {if(witness) {witness[0]=i;witness[1]=j;} output[0]=found;output[1]=tested;return 0;}
-                // Python's set order can choose a different class when both
-                // kinds fail. Ask the existing Python path to resolve that
-                // rare ambiguity instead of changing the acceptance result.
-                if(kind && kind!=found) {output[0]=3;output[1]=tested;return 0;}
-                kind=found;
+        const unsigned nthreads=worker_count(n);
+        if(nthreads<=1u) {
+            for(I i=0;i<n;++i) {
+                if(!changed[i] || !boxes[i].valid) continue;
+                gather_into(i,seen,visit,candidates);
+                for(I j:candidates) {
+                    if((changed[j] && j<i) || (!other && roots[i]!=roots[j]) || !test_pair(i,j,tested)) continue;
+                    if(!existing && triangles_overlap(read_triangle(reference+6*i),read_triangle(reference+6*j),filtered_orientation)) continue;
+                    const I found=roots[i]==roots[j]?1:2;
+                    if(!other) {if(witness) {witness[0]=i;witness[1]=j;} output[0]=found;output[1]=tested;return 0;}
+                    // Python's set order can choose a different class when both
+                    // kinds fail. Ask the existing Python path to resolve that
+                    // rare ambiguity instead of changing the acceptance result.
+                    if(kind && kind!=found) {output[0]=3;output[1]=tested;return 0;}
+                    kind=found;
+                }
             }
+            output[0]=kind;output[1]=tested;return 0;
+        }
+        struct ChunkResult { I kind=0, wi=-1, wj=-1, tested=0; };
+        std::vector<ChunkResult> results(nthreads);
+        std::atomic<I> best_i{n};
+        std::atomic<bool> found_both{false};
+        std::vector<std::thread> workers;
+        workers.reserve(nthreads);
+        {
+            ThreadJoiner guard{workers};
+            for(unsigned t=0;t<nthreads;++t) {
+                const I c0=(n*static_cast<I>(t))/static_cast<I>(nthreads);
+                const I c1=(n*static_cast<I>(t+1))/static_cast<I>(nthreads);
+                workers.emplace_back([&,t,c0,c1]() {
+                    std::vector<std::int32_t> t_seen(n,-1);
+                    std::vector<I> t_cand;
+                    std::int32_t t_visit=0;
+                    ChunkResult r{};
+                    for(I i=c0;i<c1;++i) {
+                        if((i&63)==0) {
+                            if(!other && i>=best_i.load(std::memory_order_relaxed)) break;
+                            if(other && found_both.load(std::memory_order_relaxed)) break;
+                        }
+                        if(!changed[i] || !boxes[i].valid) continue;
+                        gather_into(i,t_seen,t_visit,t_cand);
+                        for(I j:t_cand) {
+                            if((changed[j] && j<i) || (!other && roots[i]!=roots[j]) || !test_pair(i,j,r.tested)) continue;
+                            if(!existing && triangles_overlap(read_triangle(reference+6*i),read_triangle(reference+6*j),filtered_orientation)) continue;
+                            const I found=roots[i]==roots[j]?1:2;
+                            if(!other) {
+                                r.kind=found;r.wi=i;r.wj=j;
+                                I prev=best_i.load(std::memory_order_relaxed);
+                                while(i<prev && !best_i.compare_exchange_weak(prev,i,std::memory_order_relaxed)) {}
+                                results[t]=r;
+                                return;
+                            }
+                            if(r.kind && r.kind!=found) {
+                                r.kind=3;
+                                found_both.store(true,std::memory_order_relaxed);
+                                results[t]=r;
+                                return;
+                            }
+                            r.kind=found;
+                        }
+                    }
+                    results[t]=r;
+                });
+            }
+        }
+        for(const auto& r:results) tested+=r.tested;
+        if(!other) {
+            for(const auto& r:results) {
+                if(r.kind) {
+                    if(witness) {witness[0]=r.wi;witness[1]=r.wj;}
+                    output[0]=r.kind;output[1]=tested;return 0;
+                }
+            }
+            output[0]=0;output[1]=tested;return 0;
+        }
+        for(const auto& r:results) {
+            if(!r.kind) continue;
+            if(r.kind==3 || (kind && kind!=r.kind)) {output[0]=3;output[1]=tested;return 0;}
+            kind=r.kind;
         }
         output[0]=kind;output[1]=tested;return 0;
     }catch(...){return -3;}

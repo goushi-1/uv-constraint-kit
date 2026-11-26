@@ -62,6 +62,36 @@ def diagnostics():
         read_calls=_read_calls,read_successes=_read_successes,read_rejected=_read_rejected)
 
 
+def _face_index_buffers(topo, faces):
+    """Build contiguous int64 (offsets, members) for `faces` without Python loop walks."""
+    f_offsets = getattr(topo, '_face_offsets', None)
+    f_sizes = getattr(topo, '_face_sizes', None)
+    if f_offsets is not None and f_sizes is not None:
+        if len(faces) == len(f_sizes):
+            members = getattr(topo, '_all_loop_indices', None)
+            if members is None:
+                members = np.arange(topo.loop_count, dtype=np.int64)
+                topo._all_loop_indices = members
+            return f_offsets, members
+        idx = np.fromiter(sorted(faces), dtype=np.int64, count=len(faces))
+        sizes = f_sizes[idx]
+        offsets = np.empty(len(idx) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(sizes, out=offsets[1:])
+        total = int(offsets[-1])
+        if total == 0:
+            return offsets, np.empty(0, dtype=np.int64)
+        starts = f_offsets[idx]
+        members = np.repeat(starts - offsets[:-1], sizes) + np.arange(total, dtype=np.int64)
+        return offsets, members
+    offsets = [0]
+    positions = []
+    for fi in sorted(faces):
+        positions.extend(topo.loop_pos[loop] for loop in topo.bm.faces[fi].loops)
+        offsets.append(len(positions))
+    return np.asarray(offsets, dtype=np.int64), np.asarray(positions, dtype=np.int64)
+
+
 def scaled_copy(topo,faces,target,coordinates):
     """None requests original fallback; a returned array owns a valid trial.
 
@@ -78,13 +108,7 @@ def scaled_copy(topo,faces,target,coordinates):
     if lib is None:
         return None
     try:
-        offsets=[0]
-        positions=[]
-        for fi in sorted(faces):
-            positions.extend(topo.loop_pos[loop] for loop in topo.bm.faces[fi].loops)
-            offsets.append(len(positions))
-        offsets=np.asarray(offsets,dtype=np.int64)
-        members=np.asarray(positions,dtype=np.int64)
+        offsets,members=_face_index_buffers(topo,faces)
         rows=np.empty((len(members),2),dtype=np.float64)
         stats=np.empty(4,dtype=np.float64)
         _calls+=1
@@ -143,12 +167,7 @@ def read_area(topo,faces,coordinates):
     if lib is None:
         return None
     try:
-        offsets,positions=[0],[]
-        for fi in sorted(faces):
-            positions.extend(topo.loop_pos[loop] for loop in topo.bm.faces[fi].loops)
-            offsets.append(len(positions))
-        offsets=np.asarray(offsets,dtype=np.int64)
-        members=np.asarray(positions,dtype=np.int64)
+        offsets,members=_face_index_buffers(topo,faces)
         output=ct.c_double()
         _read_calls+=1
         status=lib.uvck_numeric_area_read(len(coordinates),len(offsets)-1,len(members),

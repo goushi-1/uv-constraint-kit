@@ -47,10 +47,6 @@ class _ConstraintButtons:
                 sub.prop(prefs, "preset_use_density_map")
 
         row = layout.row(align=True)
-        row.operator("uv.uvck_constrained_drag", icon="EMPTY_ARROWS")
-        row.operator("uv.uvck_relax_brush", icon="BRUSH_DATA")
-
-        row = layout.row(align=True)
         row.operator("uv.uvck_symmetrize", icon="MOD_MIRROR")
         if live_symmetry.has_links(context):
             row.operator("uv.uvck_stop_symmetry", icon="UNLINKED")
@@ -120,8 +116,6 @@ def _draw_menu(self, context):
     layout.operator("uv.uvck_unconstrain", icon="X")
     layout.separator()
     layout.operator("uv.uvck_optimize", icon="UV_SYNC_SELECT")
-    layout.operator("uv.uvck_constrained_drag", icon="EMPTY_ARROWS")
-    layout.operator("uv.uvck_relax_brush", icon="BRUSH_DATA")
     layout.operator("uv.uvck_circularize", icon="MESH_CIRCLE")
     layout.operator("uv.uvck_symmetrize", icon="MOD_MIRROR")
     layout.operator("uv.uvck_rectify", icon="MESH_PLANE")

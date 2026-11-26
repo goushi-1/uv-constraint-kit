@@ -19,6 +19,28 @@ static std::string gpu_error;
 // sessions, energy calls, gradient pipelines, errors, HtoD bytes, DtoH bytes, initializations
 static std::array<I,7> gpu_counts{};
 
+static std::uint64_t fnv64_bytes(const void* data, std::size_t nbytes) noexcept {
+    const auto* p = static_cast<const std::uint8_t*>(data);
+    std::uint64_t h = 14695981039346656037ULL;
+    for(std::size_t i = 0; i < nbytes; ++i) {
+        h ^= static_cast<std::uint64_t>(p[i]);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+struct CachedGpuBuffers {
+    I cap_n = 0, cap_nt = 0;
+    I cached_n = 0, cached_nt = 0;
+    std::uint64_t tri_hash = 0, inv_hash = 0, weights_hash = 0;
+    bool tri_valid = false, inv_valid = false, weights_valid = false;
+    CUdeviceptr uv=0,triangles=0,j=0,inverse=0,weights=0,result=0;
+    CUdeviceptr adjacency_offsets=0,adjacency_entries=0,vertex_gradient=0;
+    void* staging_in=nullptr;
+    void* staging_out=nullptr;
+    CUstream stream=nullptr;
+};
+
 struct CudaRuntime {
     HMODULE dll = nullptr;
     CUdevice device = 0;
@@ -28,6 +50,7 @@ struct CudaRuntime {
     bool poisoned=false;
     std::string path;
     char name[256]{};
+    CachedGpuBuffers cache{};
 #define CUDA_FN(member, fn) decltype(&::fn) member = nullptr
     CUDA_FN(init, cuInit); CUDA_FN(device_get, cuDeviceGet);
     CUDA_FN(device_count, cuDeviceGetCount); CUDA_FN(device_attribute, cuDeviceGetAttribute);
@@ -53,6 +76,22 @@ struct CudaRuntime {
         const char* reason=nullptr;
         if(error_name) error_name(result,&reason);
         throw std::runtime_error(std::string(action)+": "+(reason?reason:std::to_string(result)));
+    }
+    void release_cache_in_context() noexcept {
+        if(cache.stream) {
+            if(wait(cache.stream)!=CUDA_SUCCESS) {
+                poisoned=true;
+                cache={};
+                return;
+            }
+            stream_destroy(cache.stream);
+        }
+        for(CUdeviceptr p:{cache.uv,cache.triangles,cache.j,cache.inverse,cache.weights,cache.result,
+                           cache.adjacency_offsets,cache.adjacency_entries,cache.vertex_gradient})
+            if(p) free_memory(p);
+        if(cache.staging_in) host_free(cache.staging_in);
+        if(cache.staging_out) host_free(cache.staging_out);
+        cache={};
     }
     explicit CudaRuntime(const std::string& ptx_path):path(ptx_path) {
         dll=LoadLibraryExW(L"nvcuda.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -108,6 +147,7 @@ struct CudaRuntime {
     ~CudaRuntime() {
         if(context) {
             if(push(context)==CUDA_SUCCESS) {
+                if(!poisoned) release_cache_in_context();
                 if(module) unload(module);
                 CUcontext previous=nullptr;pop(&previous);
             }
@@ -147,72 +187,94 @@ struct GpuSession {
     GpuSession(const Input& input):lock(gpu_mutex),driver(*gpu_runtime),n(input.n),nt(input.nt) {
         try {
             driver.check(driver.push(driver.context),"session context");pushed=true;
-            std::size_t free_bytes=0,total_bytes=0;
-            driver.check(driver.memory_info(&free_bytes,&total_bytes),"cuMemGetInfo");
-            const std::size_t device_bytes=(19*nt+5*n+1)*sizeof(double);
-            if(device_bytes>free_bytes-free_bytes/4) throw std::runtime_error("Insufficient GPU memory headroom");
-            MEMORYSTATUSEX host_memory{};host_memory.dwLength=sizeof(host_memory);
-            const std::size_t pinned_bytes=(11*nt+2*n+1+std::max(4*nt,2*n))*sizeof(double);
-            if(GlobalMemoryStatusEx(&host_memory) && pinned_bytes>host_memory.ullAvailPhys/4)
-                throw std::runtime_error("Insufficient host memory for GPU staging");
-            driver.check(driver.stream_create(&stream,CU_STREAM_NON_BLOCKING),"cuStreamCreate");
-            driver.check(driver.allocate(&uv,2*n*sizeof(double)),"allocate UV");
-            driver.check(driver.allocate(&triangles,3*nt*sizeof(I)),"allocate triangles");
-            driver.check(driver.allocate(&j,4*nt*sizeof(double)),"allocate J");
-            driver.check(driver.allocate(&inverse,4*nt*sizeof(double)),"allocate inverse");
-            driver.check(driver.allocate(&weights,nt*sizeof(double)),"allocate weights");
-            driver.check(driver.allocate(&result,4*nt*sizeof(double)),"allocate result");
-            driver.check(driver.allocate(&adjacency_offsets,(n+1)*sizeof(I)),"allocate adjacency offsets");
-            driver.check(driver.allocate(&adjacency_entries,3*nt*sizeof(I)),"allocate adjacency entries");
-            driver.check(driver.allocate(&vertex_gradient,2*n*sizeof(double)),"allocate vertex gradient");
-            driver.check(driver.host_allocate(&staging_in,(11*nt+2*n+1)*sizeof(double),0),"allocate upload staging");
-            driver.check(driver.host_allocate(&staging_out,std::max(4*nt,2*n)*sizeof(double),0),"allocate download staging");
-            std::memcpy(staging_in,input.inverse,4*nt*sizeof(double));
-            double* host_weights=static_cast<double*>(staging_in)+4*nt;
-            std::memcpy(host_weights,input.weights,nt*sizeof(double));
-            void* host_triangles=static_cast<double*>(staging_in)+5*nt;
-            std::memcpy(host_triangles,input.tri,3*nt*sizeof(I));
-            std::vector<I> offsets(n+1,0),entries(3*nt);
-            for(I t=0;t<nt;++t) for(I corner=0;corner<3;++corner) ++offsets[input.tri[3*t+corner]+1];
-            std::partial_sum(offsets.begin(),offsets.end(),offsets.begin());
-            std::vector<I> cursor=offsets;
-            for(I corner=0;corner<3;++corner) for(I t=0;t<nt;++t)
-                entries[cursor[input.tri[3*t+corner]]++]=corner*nt+t;
-            void* host_offsets=static_cast<double*>(staging_in)+8*nt;
-            void* host_entries=static_cast<double*>(staging_in)+8*nt+n+1;
-            std::memcpy(host_offsets,offsets.data(),(n+1)*sizeof(I));
-            std::memcpy(host_entries,entries.data(),3*nt*sizeof(I));
-            driver.check(driver.upload(inverse,staging_in,4*nt*sizeof(double),stream),"upload inverse");
-            driver.check(driver.upload(weights,host_weights,nt*sizeof(double),stream),"upload weights");
-            driver.check(driver.upload(triangles,host_triangles,3*nt*sizeof(I),stream),"upload triangles");
-            driver.check(driver.upload(adjacency_offsets,host_offsets,(n+1)*sizeof(I),stream),"upload adjacency offsets");
-            driver.check(driver.upload(adjacency_entries,host_entries,3*nt*sizeof(I),stream),"upload adjacency entries");
-            driver.check(driver.wait(stream),"constant upload wait");
-            gpu_counts[4]+=(11*nt+n+1)*sizeof(double);++gpu_counts[0];
-        } catch(...) {cleanup();throw;}
+            auto& c = driver.cache;
+            const bool need_alloc = (!c.stream || c.cap_n < n || c.cap_nt < nt);
+            if(need_alloc) {
+                driver.release_cache_in_context();
+                if(driver.poisoned) throw std::runtime_error("CUDA stream poisoned");
+                std::size_t free_bytes=0,total_bytes=0;
+                driver.check(driver.memory_info(&free_bytes,&total_bytes),"cuMemGetInfo");
+                const std::size_t device_bytes=(19*nt+5*n+1)*sizeof(double);
+                if(device_bytes>free_bytes-free_bytes/4) throw std::runtime_error("Insufficient GPU memory headroom");
+                MEMORYSTATUSEX host_memory{};host_memory.dwLength=sizeof(host_memory);
+                const std::size_t pinned_bytes=(11*nt+2*n+1+std::max(4*nt,2*n))*sizeof(double);
+                if(GlobalMemoryStatusEx(&host_memory) && pinned_bytes>host_memory.ullAvailPhys/4)
+                    throw std::runtime_error("Insufficient host memory for GPU staging");
+                driver.check(driver.stream_create(&c.stream,CU_STREAM_NON_BLOCKING),"cuStreamCreate");
+                driver.check(driver.allocate(&c.uv,2*n*sizeof(double)),"allocate UV");
+                driver.check(driver.allocate(&c.triangles,3*nt*sizeof(I)),"allocate triangles");
+                driver.check(driver.allocate(&c.j,4*nt*sizeof(double)),"allocate J");
+                driver.check(driver.allocate(&c.inverse,4*nt*sizeof(double)),"allocate inverse");
+                driver.check(driver.allocate(&c.weights,nt*sizeof(double)),"allocate weights");
+                driver.check(driver.allocate(&c.result,4*nt*sizeof(double)),"allocate result");
+                driver.check(driver.allocate(&c.adjacency_offsets,(n+1)*sizeof(I)),"allocate adjacency offsets");
+                driver.check(driver.allocate(&c.adjacency_entries,3*nt*sizeof(I)),"allocate adjacency entries");
+                driver.check(driver.allocate(&c.vertex_gradient,2*n*sizeof(double)),"allocate vertex gradient");
+                driver.check(driver.host_allocate(&c.staging_in,(11*nt+2*n+1)*sizeof(double),0),"allocate upload staging");
+                driver.check(driver.host_allocate(&c.staging_out,std::max(4*nt,2*n)*sizeof(double),0),"allocate download staging");
+                c.cap_n=n;c.cap_nt=nt;
+                c.tri_valid=c.inv_valid=c.weights_valid=false;
+            }
+            uv=c.uv;triangles=c.triangles;j=c.j;inverse=c.inverse;weights=c.weights;result=c.result;
+            adjacency_offsets=c.adjacency_offsets;adjacency_entries=c.adjacency_entries;vertex_gradient=c.vertex_gradient;
+            staging_in=c.staging_in;staging_out=c.staging_out;stream=c.stream;
+
+            const std::uint64_t h_tri=fnv64_bytes(input.tri,static_cast<std::size_t>(3*nt)*sizeof(I));
+            const std::uint64_t h_inv=fnv64_bytes(input.inverse,static_cast<std::size_t>(4*nt)*sizeof(double));
+            const std::uint64_t h_w=fnv64_bytes(input.weights,static_cast<std::size_t>(nt)*sizeof(double));
+            const bool same_shape=(c.cached_n==n && c.cached_nt==nt);
+            bool uploaded_any=false;
+            if(!(same_shape && c.inv_valid && c.inv_hash==h_inv)) {
+                std::memcpy(staging_in,input.inverse,4*nt*sizeof(double));
+                driver.check(driver.upload(inverse,staging_in,4*nt*sizeof(double),stream),"upload inverse");
+                gpu_counts[4]+=4*nt*sizeof(double);
+                c.inv_hash=h_inv;c.inv_valid=true;uploaded_any=true;
+            }
+            if(!(same_shape && c.weights_valid && c.weights_hash==h_w)) {
+                double* host_weights=static_cast<double*>(staging_in)+4*nt;
+                std::memcpy(host_weights,input.weights,nt*sizeof(double));
+                driver.check(driver.upload(weights,host_weights,nt*sizeof(double),stream),"upload weights");
+                gpu_counts[4]+=nt*sizeof(double);
+                c.weights_hash=h_w;c.weights_valid=true;uploaded_any=true;
+            }
+            if(!(same_shape && c.tri_valid && c.tri_hash==h_tri)) {
+                void* host_triangles=static_cast<double*>(staging_in)+5*nt;
+                std::memcpy(host_triangles,input.tri,3*nt*sizeof(I));
+                std::vector<I> offsets(n+1,0),entries(3*nt);
+                for(I t=0;t<nt;++t) for(I corner=0;corner<3;++corner) ++offsets[input.tri[3*t+corner]+1];
+                std::partial_sum(offsets.begin(),offsets.end(),offsets.begin());
+                std::vector<I> cursor=offsets;
+                for(I corner=0;corner<3;++corner) for(I t=0;t<nt;++t)
+                    entries[cursor[input.tri[3*t+corner]]++]=corner*nt+t;
+                void* host_offsets=static_cast<double*>(staging_in)+8*nt;
+                void* host_entries=static_cast<double*>(staging_in)+8*nt+n+1;
+                std::memcpy(host_offsets,offsets.data(),(n+1)*sizeof(I));
+                std::memcpy(host_entries,entries.data(),3*nt*sizeof(I));
+                driver.check(driver.upload(triangles,host_triangles,3*nt*sizeof(I),stream),"upload triangles");
+                driver.check(driver.upload(adjacency_offsets,host_offsets,(n+1)*sizeof(I),stream),"upload adjacency offsets");
+                driver.check(driver.upload(adjacency_entries,host_entries,3*nt*sizeof(I),stream),"upload adjacency entries");
+                gpu_counts[4]+=(6*nt+n+1)*sizeof(I);
+                c.tri_hash=h_tri;c.tri_valid=true;uploaded_any=true;
+            }
+            c.cached_n=n;c.cached_nt=nt;
+            if(uploaded_any) driver.check(driver.wait(stream),"constant upload wait");
+            ++gpu_counts[0];
+        } catch(...) {cleanup(true);throw;}
     }
-    void cleanup() noexcept {
+    void cleanup(bool failed=false) noexcept {
         if(pushed) {
-            // Error paths may still have work queued. Keep pinned staging
-            // alive until our stream has been drained (best effort on errors).
             if(stream) {
                 if(driver.wait(stream)!=CUDA_SUCCESS) {
-                    // A fatal stream error cannot prove that DMA is finished.
-                    // Quarantine this session's allocations until process exit
-                    // instead of releasing host memory that may still be used.
                     driver.poisoned=true;
+                    driver.cache={};
                     CUcontext previous=nullptr;driver.pop(&previous);pushed=false;return;
                 }
-                driver.stream_destroy(stream);
             }
-            for(CUdeviceptr p:{uv,triangles,j,inverse,weights,result,adjacency_offsets,adjacency_entries,vertex_gradient})
-                if(p) driver.free_memory(p);
-            if(staging_in) driver.host_free(staging_in);
-            if(staging_out) driver.host_free(staging_out);
+            if(failed) driver.release_cache_in_context();
             CUcontext previous=nullptr;driver.pop(&previous);pushed=false;
         }
     }
-    ~GpuSession(){cleanup();}
+    ~GpuSession(){cleanup(false);}
     double energy(const Vec& host_uv,bool reciprocal,bool prevent,double angle) {
         // Copies and kernels share one stream. A pageable synchronous copy on
         // the default stream need not finish DMA before a nonblocking kernel.

@@ -164,7 +164,7 @@ def _pair_area(engine, uv, triangles, first, second):
     return value if math.isfinite(value) and value >= 0.0 else None
 
 
-def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8):
+def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8, *, _diag=None):
     """Repair self-overlaps with bounded, orientation-preserving vertex-star moves."""
     uv = np.asarray(uv, dtype=np.float64)
     triangles = np.asarray(triangles, dtype=np.int64)
@@ -184,6 +184,8 @@ def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8
     del initial_triangles, edges
     if np.any(~np.isfinite(signed)) or np.any(signed <= 2e-14):
         return None
+    if _diag is not None:
+        _diag['folds_ok'] = True
 
     # Vertex-to-triangle incidence depends only on the triangle indices
     # and can be reused when subsequent witnesses touch the same vertex.
@@ -264,7 +266,7 @@ def repair_contacts(uv, triangles, face_ids, locked, engine, sign=1, max_pairs=8
     return None
 
 
-def feasible_seed(topo, chart, held, engine):
+def feasible_seed(topo, chart, held, engine, *, _diag=None):
     """Build a compact contact repair from a local fold seed; return corner UVs."""
     raw = fold_seed(topo, chart, held)
     raw = np.asarray(topo.initial_uv if raw is None else raw, dtype=float).copy()
@@ -284,13 +286,16 @@ def feasible_seed(topo, chart, held, engine):
     face_ids = loop_faces[positions[:, 0]]
     representatives = [topo.vgroup_loops[int(group)][0] for group in unique_groups]
     compact_uv = raw[representatives]
-    outside = ~np.isin(loop_faces, sorted(chart_faces))
-    outside_groups = set(map(int, loop_groups[outside]))
+    if len(chart_faces) == len(topo.bm.faces):
+        outside_groups = set()
+    else:
+        outside = ~np.isin(loop_faces, sorted(chart_faces))
+        outside_groups = set(map(int, loop_groups[outside]))
     locked_groups = {int(group) for group in held} | outside_groups
     locked = {group_index[group] for group in locked_groups if group in group_index}
 
     repaired = repair_contacts(compact_uv, triangles, face_ids, locked, engine,
-                               sign=chart['sign'], max_pairs=8)
+                               sign=chart['sign'], max_pairs=8, _diag=_diag)
     if repaired is None:
         return None
     for compact_index in np.flatnonzero(np.any(repaired != compact_uv, axis=1)):

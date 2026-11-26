@@ -8,10 +8,12 @@ rejected before any UV coordinate is written. No third-party quadrify code is
 used. The caller can restore the original chart area and centroid afterwards.
 """
 from collections import defaultdict, deque
+import heapq
 import math
 import struct
 
 from . import core
+from .const import C_HORIZONTAL, C_VERTICAL
 
 
 def _area(points):
@@ -234,3 +236,307 @@ def solve(bm, uvl, face_ids, seed, shape='PER_FACE', average_shape=True,
     if not apply:
         report['output'] = output
     return report
+
+
+def quad_flow_runs(bm, uvl, face_ids, seed, *, topo=None, exclude_poles=False, existing_runs=()):
+    """Extract maximal acyclic conflict-free H/V quad-flow runs over an island.
+
+    Works on pure-quad and mixed-polygon UV islands even when interior poles or
+    concave notches prevent a rigid integer lattice embedding. Guarantees that
+    the resulting row (H) and column (V) equivalence classes form strict DAGs
+    with respect to quad orientation, preventing zero-area quad collapse.
+    """
+    if uvl is None:
+        raise ValueError('Grid quadrification requires a UV map')
+    core.prepare_bm(bm)
+    wanted = {int(i) for i in face_ids}
+    quads = [fi for fi in sorted(wanted) if 0 <= fi < len(bm.faces) and len(bm.faces[fi].loops) == 4]
+    if not quads:
+        raise ValueError('Island has no visible quad face')
+    if topo is None:
+        topo = core.UVTopology(bm, uvl)
+
+    rows = {}
+    edge_uses = defaultdict(list)
+    v_faces = defaultdict(set)
+    windings = []
+    for fi in quads:
+        face = bm.faces[fi]
+        corners = tuple(face.loops)
+        lpos = tuple(topo.loop_pos[lp] for lp in corners)
+        gids = tuple(int(topo.loop_to_vgroup[p]) for p in lpos)
+        if len(set(gids)) != 4:
+            continue
+        pts = [tuple(float(c) for c in lp[uvl].uv) for lp in corners]
+        if not all(math.isfinite(c) for pt in pts for c in pt):
+            continue
+        signed = _area(pts)
+        if not math.isfinite(signed) or abs(signed) <= 1e-14:
+            continue
+        sign = 1 if signed > 0.0 else -1
+        windings.append(sign)
+        rows[fi] = (corners, lpos, gids, pts, sign)
+        for c, lp in enumerate(corners):
+            if len(lp.edge.link_faces) > 2:
+                continue
+            a, b = gids[c], gids[(c + 1) % 4]
+            v_faces[a].add(fi)
+            key = (lp.edge.index, min(a, b), max(a, b))
+            edge_uses[key].append((fi, c, a, b, lpos[c]))
+
+    if not rows:
+        raise ValueError('Island has no valid quad faces for quadrification')
+    winding = 1 if sum(windings) >= 0 else -1
+    valid_quads = {fi for fi, r in rows.items() if r[4] == winding}
+    if not valid_quads:
+        raise ValueError('Island has no consistently oriented quad faces')
+
+    # Build internal dual adjacency and detect boundary vertices & interior poles.
+    boundary_verts = set()
+    neighbors = defaultdict(list)
+    for uses in edge_uses.values():
+        uses = [u for u in uses if u[0] in valid_quads]
+        if len(uses) == 1:
+            boundary_verts.add(uses[0][2])
+            boundary_verts.add(uses[0][3])
+        elif len(uses) == 2:
+            u0, u1 = uses
+            if u0[2] == u1[3] and u0[3] == u1[2]:
+                neighbors[u0[0]].append((u1[0], u0[1], u1[1], u0[2], u0[3]))
+                neighbors[u1[0]].append((u0[0], u1[1], u0[1], u1[2], u1[3]))
+    # Vertices touching non-quads in mixed islands also behave as non-regular boundaries.
+    for fi in wanted:
+        if fi not in valid_quads:
+            for lp in bm.faces[fi].loops:
+                boundary_verts.add(int(topo.loop_to_vgroup[topo.loop_pos[lp]]))
+
+    poles = {g for g, fs in v_faces.items() if g not in boundary_verts and len(fs) != 4}
+
+    def edge_dir(c0, c):
+        return ((c - c0) % 4) if winding > 0 else ((-(c - c0)) % 4)
+
+    def c0_from_edge_dir(c, d):
+        return ((c - d) % 4) if winding > 0 else ((c + d) % 4)
+
+    def frame_uv_alignment(fi, c0):
+        pts = rows[fi][3]
+        ux = uy = vx = vy = 0.0
+        for c in range(4):
+            a, b = pts[c], pts[(c + 1) % 4]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            d = edge_dir(c0, c)
+            if d == 0:
+                ux += dx
+                uy += dy
+            elif d == 2:
+                ux -= dx
+                uy -= dy
+            elif d == 1:
+                vx += dx
+                vy += dy
+            else:
+                vx -= dx
+                vy -= dy
+        un = math.hypot(ux, uy)
+        vn = math.hypot(vx, vy)
+        if un <= 1e-12 or vn <= 1e-12:
+            return 0.0
+        return 0.5 * (ux / un + vy / vn)
+
+    # Priority-BFS propagate canonical (H, V) frame across each quad sheet.
+    face_c0 = {}
+    start_order = ([int(seed)] if int(seed) in valid_quads else []) + sorted(valid_quads)
+    for start in start_order:
+        if start in face_c0:
+            continue
+        best_c0 = max(range(4), key=lambda c0: frame_uv_alignment(start, c0))
+        face_c0[start] = best_c0
+        pq = []
+        for nbr, c_cur, c_nbr, ga, gb in neighbors[start]:
+            d_cur = edge_dir(best_c0, c_cur)
+            prop_c0 = c0_from_edge_dir(c_nbr, (d_cur + 2) % 4)
+            pole_pen = (1 if ga in poles else 0) + (1 if gb in poles else 0)
+            heapq.heappush(pq, (pole_pen, -frame_uv_alignment(nbr, prop_c0), nbr, prop_c0))
+        while pq:
+            _pp, _neg_al, fi, prop_c0 = heapq.heappop(pq)
+            if fi in face_c0:
+                continue
+            face_c0[fi] = prop_c0
+            for nbr, c_cur, c_nbr, ga, gb in neighbors[fi]:
+                if nbr in face_c0:
+                    continue
+                d_cur = edge_dir(prop_c0, c_cur)
+                nc0 = c0_from_edge_dir(c_nbr, (d_cur + 2) % 4)
+                pole_pen = (1 if ga in poles else 0) + (1 if gb in poles else 0)
+                heapq.heappush(pq, (pole_pen, -frame_uv_alignment(nbr, nc0), nbr, nc0))
+
+    # Map existing user H/V constraints for top-priority preservation.
+    existing_h_pairs = set()
+    existing_v_pairs = set()
+    for kind, pos_list in existing_runs:
+        if kind not in (C_HORIZONTAL, C_VERTICAL):
+            continue
+        target_set = existing_h_pairs if kind == C_HORIZONTAL else existing_v_pairs
+        for p in pos_list:
+            ga, gb = topo.loop_edge_vgroups(p)
+            target_set.add((min(int(ga), int(gb)), max(int(ga), int(gb))))
+
+    # Collect agreeing edges and detect holonomy-cut quads.
+    cut_quads = set()
+    cand_h = []
+    cand_v = []
+    for uses in edge_uses.values():
+        uses = [u for u in uses if u[0] in face_c0]
+        if not uses:
+            continue
+        if len(uses) == 2:
+            u0, u1 = uses
+            d0 = edge_dir(face_c0[u0[0]], u0[1])
+            d1 = edge_dir(face_c0[u1[0]], u1[1])
+            if (d0 + 2) % 4 != d1:
+                cut_quads.add(u0[0])
+                cut_quads.add(u1[0])
+                continue
+        fi, c, ga, gb, lpos = uses[0]
+        epair = (min(ga, gb), max(ga, gb))
+        user_h = epair in existing_h_pairs
+        user_v = epair in existing_v_pairs
+        if user_h and user_v:
+            continue
+        d = edge_dir(face_c0[fi], c)
+        is_h = True if user_h else (False if user_v else (d in (0, 2)))
+        touches_pole = (ga in poles) or (gb in poles)
+        if exclude_poles and not (user_h or user_v):
+            if touches_pole or any(u[0] in cut_quads for u in uses):
+                continue
+        pts = rows[fi][3]
+        pa, pb = pts[c], pts[(c + 1) % 4]
+        dx, dy = abs(pb[0] - pa[0]), abs(pb[1] - pa[1])
+        length = math.hypot(dx, dy)
+        align = ((dx / length) if is_h else (dy / length)) if length > 1e-12 else 0.0
+        if exclude_poles and not (user_h or user_v) and align < 0.5:
+            # On heavily poled organic charts, skip extreme >60 deg edges so poles stay smooth.
+            continue
+        prio = (-1 if (user_h or user_v) else (1 if touches_pole else 0), -align, lpos)
+        if is_h:
+            cand_h.append((prio, ga, gb, lpos))
+        else:
+            cand_v.append((prio, ga, gb, lpos))
+
+    if exclude_poles and cut_quads:
+        # Re-filter any edge added before its second pass flagged a cut quad.
+        cut_lpos = {lpos for fi in cut_quads for lpos in rows[fi][1]}
+        cand_h = [item for item in cand_h if item[0][0] == -1 or item[3] not in cut_lpos]
+        cand_v = [item for item in cand_v if item[0][0] == -1 or item[3] not in cut_lpos]
+
+    x_order_pairs = []
+    y_order_pairs = []
+    for fi, c0 in face_c0.items():
+        if exclude_poles and fi in cut_quads:
+            continue
+        gids = rows[fi][2]
+        for c in range(4):
+            d = edge_dir(c0, c)
+            ga, gb = gids[c], gids[(c + 1) % 4]
+            if d == 0:
+                x_order_pairs.append((ga, gb))
+            elif d == 2:
+                x_order_pairs.append((gb, ga))
+            elif d == 1:
+                y_order_pairs.append((ga, gb))
+            else:
+                y_order_pairs.append((gb, ga))
+
+    def filter_acyclic(cands, order_pairs):
+        if not cands:
+            return []
+        node_set = set()
+        for _pr, a, b, _lp in cands:
+            node_set.add(a)
+            node_set.add(b)
+        for a, b in order_pairs:
+            node_set.add(a)
+            node_set.add(b)
+        node_list = sorted(node_set)
+        nid = {g: i for i, g in enumerate(node_list)}
+        n_nodes = len(node_list)
+        parent = list(range(n_nodes))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        out_adj = [set() for _ in range(n_nodes)]
+        in_adj = [set() for _ in range(n_nodes)]
+        for a, b in order_pairs:
+            ia, ib = nid[a], nid[b]
+            if ia != ib:
+                out_adj[ia].add(ib)
+                in_adj[ib].add(ia)
+
+        stamp = 0
+        seen = [0] * n_nodes
+
+        def reaches(src, dst):
+            nonlocal stamp
+            stamp += 1
+            stack = [src]
+            seen[src] = stamp
+            while stack:
+                u = stack.pop()
+                for w in out_adj[u]:
+                    if w == dst:
+                        return True
+                    if seen[w] != stamp:
+                        seen[w] = stamp
+                        stack.append(w)
+            return False
+
+        accepted_lpos = []
+        for _pr, a, b, lp in sorted(cands, key=lambda item: item[0]):
+            ra, rb = find(nid[a]), find(nid[b])
+            if ra == rb:
+                accepted_lpos.append(lp)
+                continue
+            if rb in out_adj[ra] or ra in out_adj[rb]:
+                continue
+            if reaches(ra, rb) or reaches(rb, ra):
+                continue
+            if len(out_adj[ra]) + len(in_adj[ra]) < len(out_adj[rb]) + len(in_adj[rb]):
+                ra, rb = rb, ra
+            parent[rb] = ra
+            for w in out_adj[rb]:
+                in_adj[w].discard(rb)
+                if w != ra:
+                    out_adj[ra].add(w)
+                    in_adj[w].add(ra)
+            for w in in_adj[rb]:
+                out_adj[w].discard(rb)
+                if w != ra:
+                    in_adj[ra].add(w)
+                    out_adj[w].add(ra)
+            out_adj[rb].clear()
+            in_adj[rb].clear()
+            accepted_lpos.append(lp)
+        return accepted_lpos
+
+    h_lpos = filter_acyclic(cand_h, y_order_pairs)
+    v_lpos = filter_acyclic(cand_v, x_order_pairs)
+    all_lpos = list(h_lpos) + list(v_lpos)
+    kinds = {p: C_HORIZONTAL for p in h_lpos}
+    for p in v_lpos:
+        kinds[p] = C_VERTICAL
+    runs = core.group_chains(topo, all_lpos, kinds) if all_lpos else []
+    if not runs:
+        raise ValueError('No consistent quad-flow edges found in island')
+    stats = {
+        'quads': len(valid_quads),
+        'poles': len(poles),
+        'cut_quads': len(cut_quads),
+        'h_edges': len(h_lpos),
+        'v_edges': len(v_lpos),
+        'exclude_poles': bool(exclude_poles),
+    }
+    return runs, stats

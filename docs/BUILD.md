@@ -1,8 +1,8 @@
 # Build from source / 从源码构建
 
-The 1.9.0 release reuses the source-matched `1.7.66` CPU, GPU, `numeric_stage`, and stable-ABI reader binaries unchanged and adds `distribute.py`, `constrained_drag.py`, and `relax_brush.py` to the `scripts/package.py` allowlist. The final archive has 51 members matching `blender --command extension build`; identity is recorded in [release_checks.json](../release_checks.json).
+The 1.9.0 release rebuilds the CPU engine (`engine.cpp`), CUDA GPU host (`engine_gpu.cpp`, `gpu_driver.hpp`), and `numeric_stage` DLLs while reusing the unchanged source-matched `1.7.66` CUDA PTX (`gpu_metric.cu`) and stable-ABI reader (`mesh_reader.cpp`), and adds `distribute.py` to the `scripts/package.py` allowlist. The final archive has 49 members matching `blender --command extension build`; identity is recorded in [release_checks.json](../release_checks.json).
 
-1.9.0 正式版沿用经源校验未改动的 `1.7.66` CPU、GPU、`numeric_stage` 与原生读取器二进制，并在 `scripts/package.py` 打包清单中纳入 `distribute.py`、`constrained_drag.py` 与 `relax_brush.py`。最终包共 51 个成员且与 `blender --command extension build` 逐字节一致，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
+1.9.0 正式版重新编译了 CPU 引擎（`engine.cpp`）、CUDA GPU 宿主库（`engine_gpu.cpp`、`gpu_driver.hpp`）与 `numeric_stage`，沿用经源校验未改动的 `1.7.66` CUDA PTX（`gpu_metric.cu`）与原生读取器（`mesh_reader.cpp`），并在 `scripts/package.py` 打包清单中纳入 `distribute.py`。最终包共 49 个成员且与 `blender --command extension build` 逐字节一致，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
 
 ## Requirements / 工具
 
@@ -177,7 +177,6 @@ mouse. Run both reader routes:
 ```sh
 blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/modal-native.json --reader native
 blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/modal-python.json --reader python
-blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/v190-modal.json
 ```
 
 The final 1.7.54 run covered 24 gesture combinations per route: UV sync on/off,

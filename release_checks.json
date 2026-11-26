@@ -5,16 +5,16 @@
   "date": "2026-11-26",
   "package": {
     "filename": "uv_constraint_kit-1.9.0.zip",
-    "sha256": "a35efcc4a32bdec8f9087248ca0afa449fa54e43e328036df74a9a2a887861a7",
-    "bytes": 630007,
-    "members": 51,
+    "sha256": "c3ffad6d4b6f25f36ae529339fb91dbbf3b8dfa2da5ada920a4a0b2432ff3a99",
+    "bytes": 642944,
+    "members": 49,
     "extension_build_and_package_script_parity": true
   },
   "blender": "5.3.0",
   "gates": {
     "package_identity": {
       "status": "passed",
-      "members": 51,
+      "members": 49,
       "crc": true,
       "source_and_extracted_match": true,
       "sensitive_pattern_scan": true,
@@ -28,11 +28,13 @@
         "numeric_stage",
         "stable-ABI reader"
       ],
-      "rebuilt_components": [],
+      "rebuilt_components": [
+        "CPU engine (engine.cpp: zero-rehash affinity-aware threaded overlap checks, analytic CCD border step, SoftMetric preconditioner up to n <= 8192, in-place L-BFGS history)",
+        "CUDA GPU host (engine_gpu.cpp, gpu_driver.hpp: cached GPU/pinned staging buffers with FNV-1a constant upload reuse, analytic CCD border step)",
+        "numeric_stage (numeric_stage.cpp rebuilt via scripts/build_native.py --numeric)"
+      ],
       "reused_source_matched_artifacts": [
-        "CPU engine (engine.cpp unchanged from 1.7.66)",
-        "CUDA GPU host & PTX (engine_gpu.cpp, gpu_driver.hpp, gpu_metric.cu unchanged from 1.7.66)",
-        "numeric_stage (numeric_stage.cpp unchanged from 1.7.66)",
+        "CUDA PTX (gpu_metric.cu unchanged from 1.7.66)",
         "stable-ABI reader (mesh_reader.cpp unchanged from 1.7.66)"
       ]
     },
@@ -57,7 +59,6 @@
       "tests": [
         "test_host",
         "test_v190_host",
-        "test_v190_modal_host",
         "test_quad_grid_host",
         "test_selection_host",
         "test_transaction_state_host",
@@ -66,7 +67,7 @@
         "test_gui_host",
         "test_modal_host"
       ],
-      "passed_count": 10
+      "passed_count": 9
     },
     "p2_quality_suite": {
       "status": "passed",
@@ -88,14 +89,14 @@
       "determinism_ok": true,
       "hard_failures": 0,
       "soft_failures": 0,
-      "baseline_12op_median_s": 39.361501350000005,
-      "candidate_12op_median_s": 16.84814335,
-      "time_delta_pct_vs_1_7_62": -57.196390452215304,
-      "time_delta_pct_vs_1_7_65": -43.5371,
-      "eval_delta_pct_vs_1_7_62": -63.47907725321888,
-      "gpu_energy_delta_pct_vs_1_7_62": -83.25619834710743,
-      "coastal_mark_median_s": 6.1914636000000005,
-      "rocks_mark_median_s": 5.668831300000001
+      "baseline_12op_median_s": 34.78736155,
+      "candidate_12op_median_s": 11.2342703,
+      "time_delta_pct_vs_1_7_62": -67.7058857026195,
+      "time_delta_pct_vs_1_7_65": -62.3508,
+      "eval_delta_pct_vs_1_7_62": -67.1137339055794,
+      "gpu_energy_delta_pct_vs_1_7_62": -85.32231404958678,
+      "coastal_mark_median_s": 3.54807395,
+      "rocks_mark_median_s": 3.7498691
     }
   }
 }

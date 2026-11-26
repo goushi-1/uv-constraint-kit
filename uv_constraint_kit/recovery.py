@@ -66,9 +66,16 @@ def _crosses(topo, faces, triangles=None, *, coordinates=None, _positions=None):
                      if tri[0].face.index in faces]
     else:
         positions = _positions
-    uv = (np.asarray([[tuple(topo.loops[p][topo.uvl].uv) for p in tri] for tri in positions])
-          if coordinates is None else
-          np.asarray([[coordinates[p] for p in tri] for tri in positions], dtype=float))
+    if not positions:
+        return positions, np.empty(0, dtype=np.float64)
+    if coordinates is None:
+        from . import mesh_reader
+        all_uv = np.asarray(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64)
+        uv = all_uv[np.asarray(positions, dtype=np.intp)]
+    elif isinstance(coordinates, np.ndarray):
+        uv = coordinates[np.asarray(positions, dtype=np.intp)]
+    else:
+        uv = np.asarray(coordinates, dtype=np.float64)[np.asarray(positions, dtype=np.intp)]
     edges = uv[:, 1:]-uv[:, :1]
     return positions, edges[:, 0, 0]*edges[:, 1, 1]-edges[:, 0, 1]*edges[:, 1, 0]
 
@@ -215,8 +222,13 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
         core.prepare_bm(bm)
         uvl = core.uv_layer(bm)
         loops = core.loops_in_order(bm)
-        for p in range(len(loops)) if positions is None else positions:
-            loops[p][uvl].uv = value[p]
+        vals = value.tolist() if isinstance(value, np.ndarray) else value
+        if positions is None:
+            for lp, uv in zip(loops, vals):
+                lp[uvl].uv = uv
+        else:
+            for p in positions:
+                loops[p][uvl].uv = vals[p]
         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
 
     report = dict(repaired=[], failed=[], skipped=plan['skipped'])
@@ -254,12 +266,22 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
             dirty = False
             sparse_dirty = True
             # An already positive map with self-contact needs a globally
-            # feasible embedding; avoid exhausting local fold/contact trials
-            # before the stretch initializer. Folded maps keep the local route.
-            methods = (('LOCAL', 'METRIC', 'CONFORMAL', 'MINIMUM_STRETCH', 'ANGLE_BASED')
-                       if chart.get('has_folds', True) else
-                       ('MINIMUM_STRETCH', 'LOCAL', 'METRIC', 'CONFORMAL', 'ANGLE_BASED'))
+            # feasible embedding. On dense charts (>= 4096 faces), try the fast
+            # direct CONFORMAL + local contact repair ahead of slow iterative
+            # MINIMUM_STRETCH; smaller charts keep MINIMUM_STRETCH first.
+            if chart.get('has_folds', True):
+                methods = ('LOCAL', 'METRIC', 'CONFORMAL', 'MINIMUM_STRETCH', 'ANGLE_BASED')
+            elif len(island) >= 4096:
+                methods = ('CONFORMAL', 'MINIMUM_STRETCH', 'LOCAL', 'METRIC', 'ANGLE_BASED')
+            else:
+                methods = ('MINIMUM_STRETCH', 'LOCAL', 'METRIC', 'CONFORMAL', 'ANGLE_BASED')
+            local_folds_ok = False
             for method in methods:
+                if method == 'METRIC' and local_folds_ok and len(island) >= 4096:
+                    # On dense charts where LOCAL already confirmed positive
+                    # orientation and failed only on >8 self-overlaps, an
+                    # unguarded METRIC pass cannot untangle self-overlaps.
+                    continue
                 if dirty:
                     land(best, target if sparse_dirty else None)
                     dirty = False
@@ -277,7 +299,9 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                     if method == 'LOCAL':
                         from . import untangle, native_engine
                         topo = numeric_topology
-                        raw = untangle.feasible_seed(topo, chart, held, native_engine)
+                        diag = {}
+                        raw = untangle.feasible_seed(topo, chart, held, native_engine, _diag=diag)
+                        local_folds_ok = bool(diag.get('folds_ok', False))
                         topo = None
                         status = {'FINISHED'} if raw is not None else {'CANCELLED'}
                     elif method == 'METRIC':
@@ -320,15 +344,26 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                         ts.uv_select_mode = 'VERTEX'
                         ts.mesh_select_mode = (False, False, True)
                         core.select_faces_only(bm, island)
-                        for face in bm.faces:
-                            face.uv_select = face.index in island
-                        for p, loop in enumerate(loops):
-                            member = p in target_set
-                            fixed = p in native_fixed_set
-                            loop.uv_select_vert = loop.uv_select_edge = member and not fixed
-                            loop[uvl].pin_uv = pins[p] or fixed
-                            if member and chart['sign'] < 0:
-                                loop[uvl].uv.x *= -1
+                        all_target = len(target) == len(loops)
+                        if all_target:
+                            for face in bm.faces:
+                                face.uv_select = True
+                        else:
+                            for face in bm.faces:
+                                face.uv_select = face.index in island
+                        flip_x = chart['sign'] < 0
+                        if all_target and not native_fixed_set and not flip_x and not any(pins):
+                            for loop in loops:
+                                loop.uv_select_vert = loop.uv_select_edge = True
+                                loop[uvl].pin_uv = False
+                        else:
+                            for p, loop in enumerate(loops):
+                                member = all_target or (p in target_set)
+                                fixed = p in native_fixed_set
+                                loop.uv_select_vert = loop.uv_select_edge = member and not fixed
+                                loop[uvl].pin_uv = pins[p] or fixed
+                                if member and flip_x:
+                                    loop[uvl].uv.x *= -1
                         bm.uv_select_sync_valid = True
                         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
                         del bm, uvl, loops, loop, face

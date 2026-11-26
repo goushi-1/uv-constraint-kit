@@ -1,14 +1,15 @@
 # Known issues / 已知问题
 
-The 1.9.0 final ZIP passed all recorded unit, 10/10 host (including `test_v190_host.py` and `test_v190_modal_host.py`), P2 (62-op), ABBA+BAAB, and isolated Blender 5.3.0 acceptance gates. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
+The 1.9.0 final ZIP passed all recorded unit, 9/9 host (including `test_v190_host.py`), P2 (62-op), ABBA+BAAB, and isolated Blender 5.3.0 acceptance gates. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
 
-- **Grid tool topology.** Whole-island integer-grid quadrification requires regular
-  pure-quad charts (regular grid holes are allowed). On mixed-polygon or
-  pole-containing islands, select a pole-free quad strip to straighten and pin
-  that strip while safely relaxing the rest of the island; unsupported
-  whole-island inputs or selected strips containing poles/non-quads are rejected
-  without a partial write.
-  整岛网格四边形化仅支持规则纯四边形岛；在混合面或含极点岛上，选中无极点四边条带可局部拉直并安全松弛其余面，不支持的拓扑仍会安全拒绝且不产生半写。
+- **Grid tool topology.** Exact integer-grid quadrification handles regular
+  pure-quad charts (regular grid holes are allowed), and the whole-island
+  Quad-Flow DAG fallback handles concave and pole-containing pure-quad islands
+  while keeping pins, existing constraints, and zero flips/overlaps. On
+  mixed-polygon islands, select a pole-free quad strip to straighten and pin
+  that strip while safely relaxing the rest of the island; infeasible inputs
+  are rejected without a partial write.
+  规则纯四边形岛走精确整数网格路径，含极点与凹口的整块纯四边形岛自动走无环四边流（Quad-Flow DAG）整岛路径并保持固定点、已有约束及零翻转/零重叠；混合面岛屿可选中无极点四边条带局部拉直并松弛其余面，不可行输入安全拒绝且不产生半写。
 - **No RizomUV equivalence.** This repository does not contain its proprietary
   solver. Strong constraints can have no nonfolding feasible solution. Recovery
   and rollback can leave the UVs unchanged; inspect the operation's outcome.

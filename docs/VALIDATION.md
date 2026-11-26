@@ -9,7 +9,7 @@
 | Previous published release, 1.7.57 | CPU native reference-frame batching; solver equations unchanged. Final package, numeric, integration, GPU, GUI and modal checks passed. 已发布版，列出的最终验收均已通过。 |
 | Previous published release, 1.7.65 | P3 exact subspace handoff, `float32`-safe boundary guard, active-set contact pinning, and `numeric_stage` packaging parity (48 members). |
 | Previous milestone, 1.7.66 | P3-E overhead cuts (CSR spatial hash, vectorized probes/borders), P3-A early subspace handoff, lazy P3-B analytic step (`nt >= 32768`), and `build_native.py --numeric`. 上一里程碑：全量 P2 62/62 通过、8 轮 ABBA+BAAB 确定性通过（`-57.73%` vs 1.7.62、`-42.21%` vs 1.7.65）。 |
-| Current release, 1.9.0 | `uv.uvck_constrained_drag` (preview drag + high-precision constrained solve on confirm), `uv.uvck_relax_brush` (whole-island Gaussian-falloff constraint-preserving brush), collapsible pre-mark Solve Presets drawer, `uv.uvck_distribute_edges`, and practical partial pole-free quad-strip `Quadrify` on top of the verified `1.7.66` native engines. 当前正式版：10/10 宿主测试、全量 P2 62/62 与 8 轮 ABBA+BAAB（`-57.20%` vs 1.7.62、`-43.54%` vs 1.7.65）全过。 |
+| Current release, 1.9.0 | Whole-island Quad-Flow DAG `Quadrify` (concave & poled pure-quad islands), high-reliability `Prevent overlaps` solving with contact barrier & automatic neighbor-island nudge, rebuilt CPU/GPU/Python performance optimizations (`-67.71%` / `3.10x` vs `1.7.62`), collapsible pre-mark Solve Presets drawer, and `uv.uvck_distribute_edges`. 当前正式版：9/9 宿主测试、全量 P2 62/62 与 8 轮 ABBA+BAAB（`-67.71%` / `3.10x` vs 1.7.62、`-62.35%` vs 1.7.65）全过。 |
 | Earlier previews and `experimental/numeric-trials` | Historical or experimental tracks; their reports do not validate the current package and are not cumulative speed claims. 历史／实验路径，单独保留证据边界。 |
 
 Historical timing values are observations on a particular machine, not a
@@ -40,7 +40,7 @@ included. 旧数据只用于说明开发状态，不替代本仓库的可复跑�
 - `test_uv_area_host.py` and `test_transaction_state_host.py`: live/numeric area, fallback and transaction rollback checks; see [BUILD.md](BUILD.md).
 - `test_triangle_frames_host.py`: mathutils numeric oracle, triangle-frame
   geometry preparation and ABI failure sentinels; see [`BUILD.md`](BUILD.md).
-- `test_v190_host.py` and `test_v190_modal_host.py`: headless UI panel/menu/preference draw (collapsed & expanded Solve Presets drawer), Blender RNA icon validation, `zh_HANS` translation coverage & AST literal check, preset wiring/override, `uv.uvck_distribute_edges` (`EVEN`, `GEOMETRY`, pinned splits, closed border), partial pole-free quad-strip `Quadrify`, `uv.uvck_constrained_drag` (constrained partial drag, infeasible rollback, rigid drag), `uv.uvck_relax_brush` (whole-island Gaussian falloff, distortion reduction, exact constraint & pin preservation, overlap guard), and factory-GUI event-simulation modal confirm/cancel verification.
+- `test_v190_host.py`: headless UI panel/menu/preference draw (collapsed & expanded Solve Presets drawer), Blender RNA icon validation, `zh_HANS` translation coverage & AST literal check, preset wiring/override, `uv.uvck_distribute_edges` (`EVEN`, `GEOMETRY`, pinned splits, closed border), whole-island Quad-Flow DAG `Quadrify` on poled quad islands, partial pole-free quad-strip `Quadrify` on mixed islands, `Prevent overlaps` automatic neighbor-island nudge, and verification that dropped experimental tools remain unregistered.
 - `check_public_tree.py`: source parsing, packaging metadata, private-path/
   credential-pattern scan, absent excluded adaptation, and required notices.
 
@@ -94,15 +94,15 @@ not establish acceptance for every machine, asset or workflow.
 
 ## Current release: 1.9.0 / 当前发行版
 
-The 1.9.0 release adds `uv.uvck_constrained_drag` (interactive preview drag + high-precision constrained solve on confirm), `uv.uvck_relax_brush` (whole-island smooth Gaussian-falloff constraint-preserving UV relax brush), the default-collapsed Solve Presets sidebar drawer (`Prevent overlaps`, `Fix boundary`, `Use density map`), `uv.uvck_distribute_edges` (`Even` / `Geometry` one-shot chain distribution + safe island relaxation), and partial pole-free quad-strip `Quadrify` fallback on mixed/pole islands while keeping regular quad islands on `quad_grid.py`. All native binaries (`uvck_engine`, `uvck_gpu` DLL+PTX, `uvck_numeric_stage`, and `uvck_reader`) are source-matched and unchanged from `1.7.66`.
+The 1.9.0 release delivers whole-island Quad-Flow DAG `Quadrify` (supporting concave and pole-containing pure-quad islands while preserving regular `quad_grid.py` exact grids and partial quad-strip fallback on mixed islands), high-reliability `Prevent overlaps` solving (retaining contact barrier + `SoftMetric` preconditioning + exact subspace snap + automatic minimal neighbor-island nudge), rebuilt CPU (`engine.cpp`) and CUDA GPU host (`engine_gpu.cpp`, `gpu_driver.hpp`) performance optimizations alongside vectorized Python/recovery hot paths, the default-collapsed Solve Presets sidebar drawer (`Prevent overlaps`, `Fix boundary`, `Use density map`), and `uv.uvck_distribute_edges` (`Even` / `Geometry`). `gpu_metric.cu` PTX and `mesh_reader.cpp` remain source-matched and unchanged from `1.7.66`.
 
 | Evidence | Status |
 | --- | --- |
-| Final ZIP | 51 members, 630,007 bytes, SHA-256 `a35efcc4a32bdec8f9087248ca0afa449fa54e43e328036df74a9a2a887861a7`; 51/51 byte-for-byte parity between `blender --command extension build` and `scripts/package.py --require-gpu --require-reader --require-numeric` |
-| Unit & tree checks | `test_safety.py` (18/18), `test_native.py --gpu` (CPU + GPU + bad-PTX retry), `test_package.py` (10 tests), `check_public_tree.py` (`source_only=true`, 85 files) |
-| Blender 5.3.0 host tests | 10/10 passed (`test_host`, `test_v190_host`, `test_v190_modal_host`, `test_quad_grid_host`, `test_selection_host`, `test_transaction_state_host`, `test_recovery_input_host`, `test_gpu_host`, `test_gui_host`, `test_modal_host`) |
+| Final ZIP | 49 members, 642,944 bytes, SHA-256 `c3ffad6d4b6f25f36ae529339fb91dbbf3b8dfa2da5ada920a4a0b2432ff3a99`; 49/49 byte-for-byte parity between `blender --command extension build` and `scripts/package.py --require-gpu --require-reader --require-numeric` |
+| Unit & tree checks | `test_safety.py` (18/18), `test_native.py --gpu` (CPU + GPU + bad-PTX retry), `test_package.py` (10 tests), `check_public_tree.py` (`source_only=true`, 82 files) |
+| Blender 5.3.0 host tests | 9/9 passed (`test_host`, `test_v190_host`, `test_quad_grid_host`, `test_selection_host`, `test_transaction_state_host`, `test_recovery_input_host`, `test_gpu_host`, `test_gui_host`, `test_modal_host`) |
 | P2 31-case (62-op) suite vs 1.7.62 | Passed: `hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals |
-| 8-run CPU-0 pinned ABBA+BAAB (1.7.62 → 1.9.0) | Passed: `determinism_ok=true`, `hard_failures=0`, `soft_failures=0`; 12-op total median `39.3615s → 16.8481s` (`-57.20%`; `-43.54%` vs `1.7.65`'s `29.8393s`); `coastal mark` `6.1915s`, `rocks mark` `5.6688s`; total evals `-63.48%` (`14912 → 5446`), GPU energy `-83.26%` (`6050 → 1013`) |
+| 8-run CPU-0 pinned ABBA+BAAB (1.7.62 → 1.9.0) | Passed: `determinism_ok=true`, `hard_failures=0`, `soft_failures=0`; 12-op total median `34.7874s → 11.2343s` (`-67.71%`, `3.10x`; `-62.35%` vs `1.7.65`'s `29.8393s`); `coastal mark` `3.5481s` (`-72.04%`), `rocks mark` `3.7499s` (`-69.40%`); total evals `-67.11%` (`14912 → 4904`), GPU energy `-85.32%` (`6050 → 888`) |
 | Isolated Blender 5.3.0 lifecycle | Clean install + `1.7.66 -> 1.9.0` upgrade + mark/clear + undo/redo + CPU/GPU switch + F9 & sidebar visual check |
 
 ## Previous milestone: 1.7.66 / 上一里程碑：1.7.66

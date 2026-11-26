@@ -38,6 +38,7 @@ sees live UV data.
 """
 
 import math
+from collections import defaultdict
 from itertools import combinations
 
 import bmesh
@@ -508,7 +509,9 @@ class UVTopology:
         self.loop_count = len(self.loops)
         # Face-major loop order supplies exact face/next indices without
         # repeatedly reading wrapped BMesh links during numerical solves.
-        ends = np.cumsum(sizes)
+        ends = np.cumsum(sizes, dtype=np.int64)
+        self._face_sizes = sizes
+        self._face_offsets = np.concatenate((np.zeros(1, dtype=np.int64), ends))
         following = np.arange(1, self.loop_count+1, dtype=np.int64)
         if len(ends):
             following[ends-1] = np.concatenate(([0], ends[:-1]))
@@ -522,9 +525,10 @@ class UVTopology:
             self._build_uv_vertices(coordinates)
         else:
             self.loop_to_vgroup = native_groups
-            self.vgroup_loops = {}
+            vg = defaultdict(list)
             for position, group in enumerate(native_groups):
-                self.vgroup_loops.setdefault(group, []).append(position)
+                vg[group].append(position)
+            self.vgroup_loops = dict(vg)
         self._build_islands(coordinates, _native_coordinates=native_coordinates)
         # Numeric values only: the checked solver can reuse this exact input
         # snapshot instead of immediately reading all UV slots a second time.
@@ -543,15 +547,17 @@ class UVTopology:
             self._build_uv_vertices(coordinates)
         else:
             self.loop_to_vgroup = groups
-            self.vgroup_loops = {}
+            vg = defaultdict(list)
             for position, group in enumerate(groups):
-                self.vgroup_loops.setdefault(group, []).append(position)
+                vg[group].append(position)
+            self.vgroup_loops = dict(vg)
         self._build_islands(coordinates, _native_coordinates=native_coordinates)
         self.initial_uv = coordinates
         # This mapping contains UV groups; the mesh tessellation itself is
         # unchanged by coordinate writes and remains valid in this instance.
         self.__dict__.pop('_triangle_groups', None)
         self.__dict__.pop('_border_loops_cache', None)
+        self.__dict__.pop('_all_face_islands', None)
 
     def loop_triangles(self):
         """Reuse the immutable mesh tessellation within this topology only.
@@ -780,6 +786,12 @@ def connected_uv_faces(bm, uvl, face_indices):
     the solver still builds the complete mesh's UV vertex groups.
     """
     found = set(face_indices)
+    if len(found) == len(bm.faces):
+        return found
+    if len(bm.faces) >= 4096 and mesh_reader._load() is not None:
+        topo = UVTopology(bm, uvl)
+        roots = {topo.face_island[fi] for fi in found}
+        return {fi for r in roots for fi in topo.island_faces[r]}
     pending = list(found)
     while pending:
         face = bm.faces[pending.pop()]
@@ -1930,23 +1942,42 @@ def _loop_uv_snapshot(topo, faces):
 def island_area(topo, faces, *, coordinates=None):
     """Summed |UV area| of the given faces."""
     uvl = topo.uvl
+    coords_arr = None
     if coordinates is None:
-        if len(faces) >= 4096:
+        if len(faces) >= 512:
             from . import numeric_stage
+            coords_arr = np.asarray(mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64)
             if numeric_stage._load() is not None:
-                coords = np.asarray(mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64)
-                value = numeric_stage.read_area(topo, faces, coords)
+                value = numeric_stage.read_area(topo, faces, coords_arr)
                 if value is not None:
                     return value
-        seq = topo.bm.faces if len(faces) == len(topo.bm.faces) else (topo.bm.faces[fi] for fi in sorted(faces))
-        value = mesh_reader.island_area(seq, uvl)
-        if value is not None:
-            return value
-    elif isinstance(coordinates, np.ndarray):
-        from . import numeric_stage
-        value = numeric_stage.read_area(topo, faces, coordinates)
-        if value is not None:
-            return value
+        else:
+            seq = topo.bm.faces if len(faces) == len(topo.bm.faces) else (topo.bm.faces[fi] for fi in sorted(faces))
+            value = mesh_reader.island_area(seq, uvl)
+            if value is not None:
+                return value
+    else:
+        coords_arr = coordinates if isinstance(coordinates, np.ndarray) else (
+            np.asarray(coordinates, dtype=np.float64) if len(faces) >= 256 else None
+        )
+        if coords_arr is not None:
+            from . import numeric_stage
+            value = numeric_stage.read_area(topo, faces, coords_arr)
+            if value is not None:
+                return value
+    if coords_arr is not None and len(faces) >= 256:
+        f_offsets = getattr(topo, '_face_offsets', None)
+        next_idx = getattr(topo, '_loop_next_array', None)
+        if f_offsets is not None and next_idx is not None and len(f_offsets) == len(topo.bm.faces) + 1:
+            if len(coords_arr) == topo.loop_count and len(f_offsets) > 1:
+                cross = (coords_arr[:, 0] * coords_arr[next_idx, 1]
+                         - coords_arr[next_idx, 0] * coords_arr[:, 1])
+                if len(faces) == len(topo.bm.faces):
+                    face_areas = np.abs(np.add.reduceat(cross, f_offsets[:-1])) * 0.5
+                    return float(face_areas.sum())
+                idx = np.fromiter(faces, dtype=np.int64, count=len(faces))
+                face_areas = np.abs(np.add.reduceat(cross, f_offsets[:-1])) * 0.5
+                return float(face_areas[idx].sum())
     total = 0.0
     for fi in sorted(faces):
         face = topo.bm.faces[fi]
@@ -1988,6 +2019,14 @@ def face_islands(topo, faces):
     island into the same area, so one global similarity drags the islands
     around relative to each other instead of putting each one back.
     """
+    if len(faces) == len(topo.bm.faces):
+        cached = getattr(topo, '_all_face_islands', None)
+        if cached is None:
+            cached = {}
+            for index, root in enumerate(topo.face_island):
+                cached.setdefault(root, []).append(index)
+            topo._all_face_islands = cached
+        return {root: list(group) for root, group in cached.items()}
     out = {}
     # Sorted, so the order in which islands are solved -- and therefore the
     # order of anything the caller reports about them -- does not wobble
@@ -2194,23 +2233,28 @@ def rotate_faces_uv(topo, faces, degrees, center=None):
     """Rotate about the island centre or its single fixed UV anchor."""
     if abs(degrees) < 1e-9:
         return 0.0
-    rows = _uv_loops(topo, faces)
-    if not rows:
+    if len(faces) == len(topo.bm.faces):
+        loops = topo.loops
+    else:
+        rows = _uv_loops(topo, faces)
+        if not rows:
+            return 0.0
+        loops = [loop for _p, loop in rows]
+    if not loops:
         return 0.0
-    points = [(float(l[topo.uvl].uv[0]), float(l[topo.uvl].uv[1]))
-              for _p, l in rows]
-    count = float(len(points))
-    cx = sum(p[0] for p in points) / count
-    cy = sum(p[1] for p in points) / count
+    pts = np.asarray(mesh_reader.read_uv(loops, topo.uvl), dtype=np.float64)
     if center is not None:
-        cx,cy=map(float,center)
+        cx, cy = float(center[0]), float(center[1])
+    else:
+        cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
     theta = math.radians(degrees)
     ct, st = math.cos(theta), math.sin(theta)
-    for _position, loop in rows:
-        uv = loop[topo.uvl].uv
-        dx = float(uv[0]) - cx
-        dy = float(uv[1]) - cy
-        loop[topo.uvl].uv = (cx + ct * dx - st * dy, cy + st * dx + ct * dy)
+    dx = pts[:, 0] - cx
+    dy = pts[:, 1] - cy
+    rotated = np.column_stack((cx + ct * dx - st * dy, cy + st * dx + ct * dy))
+    uvl = topo.uvl
+    for loop, uv in zip(loops, rotated.tolist()):
+        loop[uvl].uv = uv
     return degrees
 
 
@@ -2574,6 +2618,14 @@ def _apply_selection(bm, saved, *, loops=None):
 
 def select_faces_only(bm, faces):
     """Mesh-select exactly the given faces (and their edges/verts)."""
+    if len(faces) == len(bm.faces):
+        for f in bm.faces:
+            f.select = True
+        for e in bm.edges:
+            e.select = bool(e.link_faces)
+        for v in bm.verts:
+            v.select = bool(v.link_faces)
+        return
     if len(faces)*4 < len(bm.faces):
         # For a small chart, unrelated elements cannot have all their linked
         # faces selected. Visit adjacency only for candidates of selected faces.
@@ -2695,12 +2747,66 @@ def _restore_anchored_area(topo, faces, held, runs, target_area):
     return False
 
 
-def _island_pins(topo, faces, reference=None):
+def _island_pins(topo, faces, reference=None, *, _has_pins=None):
+    if _has_pins is False:
+        return {}
     groups = {topo.loop_to_vgroup[p] for fi in faces
               for p in (topo.loop_pos[l] for l in topo.bm.faces[fi].loops)}
     return {g: Vector(reference[topo.vgroup_loops[g][0]]) if reference is not None
             else topo.vgroup_uv(g).copy() for g in groups
             if any(topo.loops[p][topo.uvl].pin_uv for p in topo.vgroup_loops[g])}
+
+
+def _nudge_clear_of_other_islands(topo, probe, target_positions, triangles):
+    """Minimally translate an unpinned island to resolve a cross-island overlap.
+
+    Pure rigid translation preserves all edge constraints, angles, flips, area,
+    and self-overlap status. Returns `(du, dv)` if a clean placement is found,
+    otherwise `None` without modifying UVs.
+    """
+    if not len(probe.static) or not len(triangles):
+        return None
+    pts = triangles.reshape(-1, 2)
+    tx0, ty0 = float(pts[:, 0].min()), float(pts[:, 1].min())
+    tx1, ty1 = float(pts[:, 0].max()), float(pts[:, 1].max())
+    span = max(tx1 - tx0, ty1 - ty0, 1e-4)
+    static_idx = np.asarray([pos for _fi, pos, _root in probe.static], dtype=np.intp).reshape(-1, 3)
+    all_uv = np.asarray(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64)
+    st = all_uv[static_idx]
+    sx0 = st[:, :, 0].min(axis=1)
+    sx1 = st[:, :, 0].max(axis=1)
+    sy0 = st[:, :, 1].min(axis=1)
+    sy1 = st[:, :, 1].max(axis=1)
+    near_mask = (sx1 >= tx0 - 1e-6) & (sx0 <= tx1 + 1e-6) & (sy1 >= ty0 - 1e-6) & (sy0 <= ty1 + 1e-6)
+    dirs = []
+    if np.any(near_mask):
+        near_pts = st[near_mask].reshape(-1, 2)
+        oxc, oyc = float(near_pts[:, 0].mean()), float(near_pts[:, 1].mean())
+        txc, tyc = 0.5 * (tx0 + tx1), 0.5 * (ty0 + ty1)
+        vx, vy = txc - oxc, tyc - oyc
+        vn = math.hypot(vx, vy)
+        if vn > 1e-9:
+            dirs.append((vx / vn, vy / vn))
+    dirs.extend([
+        (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0),
+        (-0.70710678, 0.70710678), (0.70710678, 0.70710678),
+        (-0.70710678, -0.70710678), (0.70710678, -0.70710678),
+    ])
+    for frac in (0.005, 0.015, 0.03, 0.06, 0.12, 0.25, 0.5, 1.0):
+        dist = frac * span
+        for dx, dy in dirs:
+            du, dv = dx * dist, dy * dist
+            shifted = triangles + np.array([du, dv], dtype=np.float64)
+            ov = probe.check_overlaps(topo, coordinates=probe._triangle_view(shifted))
+            if (ov.get('overlap_check_complete')
+                    and not ov.get('novel_self_overlaps')
+                    and not ov.get('novel_island_overlaps')):
+                uvl = topo.uvl
+                for p in target_positions:
+                    lp = topo.loops[p]
+                    lp[uvl].uv = (float(lp[uvl].uv.x) + du, float(lp[uvl].uv.y) + dv)
+                return (du, dv)
+    return None
 
 
 def _rebuild_islands(context, obj, faces, constraint_positions=(),
@@ -2715,7 +2821,7 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
                     _recovery_orientation=None, _recovery_guarded_faces=(),
                     _quality_before=None, _quality_after=True, _contact_faces=(),
                     _geometry_cache=None, _direct_subspace=False,
-                    _require_positive_det=False, _update_mesh=True):
+                    _require_positive_det=False, _update_mesh=True, _has_pins=None):
     """Optimize the current parameterization, without resetting its solution."""
     from . import metric
     topo = _topo
@@ -2734,8 +2840,8 @@ def _rebuild_islands(context, obj, faces, constraint_positions=(),
     skip_same_uv = _geometry_cache is not None and not fill_holes
     for island in islands.values():
         island=set(island)
-        area=island_area(topo,island)
-        held=_island_pins(topo,island)
+        area=island_area(topo,island,coordinates=reference)
+        held=_island_pins(topo,island,_has_pins=_has_pins)
         held.update(selection_region_pins(topo,island,free_selection_borders,
                     context,respect_uv_selection))
         if fix_boundary:
@@ -2922,7 +3028,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     # immutable input only here; candidate checks always capture fresh values.
     probe = safety.AcceptanceProbe(module, topo, faces,
                                   settings.get('prevent_overlap', False), coordinates=saved)
-    before = probe.measure(topo, coordinates=probe.reference, _triangles=old_triangles)
+    before = probe.measure(topo, coordinates=probe._triangle_view(old_triangles), _triangles=old_triangles)
     _outside_state.setdefault('flips', before['flips'])
     # The GUI consumes elapsed time and probe health, not descriptive reports.
     # Direct callers retain full reports by default. The final interpolation
@@ -2930,9 +3036,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     quality_before = (quality_metrics(topo, set(faces), coordinates=saved)
                       if _report_quality else {})
     input_islands = face_islands(topo, faces)
-    original_areas = {root: island_area(topo, island, coordinates=saved)
+    original_areas = {root: island_area(topo, island, coordinates=saved_array)
                       for root, island in input_islands.items()}
-    fixed_positions = set(i for i, pin in enumerate(pins) if pin)
+    has_any_pins = any(pins)
+    fixed_positions = set(i for i, pin in enumerate(pins) if pin) if has_any_pins else set()
     for island in input_islands.values():
         for g in selection_region_pins(topo,island,settings.get('free_selection_borders',False),
                                       context,settings.get('respect_uv_selection',True)):
@@ -3272,14 +3379,17 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         if medium_probe:
             strengths = (100., 1., 100., 1e4, 1e6)
 
-        fast_subspace = (not contact_faces and settings.get('auto_iterations', True)
-                         and not (settings.get('align_borders') and not settings.get('fix_boundary'))
-                         and bool(constraint_positions)
-                         and all(k in (C_HORIZONTAL, C_VERTICAL)
-                                 for k, _ in constraint_runs(bm, topo, constraint_positions)))
+        allow_exact_snap = (settings.get('auto_iterations', True)
+                            and not (settings.get('align_borders') and not settings.get('fix_boundary'))
+                            and bool(constraint_positions)
+                            and all(k in (C_HORIZONTAL, C_VERTICAL)
+                                    for k, _ in constraint_runs(bm, topo, constraint_positions)))
+        fast_subspace = bool(not contact_faces and allow_exact_snap)
         warm_values = seed_values if seed_values is not None else saved
         warm_deviation = initial_deviation
         require_pos = bool(settings.get('prevent_flips', False) or healthy_input)
+        can_nudge_island = bool(settings.get('prevent_overlap', False) and not fixed_positions
+                                and len(input_islands) == 1)
 
         def fallback_values():
             return (seed_values if seed_values is not None else saved) if best_values is None else best_values
@@ -3287,19 +3397,37 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         def read_loop_tuples():
             return np.array(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64, copy=True)
 
-        def try_exact_subspace():
+        def validate_with_nudge(coordinates, health, triangles):
+            ok = valid(topo, health, coordinates, triangles)
+            if (not ok and can_nudge_island
+                    and health.get('rejection_reason') == 'new_island_overlap'
+                    and not health.get('novel_self_overlaps')):
+                nudged = _nudge_clear_of_other_islands(topo, probe, probe.target_positions, triangles)
+                if nudged is not None:
+                    coordinates, health, triangles = capture_health(topo)
+                    ok = valid(topo, health, coordinates, triangles)
+            return ok, coordinates, health, triangles
+
+        def try_exact_subspace(override_contact=None):
             nonlocal best_values, best_result, best_deviation, warm_values, warm_deviation
+            c_faces = contact_faces if override_contact is None else override_contact
             guarded = _rebuild_islands(context, obj, faces, constraint_positions,
                 _topo=topo, _constraint_strength=None, _quality_before=quality_before,
                 _quality_after=False, _geometry_cache=prepared_geometry,
                 _direct_subspace=True, _require_positive_det=require_pos,
-                _update_mesh=False, **dict(settings, _contact_faces=contact_faces))
+                _update_mesh=False, _has_pins=has_any_pins,
+                **dict(settings, _contact_faces=c_faces))
             if guarded[2].get('aborted_projection'):
                 if guarded[2].get('wrote_any'):
                     restore(warm_values, _skip_same_uv=True)
                 return False
             coordinates, health, triangles = capture_health(topo)
-            if valid(topo, health, coordinates, triangles) and health['max_deviation'] < best_deviation:
+            ok, coordinates, health, triangles = validate_with_nudge(coordinates, health, triangles)
+            if ok and contact_faces and not settings.get('prevent_overlap', False):
+                overlap = probe.check_overlaps(topo, include_existing=True, coordinates=coordinates)
+                health.update(overlap)
+                ok = bool(overlap['overlap_check_complete'] and not overlap['self_overlaps'])
+            if ok and health['max_deviation'] < best_deviation:
                 best_values = read_loop_tuples()
                 best_deviation = health['max_deviation']
                 warm_values = best_values
@@ -3322,7 +3450,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             guarded = _rebuild_islands(context, obj, faces, constraint_positions,
                 _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
                 _quality_after=False, _geometry_cache=prepared_geometry,
-                _update_mesh=False, **dict(settings, _contact_faces=contact_faces))
+                _update_mesh=False, _has_pins=has_any_pins, **dict(settings, _contact_faces=contact_faces))
             if guarded[0] == 0 and warm_values is not fallback_values():
                 warm_values = fallback_values()
                 warm_deviation = best_deviation
@@ -3330,9 +3458,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 guarded = _rebuild_islands(context, obj, faces, constraint_positions,
                     _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
                     _quality_after=False, _geometry_cache=prepared_geometry,
-                    _update_mesh=False, **dict(settings, _contact_faces=contact_faces))
+                    _update_mesh=False, _has_pins=has_any_pins, **dict(settings, _contact_faces=contact_faces))
             coordinates, health, triangles = capture_health(topo)
-            accepted = valid(topo, health, coordinates, triangles) and health['max_deviation'] < best_deviation
+            ok, coordinates, health, triangles = validate_with_nudge(coordinates, health, triangles)
+            accepted = ok and health['max_deviation'] < best_deviation
             if accepted and contact_faces and (not health['constraints_limited'] or (medium_probe and stage == 0)):
                 # The distance barrier is best-effort, not continuous
                 # collision detection. Validate the actual rounded UVs.
@@ -3354,6 +3483,9 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     guarded[2]['contact_barrier'] = True
                 best_result = guarded[0], health['flips'], guarded[2]
                 if fast_subspace and health['max_deviation'] > 1e-4 and try_exact_subspace():
+                    break
+                if (allow_exact_snap and contact_faces and 0.05 < health['max_deviation'] < 2.0
+                        and try_exact_subspace(override_contact=())):
                     break
                 if not health['constraints_limited']:
                     break
@@ -3413,7 +3545,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             if (recovery_plan is not None and faces.issubset(recovery_plan['clean_faces'])
                     and before['max_deviation'] > .05 and not before['zero_edges']
                     and not fixed_positions and not settings.get('keep_metric')
-                    and not settings.get('prevent_overlap') and not settings.get('fill_holes')
+                    and not settings.get('fill_holes')
                     and settings.get('mix', 1.) == 1. and settings.get('auto_iterations', True)
                     and all(len(island) == len(topo.island_faces[root])
                             for root, island in input_islands.items())
@@ -3533,7 +3665,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                         else settings)
         result = _rebuild_islands(context, obj, faces, constraint_positions,
                                   _topo=topo if reusable else None,_quality_before=quality_before,
-                                  _quality_after=False, **run_settings)
+                                  _quality_after=False, _has_pins=has_any_pins, **run_settings)
         if recovery_report is not None:
             result[2]['input_recovery'] = recovery_report
             result[2]['before'] = quality_before
@@ -3543,11 +3675,20 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             topo = UVTopology(bm, uv_layer(bm))
         coordinates, after, triangles = capture_health(topo)
         valid_after = valid(topo, after, coordinates, triangles)
+        if (not valid_after and settings.get('prevent_overlap', False)
+                and not fixed_positions and len(input_islands) == 1
+                and after.get('rejection_reason') == 'new_island_overlap'
+                and not after.get('novel_self_overlaps')):
+            nudged = _nudge_clear_of_other_islands(topo, probe, probe.target_positions, triangles)
+            if nudged is not None:
+                bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+                coordinates, after, triangles = capture_health(topo)
+                valid_after = valid(topo, after, coordinates, triangles)
         if guarded_clean and not valid_after:
             restore()
             result = _rebuild_islands(context, obj, faces, constraint_positions,
                                       _topo=topo, _quality_before=quality_before,
-                                      _quality_after=False, **settings)
+                                      _quality_after=False, _has_pins=has_any_pins, **settings)
             if recovery_report is not None:
                 result[2]['input_recovery'] = recovery_report
                 result[2]['before'] = quality_before

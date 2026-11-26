@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Factory-Blender tests for 1.9.0: Solve Presets drawer, Distribute Edges,
-partial quad-strip Quadrify, Constrained Drag, whole-island falloff Relax Brush,
+whole-island Quad-Flow + partial quad-strip Quadrify, prevent-overlap reliability,
 headless UI draw, Blender RNA icons & zh_HANS i18n coverage.
 
 Run: blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_host.py
@@ -25,13 +25,11 @@ args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv
 sys.path.insert(0, str(args.addon_root.resolve().parent))
 import uv_constraint_kit as addon
 from uv_constraint_kit import (
-    constrained_drag,
     core,
     distribute,
     ops,
     prefs,
     quadrify,
-    relax_brush,
     safety,
     terms_zh,
     ui,
@@ -152,14 +150,13 @@ def test_ui_headless_icons_and_i18n():
         "uv.uvck_rectify",
         "uv.uvck_quadrify",
         "uv.uvck_distribute_edges",
-        "uv.uvck_constrained_drag",
-        "uv.uvck_relax_brush",
     }
     for op_id in expected_ops:
         cat, name = op_id.split(".")
         type_name = f"{cat.upper()}_OT_{name}"
         assert hasattr(bpy.types, type_name), f"Missing operator {op_id} ({type_name})"
-    assert not hasattr(bpy.types, "UV_OT_uvck_auto_constrain_hv"), "Dropped uv.uvck_auto_constrain_hv must not be registered"
+    for dropped in ("UV_OT_uvck_auto_constrain_hv", "UV_OT_uvck_constrained_drag", "UV_OT_uvck_relax_brush"):
+        assert not hasattr(bpy.types, dropped), f"Dropped {dropped} must not be registered"
 
     # 2. Verify every icon literal across UI/operator modules exists in Blender RNA.
     valid_icons = {
@@ -167,7 +164,7 @@ def test_ui_headless_icons_and_i18n():
         for item in bpy.types.UILayout.bl_rna.functions["operator"].parameters["icon"].enum_items
     }
     addon_dir = args.addon_root.resolve()
-    for rel in ("ui.py", "prefs.py", "ops.py", "distribute.py", "shape_ops.py", "constrained_drag.py", "relax_brush.py"):
+    for rel in ("ui.py", "prefs.py", "ops.py", "distribute.py", "shape_ops.py"):
         text = (addon_dir / rel).read_text(encoding="utf8")
         for icon in set(re.findall(r'icon\s*=\s*["\']([A-Z0-9_]+)["\']', text)):
             assert icon in valid_icons, f"Invalid Blender icon {icon} in {rel}"
@@ -226,10 +223,10 @@ def test_ui_headless_icons_and_i18n():
 
             drawn_props = [c[1] for c in calls if c[0] == "prop"]
             drawn_ops = [c[1] for c in calls if c[0] == "operator"]
-            assert "uv.uvck_auto_constrain_hv" not in drawn_ops
+            for dropped_op in ("uv.uvck_auto_constrain_hv", "uv.uvck_constrained_drag", "uv.uvck_relax_brush"):
+                assert dropped_op not in drawn_ops
             assert "uv.uvck_distribute_edges" in drawn_ops
-            assert "uv.uvck_constrained_drag" in drawn_ops
-            assert "uv.uvck_relax_brush" in drawn_ops
+            assert "uv.uvck_quadrify" in drawn_ops
             assert "show_solve_presets" in drawn_props
             for key in ("preset_prevent_overlap", "preset_fix_boundary", "preset_use_density_map"):
                 assert (key in drawn_props) == expanded
@@ -237,10 +234,10 @@ def test_ui_headless_icons_and_i18n():
     menu_calls = []
     ui._draw_menu(type("M", (), {"layout": MockLayout(menu_calls)})(), bpy.context)
     menu_ops = [c[1] for c in menu_calls if c[0] == "operator"]
-    assert "uv.uvck_auto_constrain_hv" not in menu_ops
-    assert "uv.uvck_constrained_drag" in menu_ops
-    assert "uv.uvck_relax_brush" in menu_ops
+    for dropped_op in ("uv.uvck_auto_constrain_hv", "uv.uvck_constrained_drag", "uv.uvck_relax_brush"):
+        assert dropped_op not in menu_ops
     assert "uv.uvck_distribute_edges" in menu_ops
+    assert "uv.uvck_quadrify" in menu_ops
 
     # 4. Verify zh_HANS translation coverage without Blender catalog clashes.
     view = bpy.context.preferences.view
@@ -254,13 +251,6 @@ def test_ui_headless_icons_and_i18n():
             "Edge distribution",
             "Edge distribution: Even",
             "Edge distribution: Geometry",
-            "Constrained Drag",
-            "Drag offset",
-            "Preserve island area",
-            "Relax Brush",
-            "Brush radius (px)",
-            "Brush strength",
-            "Step iterations",
         ]
         for msg in check_strings:
             assert msg in terms_zh.TERMS, f"Missing zh term: {msg}"
@@ -384,103 +374,59 @@ def test_partial_quad_strip_quadrify():
     del t
 
 
-def test_constrained_drag():
-    # 3x3 quad grid + second untouched island.
-    # Mark middle horizontal row (4)-(5)-(6)-(7) as C_HORIZONTAL and left column (0)-(4)-(8)-(12) as C_VERTICAL.
-    verts = [(float(x), float(y), 0.0) for y in range(4) for x in range(4)]
-    verts += [(10.0, 0.0, 0.0), (11.0, 0.0, 0.0), (11.0, 1.0, 0.0), (10.0, 1.0, 0.0)]
-    faces = [(y * 4 + x, y * 4 + x + 1, y * 4 + x + 5, y * 4 + x + 4) for y in range(3) for x in range(3)]
-    faces.append((16, 17, 18, 19))
-    uv_fn = lambda fi, _vi, co: (1.5 + 0.1 * (co.x - 10.0), 0.1 * co.y) if fi == 9 else (0.1 * co.x, 0.1 * co.y)
-
-    # Case A: Drag a single vertex (v5) on a horizontal constrained row up by +0.04.
-    # The horizontal row must remain horizontal (at y=0.14), the vertical left column must remain vertical,
-    # zero flips/overlaps, and the outside island stays untouched!
-    obj = make_mesh(verts, faces, uv_fn)
-    bpy.context.scene.tool_settings.uv_select_mode = "VERTEX"
-    t = topo_of(obj)
-    core.constraint_layer(t.bm, create=True)
-    del t
-    t = topo_of(obj)
-    layer = core.constraint_layer(t.bm)
-    for lp in t.loops:
-        if lp.face.index < 9:
-            vs = {lp.vert.index, lp.link_loop_next.vert.index}
-            if vs in ({4, 5}, {5, 6}, {6, 7}):
-                lp[layer] = core.C_HORIZONTAL
-            if vs in ({0, 4}, {4, 8}, {8, 12}):
-                lp[layer] = core.C_VERTICAL
-            if lp.vert.index == 5:
-                lp.uv_select_vert = True
-    t.bm.uv_select_sync_valid = True
-    before_out = uv_snapshot(obj)[-4:]
-    del t
-
-    res = bpy.ops.uv.uvck_constrained_drag(offset=(0.02, 0.04), fix_boundary=False, preserve_area=False)
-    assert "FINISHED" in res, res
-    t = topo_of(obj)
-    assert uv_snapshot(obj)[-4:] == before_out
-    v5_uv = next(tuple(float(c) for c in lp[t.uvl].uv) for lp in t.loops if lp.face.index < 9 and lp.vert.index == 5)
-    assert abs(v5_uv[0] - 0.12) < 1e-4 and abs(v5_uv[1] - 0.14) < 1e-4, v5_uv
-    row_ys = [float(lp[t.uvl].uv.y) for lp in t.loops if lp.face.index < 9 and lp.vert.index in (4, 5, 6, 7)]
-    assert max(row_ys) - min(row_ys) < 1e-4, row_ys
-    col_xs = [float(lp[t.uvl].uv.x) for lp in t.loops if lp.face.index < 9 and lp.vert.index in (0, 4, 8, 12)]
-    assert max(col_xs) - min(col_xs) < 1e-4, col_xs
-    probe = safety.AcceptanceProbe(core, t, set(range(9))).measure(t)
-    assert probe["finite"] and probe["flips"] == 0 and probe["max_deviation"] <= 0.05, probe
-    del t
-
-    # Case B: Infeasible drag (dragging bottom border far past top border with fix_boundary=True on rest)
-    # must reject safely and leave UVs byte-for-byte unchanged!
-    obj2 = make_mesh(verts, faces, uv_fn)
-    bpy.context.scene.tool_settings.uv_select_mode = "VERTEX"
-    t2 = topo_of(obj2)
-    for lp in t2.loops:
-        if lp.face.index < 9 and lp.vert.index == 5:
-            lp.uv_select_vert = True
-    t2.bm.uv_select_sync_valid = True
-    before2 = uv_snapshot(obj2)
-    del t2
-    out_rej = constrained_drag.constrained_drag(bpy.context, obj2, (0.0, 5.0), fix_boundary=True)
-    assert out_rej["changed"] == 0 and out_rej["skipped"], out_rej
-    assert uv_snapshot(obj2) == before2
-
-    # Case C: Rigid whole-island drag translates cleanly without distortion.
-    obj3 = make_mesh(verts, faces, uv_fn)
-    bpy.context.scene.tool_settings.uv_select_mode = "FACE"
-    t3 = topo_of(obj3)
-    for fi in range(9):
-        t3.bm.faces[fi].uv_select = True
-    t3.bm.uv_select_sync_valid = True
-    before3 = uv_snapshot(obj3)
-    del t3
-    out_rigid = constrained_drag.constrained_drag(bpy.context, obj3, (0.25, -0.15))
-    assert out_rigid["changed"] == 1 and out_rigid["islands"][0]["mode"] == "RIGID", out_rigid
-    after3 = uv_snapshot(obj3)
-    assert after3[-4:] == before3[-4:]
-    for p in range(len(before3) - 4):
-        assert abs(after3[p][0] - (before3[p][0] + 0.25)) < 1e-5
-        assert abs(after3[p][1] - (before3[p][1] - 0.15)) < 1e-5
+def test_whole_island_quad_flow_poled_island():
+    # Pure-quad UV island containing an interior valence-3 pole
+    # (rigid quad_grid.solve rejects poles, while whole-island QUAD_FLOW must succeed).
+    pts = [
+        (0.0, 0.0, 0.0),      # 0 (pole, val=3)
+        (1.0, 0.0, 0.0),      # 1
+        (0.8, 0.9, 0.0),      # 2
+        (-0.5, 0.86, 0.0),    # 3
+        (-1.1, 0.1, 0.0),     # 4
+        (-0.5, -0.86, 0.0),   # 5
+        (0.7, -0.8, 0.0),     # 6
+        (1.9, 0.1, 0.0),      # 7
+        (1.6, 1.6, 0.0),      # 8
+        (-0.9, 1.7, 0.0),     # 9
+        (-2.0, 0.2, 0.0),     # 10
+        (-0.9, -1.7, 0.0),    # 11
+        (1.4, -1.5, 0.0),     # 12
+    ]
+    qfaces = [
+        (0, 1, 2, 3),
+        (0, 3, 4, 5),
+        (0, 5, 6, 1),
+        (1, 7, 8, 2),
+        (2, 8, 9, 3),
+        (3, 9, 10, 4),
+        (4, 10, 11, 5),
+        (5, 11, 12, 6),
+        (6, 12, 7, 1),
+    ]
+    obj = make_mesh(pts, qfaces, lambda _fi, _vi, co: (0.5 + 0.1 * co.x, 0.5 + 0.1 * co.y))
+    res = quadrify.quadrify(bpy.context, obj, set(range(len(qfaces))),
+                            shape="PER_FACE", average_shape=True,
+                            respect_pins=True, prevent_overlap=True)
+    assert res["changed"] == 1 and not res["skipped"], res
+    assert res["islands"][0]["algorithm"] == "QUAD_FLOW", res
+    assert res["islands"][0]["quality"]["flips"] == 0, res
+    assert res["islands"][0]["area_error"] <= 1e-5, res
 
 
-def test_relax_brush_whole_island_falloff():
-    # 4x4 distorted grid with a horizontal constraint on row y=2, a vertical constraint on col x=0,
-    # a pinned corner (0,0), and a second untouched island.
-    verts = [(float(x), float(y), 0.0) for y in range(5) for x in range(5)]
-    verts += [(10.0, 0.0, 0.0), (11.0, 0.0, 0.0), (11.0, 1.0, 0.0), (10.0, 1.0, 0.0)]
-    faces = [(y * 5 + x, y * 5 + x + 1, y * 5 + x + 6, y * 5 + x + 5) for y in range(4) for x in range(4)]
-    faces.append((25, 26, 27, 28))
+def test_prevent_overlap_neighbor_nudge():
+    # Straightening a tilted unpinned island whose corner grazes an adjacent island
+    # with prevent_overlap=True must nudge cleanly instead of returning SKIPPED.
+    verts = [(float(x), float(y), 0.0) for y in range(3) for x in range(3)]
+    verts += [(5.0, 0.0, 0.0), (6.0, 0.0, 0.0), (6.0, 2.0, 0.0), (5.0, 2.0, 0.0)]
+    faces = [(y * 3 + x, y * 3 + x + 1, y * 3 + x + 4, y * 3 + x + 3) for y in range(2) for x in range(2)]
+    faces.append((9, 10, 11, 12))
 
     def uv_fn(fi, vi, co):
-        if fi == 16:
-            return (2.0 + 0.1 * (co.x - 10.0), 0.1 * co.y)
-        xi, yi = vi % 5, vi // 5
-        u, v = 0.1 * xi, 0.1 * yi
-        # Strongly distort interior vertices (keeping row y=2 strictly horizontal & col x=0 vertical).
-        if 1 <= xi <= 3 and 1 <= yi <= 3:
-            u += 0.032 if (xi + yi) % 2 == 0 else -0.025
-            if yi != 2:
-                v += 0.028 if xi == 2 else -0.020
+        if fi == 4:
+            return (0.205 + 0.1 * (co.x - 5.0), 0.0 + 0.1 * co.y)
+        xi, yi = vi % 3, vi // 3
+        u = 0.1 * xi - 0.03 * yi
+        v = 0.1 * yi
         return (u, v)
 
     obj = make_mesh(verts, faces, uv_fn)
@@ -490,55 +436,31 @@ def test_relax_brush_whole_island_falloff():
     t = topo_of(obj)
     layer = core.constraint_layer(t.bm)
     for lp in t.loops:
-        if lp.face.index < 16:
-            a, b = lp.vert.index, lp.link_loop_next.vert.index
-            if a // 5 == 2 and b // 5 == 2:
-                lp[layer] = core.C_HORIZONTAL
-            if a % 5 == 0 and b % 5 == 0:
+        if lp.face.index < 4:
+            vs = {lp.vert.index, lp.link_loop_next.vert.index}
+            if vs in ({2, 5}, {5, 8}):
                 lp[layer] = core.C_VERTICAL
-            if lp.vert.index == 0:
-                lp[t.uvl].pin_uv = True
+            if vs in ({0, 1}, {1, 2}, {6, 7}, {7, 8}):
+                lp[layer] = core.C_HORIZONTAL
+    for fi in range(4):
+        t.bm.faces[fi].select = True
+        t.bm.faces[fi].uv_select = True
+    t.bm.faces[4].select = False
+    t.bm.faces[4].uv_select = False
     t.bm.uv_select_sync_valid = True
-    before = uv_snapshot(obj)
-    q_before = core.quality_metrics(t, set(range(16)))
+    bpy.context.scene.tool_settings.use_uv_select_sync = True
+    before_neighbor = uv_snapshot(obj)[-4:]
     del t
 
-    # Paint 4 smooth whole-island falloff dabs centered near (0.2, 0.2) with radius 0.18.
-    for _ in range(4):
-        res = relax_brush.apply_dab(
-            bpy.context, obj,
-            center_uv=(0.2, 0.2), radius_uv=(0.18, 0.18),
-            strength=0.6, iterations=8,
-            prevent_overlap=True, fix_boundary=False,
-            use_density_map=True, respect_pins=True, preserve_area=True,
-        )
-        assert res["changed"] == 1, res
-
+    res = bpy.ops.uv.uvck_optimize("EXEC_DEFAULT", prevent_overlap=True, prevent_flips=True, use_density_map=True)
+    assert "FINISHED" in res, res
+    last = ops.last_optimize_result
+    assert last["status"] == "COMPLETED" and last["max_deviation"] <= 0.05, last
+    assert uv_snapshot(obj)[-4:] == before_neighbor
     t = topo_of(obj)
-    after = uv_snapshot(obj)
-    q_after = core.quality_metrics(t, set(range(16)))
-    # Distortion genuinely reduced!
-    assert q_after["worst_angle_deg"] < q_before["worst_angle_deg"], (q_before, q_after)
-    # Outside island completely untouched!
-    assert after[-4:] == before[-4:]
-    # Pinned vertex (0,0) did not move!
-    v0_uv = next(tuple(float(c) for c in lp[t.uvl].uv) for lp in t.loops if lp.face.index < 16 and lp.vert.index == 0)
-    assert math.dist(v0_uv, (0.0, 0.0)) < 1e-6, v0_uv
-    # Horizontal & vertical constraints remained exact!
-    probe = safety.AcceptanceProbe(core, t, set(range(16)), check_other_islands=True)
-    m = probe.measure(t)
-    ov = probe.check_overlaps(t)
-    assert m["finite"] and m["flips"] == 0 and m["zero_edges"] == 0 and m["max_deviation"] <= 0.05, m
-    assert ov["novel_self_overlaps"] == 0 and ov["novel_island_overlaps"] == 0, ov
-    # Verify smooth falloff: center vertex (v12) moved more than far corner vertex (v24).
-    pos_by_v = {lp.vert.index: tuple(float(c) for c in lp[t.uvl].uv) for lp in t.loops if lp.face.index < 16}
-    before_by_v = {}
-    for p, lp in enumerate(t.loops):
-        if lp.face.index < 16:
-            before_by_v[lp.vert.index] = before[p]
-    move_center = math.dist(pos_by_v[12], before_by_v[12])
-    move_far = math.dist(pos_by_v[24], before_by_v[24])
-    assert move_center > move_far, f"Expected smooth distance decay: center={move_center}, far={move_far}"
+    probe = safety.AcceptanceProbe(core, t, {0, 1, 2, 3}, check_other_islands=True)
+    ov = probe.check_overlaps(t, include_existing=True)
+    assert ov["self_overlaps"] == 0 and ov["island_overlaps"] == 0, ov
     del t
 
 
@@ -551,8 +473,8 @@ try:
         test_solve_presets_wiring,
         test_distribute_edges,
         test_partial_quad_strip_quadrify,
-        test_constrained_drag,
-        test_relax_brush_whole_island_falloff,
+        test_whole_island_quad_flow_poled_island,
+        test_prevent_overlap_neighbor_nudge,
     ):
         test()
 finally:

@@ -28,12 +28,12 @@ CPU path. Published builds remain in the
 
 ## What changed in 1.9.0
 
-- **Constrained Drag (`uv.uvck_constrained_drag`)**: Interactive UV drag tool with lightweight `O(selected)` live preview during mouse movement (`X`/`Y` axis lock, `RMB`/`Esc` exact rollback) followed by a high-precision constrained solve on confirm (`LMB`/`Enter`/`Space`). Preserves all existing H/V/Aligned/shape constraints, pins, and flip/overlap safety, with `F9` controls for drag offset, `Preserve island area`, and solver flags.
-- **Relax Brush (`uv.uvck_relax_brush`)**: Interactive UV Editor brush with smooth whole-island Gaussian distance falloff (no hard brush rim). `LMB` paints, `Wheel` or `[`/`]` resizes screen-pixel radius, `Shift+Wheel` adjusts strength, `RMB`/`Enter`/`Space` commits a single undo step, and `Esc` restores pre-session UVs. Strictly preserves H/V/Aligned constraints, shape constraints, user pins, and flip/overlap safety.
-- **Collapsible pre-mark Solve Presets drawer**: Added a default-collapsed **Solve presets** drawer in the UV Editor and 3D Viewport sidebar panels with `Prevent overlaps`, `Fix boundary`, and `Use density map` switches wired into marking, optimizing, interactive tools, and F9 defaults without changing existing defaults or Pie Menu operator IDs.
+- **Whole-island Quad-Flow DAG `Quadrify`**: Keeps regular pure-quad islands on the exact `quad_grid.py` integer-grid path and adds a whole-island acyclic Quad-Flow DAG solver for concave and pole-containing pure-quad islands (eliminating `"Different UV vertices occupy the same grid point"` on poled islands while preserving pins, existing user constraints, island area, and zero flips/overlaps). Partial pole-free quad-strip straightening remains available on mixed-polygon islands.
+- **High-reliability `Prevent overlaps` solving**: Retains the soft contact barrier and `SoftMetric` preconditioning when `Prevent overlaps` is enabled, adds exact-subspace snap after soft convergence, and automatically applies the smallest outward rigid translation when an unpinned island solves cleanly (`0` self-overlaps, `0` flips) but grazes a neighboring island.
+- **Major CPU/GPU/Python performance upgrade**: Rebuilt `uvck_engine` (zero-rehash affinity-aware threaded overlap checks, analytic CCD border step, `SoftMetric` preconditioning up to `n <= 8192`, in-place L-BFGS history) and `uvck_gpu` host (cached GPU/pinned staging buffers with FNV-1a constant-upload reuse + analytic CCD border step), paired with vectorized `island_area` / `recovery` / `UVTopology` and fast `AcceptanceProbe`-backed Quadrify safety checks.
+- **Collapsible pre-mark Solve Presets drawer**: Added a default-collapsed **Solve presets** drawer in the UV Editor and 3D Viewport sidebar panels with `Prevent overlaps`, `Fix boundary`, and `Use density map` switches wired into marking, optimizing, and F9 defaults without changing existing defaults or Pie Menu operator IDs.
 - **Distribute Edges (`uv.uvck_distribute_edges`)**: One-shot spacing tool supporting **Even** and **Geometry** (3D edge length ratio) redistribution along selected UV edge chains followed by safe island relaxation, preserving pins, existing constraints, and island area without adding persistent constraint types or overlays.
-- **Practical partial quad-strip `Quadrify`**: Keeps regular pure-quad islands on the exact `quad_grid.py` integer-grid path while allowing selected pole-free quad strips on mixed or pole-containing islands to be straightened, pinned, and safely relaxed with the rest of the island.
-- **Blender 5.3.0 verification**: Built on the verified `1.7.66` C++/CUDA/reader/`numeric_stage` native binaries (51/51 member parity between `blender --command extension build` and `scripts/package.py`). Passed 10/10 host tests (including `test_v190_host.py` headless UI/icon/i18n & feature suite and `test_v190_modal_host.py` factory-GUI event-simulation modal suite), 31-case (62-op) P2 quality gates (`hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals), 8-run CPU-0 pinned 12-op ABBA+BAAB (`determinism_ok=true`, `16.8481s` total median vs `1.7.62`'s `39.3615s` [`-57.20%`] and `1.7.65`'s `29.8393s` [`-43.54%`]; `coastal mark` `6.1915s`, `rocks mark` `5.6688s`), and isolated `1.7.66 -> 1.9.0` upgrade/F9/CPU+GPU acceptance.
+- **Blender 5.3.0 verification**: 49/49 member parity between `blender --command extension build` and `scripts/package.py --require-gpu --require-reader --require-numeric`. Passed 9/9 host tests (`test_v190_host.py` headless UI/icon/i18n, whole-island poled Quadrify, `Prevent overlaps` neighbor nudge, and `Distribute Edges`), 31-case (62-op) P2 quality gates (`hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals), 8-run CPU-0 pinned 12-op ABBA+BAAB (`determinism_ok=true`, `11.2343s` total median vs `1.7.62`'s `34.7874s` [`-67.71%`, `3.10x`] and `1.7.65`'s `29.8393s` [`-62.35%`]; `coastal mark` `3.5481s`, `rocks mark` `3.7499s`), and isolated `1.7.66 -> 1.9.0` upgrade/F9/CPU+GPU acceptance.
 
 ## Start with an existing UV layout
 
@@ -149,10 +149,13 @@ lay out that connected island as an axis-aligned quad grid. F9 controls face
 proportions and averaging. This reorganizes the island's quad layout, rather
 than only making a boundary rectangular.
 
-The independent grid tool supports regular all-quad charts, including compatible
-grid holes. Poles, mixed polygons, non-manifold links and inconsistent grid
-cycles are rejected without a partial result. It is not a universal tool for
-arbitrary topology.
+The independent grid tool lays out regular all-quad charts (including compatible
+grid holes) via an exact integer grid. Concave or pole-containing pure-quad
+islands automatically fall back to whole-island acyclic Quad-Flow DAG
+quadrification while preserving pins, existing constraints, island area, and
+zero flips/overlaps. Mixed-polygon islands support straightening selected
+pole-free quad strips while safely relaxing the rest; infeasible topologies are
+rejected without a partial write.
 
 ![Quad grid layout: before and after](docs/images/quadrify.svg)
 
@@ -199,13 +202,17 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 ## Building from source
 
 Python handles Blender's interface, selection, undo and overlays; C++17 engines
-handle numeric solves. Version 1.9.0 reuses the source-matched `1.7.66` CPU, GPU, `numeric_stage`, and stable-ABI reader binaries unchanged (`scripts/build_native.py --numeric` and `scripts/package.py --require-numeric` remain supported). Native builds target
+handle numeric solves. Version 1.9.0 rebuilds the CPU (`engine.cpp`), CUDA GPU
+host (`engine_gpu.cpp`, `gpu_driver.hpp`), and `numeric_stage` DLLs while
+reusing the unchanged source-matched `1.7.66` CUDA PTX (`gpu_metric.cu`) and
+stable-ABI reader (`mesh_reader.cpp`), and supports `scripts/build_native.py --numeric`
+and `scripts/package.py --require-numeric`. Native builds target
 **Windows x64 / MSVC**; host checks used Blender 5.3.0. Building the CUDA engine
 from source requires CUDA Toolkit / NVRTC 12.4; the prebuilt ZIP needs only a
 supported NVIDIA driver. The reader uses Blender's bundled Python at runtime.
 Neither Python nor CUDA runtime files are distributed.
-The commands below are a separate full-rebuild recipe; they were not used to
-produce this release.
+The commands below are a separate full-rebuild recipe; any rebuilt artifact must
+be re-validated with its own recorded identity.
 
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --numeric --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
@@ -231,7 +238,6 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_selection_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_host.py
-blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/v190-modal.json
 ```
 
 Use disposable Blender processes. Tests create synthetic meshes and do not
@@ -246,14 +252,15 @@ to sample active G/R/S transforms and undo/redo. It does not cover manual mouse
 input or a user's installed Blender environment. The 1.7.55 package checks and
 their scope are listed in the validation record.
 
-Read [known issues](docs/KNOWN_ISSUES.md) before production use. Whole-island
-grid quadrification requires regular pure-quad charts; on mixed or pole islands,
-select a pole-free quad strip to straighten and relax the rest. GPU execution is
-limited to eligible paths and does not guarantee a speedup.
+Read [known issues](docs/KNOWN_ISSUES.md) before production use. Exact integer-grid
+quadrification handles regular pure-quad charts, the Quad-Flow DAG fallback extends
+whole-island quadrification to concave and pole-containing pure-quad islands, and
+mixed-polygon islands support straightening selected pole-free quad strips. GPU
+execution is limited to eligible paths and does not guarantee a speedup.
 
 ## Versions
 
-- 1.9.0 is the current release; adds `uv.uvck_constrained_drag` (preview drag + high-precision constrained solve on confirm), `uv.uvck_relax_brush` (whole-island Gaussian-falloff constraint-preserving brush), collapsible pre-mark solve presets, `uv.uvck_distribute_edges`, and partial pole-free quad-strip `Quadrify`, passing 10/10 host tests, P2 62-op, ABBA+BAAB, and isolated Blender 5.3.0 upgrade checks.
+- 1.9.0 is the current release; adds whole-island Quad-Flow DAG `Quadrify`, reliable `Prevent overlaps` solving with contact barrier and automatic neighbor-island nudge, rebuilt CPU/GPU/Python performance optimizations (`-67.71%` / `3.10x` vs `1.7.62`), collapsible pre-mark solve presets, and `uv.uvck_distribute_edges`, passing 9/9 host tests, P2 62-op, ABBA+BAAB, and isolated Blender 5.3.0 upgrade checks.
 - 1.7.66 is the previous milestone introducing P3-E/P3-A/P3-B speedups and `build_native.py --numeric`.
 - 1.7.65 is the previous published tag; its record is at the [v1.7.65 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json).
 - Earlier results are recorded separately in [validation](docs/VALIDATION.md).

@@ -242,6 +242,44 @@ struct Problem {
             if(p.overlap_space>0 && std::min({distance(a,c,d),distance(b,c,d),distance(c,a,b),distance(d,a,b)})<p.overlap_space) return false;
             return true;
     }
+    double max_border_pair_step(const Vec& x0,const Vec& x1,I i,I j) const {
+        if(i<0 || j<0 || i>=p.nb || j>=p.nb) return 1.;
+        const I ia=p.border_edges[2*i],ib=p.border_edges[2*i+1],ic=p.border_edges[2*j],id=p.border_edges[2*j+1];
+        if(ia==ic || ia==id || ib==ic || ib==id) return 1.;
+        double best=1.;
+        auto check_pt_seg=[&](I ip,I iq,I ir) {
+            const double p0x=x0[2*ip],p0y=x0[2*ip+1],dpx=x1[2*ip]-p0x,dpy=x1[2*ip+1]-p0y;
+            const double q0x=x0[2*iq],q0y=x0[2*iq+1],dqx=x1[2*iq]-q0x,dqy=x1[2*iq+1]-q0y;
+            const double r0x=x0[2*ir],r0y=x0[2*ir+1],drx=x1[2*ir]-r0x,dry=x1[2*ir+1]-r0y;
+            const double ux=r0x-q0x,uy=r0y-q0y,dux=drx-dqx,duy=dry-dqy;
+            const double vx=p0x-q0x,vy=p0y-q0y,dvx=dpx-dqx,dvy=dpy-dqy;
+            const double a=dux*dvy-duy*dvx;
+            const double b=(ux*dvy-uy*dvx)+(dux*vy-duy*vx);
+            const double c=ux*vy-uy*vx;
+            auto test_root=[&](double t) {
+                if(!(t>1e-12 && t<best)) return;
+                const double ex=ux+t*dux,ey=uy+t*duy;
+                const double px=vx+t*dvx,py=vy+t*dvy;
+                const double len2=ex*ex+ey*ey;
+                if(len2<=1e-24) {best=t;return;}
+                const double s=(px*ex+py*ey)/len2;
+                if(s>=-0.05 && s<=1.05) best=t;
+            };
+            if(std::abs(a)<=1e-18) {
+                if(std::abs(b)>1e-18) test_root(-c/b);
+            } else {
+                const double disc=b*b-4.*a*c;
+                if(disc>=0.) {
+                    const double sd=std::sqrt(disc);
+                    test_root((-b-sd)/(2.*a));
+                    test_root((-b+sd)/(2.*a));
+                }
+            }
+        };
+        check_pt_seg(ia,ic,id);check_pt_seg(ib,ic,id);
+        check_pt_seg(ic,ia,ib);check_pt_seg(id,ia,ib);
+        return best;
+    }
     bool borders_valid(const Vec& x) const {
         if(!p.prevent_overlap) return true;
         auto pair_valid=[&](I i,I j) {
@@ -572,7 +610,7 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
                 history.clear();
             }
             double step=1,next_e=INF;
-            bool accepted=false,used_analytic=false;
+            bool accepted=false,used_analytic=false,used_border_ccd=false;
             const bool analytic_bound=(p.nt>=32768) && (p.prevent_flips || problem.reciprocal) && (problem.soft || problem.axes_only);
             problem.baseline_uv=keep_initial_border?&initial_uv:nullptr;
             problem.border_rejected=false;
@@ -598,12 +636,22 @@ static int uvck_solve_impl(const Input* input,double* output,Output* stats) noex
                         !problem.border_pair_valid(candidate,problem.witness_i,problem.witness_j)) {
                     problem.border_rejected=true;
                     ++problem.evaluations;
-                    step*=.5;
+                    if(search==0 && !used_border_ccd) {
+                        used_border_ccd=true;
+                        const double t_ccd=problem.max_border_pair_step(x,candidate,problem.witness_i,problem.witness_j);
+                        step=(t_ccd<1.)?std::min(0.5,std::max(0.75*t_ccd,1e-12)):0.5;
+                    } else {
+                        step*=.5;
+                    }
                     continue;
                 }
                 next_e=problem.energy(candidate);
                 if(next_e<=threshold) {accepted=true;break;}
-                if(search==0 && !used_analytic && problem.flip_rejected && !problem.border_rejected && analytic_bound) {
+                if(search==0 && !used_border_ccd && problem.border_rejected && problem.witness_i>=0) {
+                    used_border_ccd=true;
+                    const double t_ccd=problem.max_border_pair_step(x,candidate,problem.witness_i,problem.witness_j);
+                    step=(t_ccd<1.)?std::min(0.5,std::max(0.75*t_ccd,1e-12)):0.5;
+                } else if(search==0 && !used_analytic && problem.flip_rejected && !problem.border_rejected && analytic_bound) {
                     used_analytic=true;
                     const double t_min=problem.max_flip_free_step(x,candidate);
                     step=(t_min<1.)?std::min(0.5,std::max(0.8*t_min,1e-12)):0.5;

@@ -23,12 +23,12 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 
 ## 1.9.0 的变化
 
-- **约束拖拽（`uv.uvck_constrained_drag`）**：采用「拖拽中轻量实时预览 + 松手确认后高精度保约束重解」模式；拖拽阶段仅移动所选拉手顶点（`O(selected)`，支持 `X`/`Y` 锁轴、`右键`/`Esc` 精确还原），确认后（`左键`/`回车`/`空格`）执行高精度保约束求解并严格保持 H/V/Aligned/形状约束、固定点与无翻转/防重叠安全，F9 可精调偏移量与求解选项。
-- **松弛笔刷（`uv.uvck_relax_brush`）**：UV 编辑器交互式保约束松弛笔刷，采用整岛平滑高斯距离衰减（无硬圈边界）；`左键` 涂抹、`滚轮`/`[`/`]` 调节屏幕像素半径、`Shift+滚轮` 调节强度、`右键`/`回车`/`空格` 一次撤回确认、`Esc` 精确还原，全程严格保持 H/V/Aligned/形状约束、固定点与向量化无翻转/防重叠安全。
-- **默认折叠的「求解预设」抽屉**：在 UV 编辑器与 3D 视图侧边栏新增默认折叠的「求解预设」开关组（`防止重叠`、`固定边界条件`、`使用密度贴图`），自动作为标记、优化与交互工具的默认参数且可由 F9 随时覆盖，不改变既有默认行为与外部饼菜单算子 ID。
+- **整岛四边流 DAG 四边形化（`Quadrify`）**：规则纯四边形岛保持 `quad_grid.py` 精确整数网格路径；针对含内部极点与凹口的整块纯四边形岛，新增整岛无环四边流（Quad-Flow DAG）求解路径（解决 `"Different UV vertices occupy the same grid point"` 报错，严格保持固定点、用户已有约束、岛屿面积与零翻转/零重叠）；在混合多边形岛上仍保留局部无极点四边条带拉直路径。
+- **高可靠「防止重叠」约束求解**：勾选「防止重叠」后保留软接触屏障与 `SoftMetric` 预条件器，并在软阶段收敛后补充精确子空间吸附；当未固定单岛已实现 0 自交、0 翻转且仅擦碰邻岛时，自动执行最小刚体平移避让，显著提升复杂凹岛开启防重叠时的约束成功率。
+- **CPU / GPU / Python 全链路大幅提速**：重新编译 `uvck_engine`（零重哈希与亲和度感知多线程重叠检测、解析 CCD 边界步长、`n <= 8192` 启用 `SoftMetric`、L-BFGS 原地历史复用）与 `uvck_gpu` 宿主层（GPU 与锁页暂存缓冲跨阶段缓存、FNV-1a 常量复用、解析 CCD 边界步长），并向量化 `island_area` / `recovery` / `UVTopology` 与 `Quadrify` 的原生 `AcceptanceProbe` 安全检查。
+- **默认折叠的「求解预设」抽屉**：在 UV 编辑器与 3D 视图侧边栏新增默认折叠的「求解预设」开关组（`防止重叠`、`固定边界条件`、`使用密度贴图`），自动作为标记与优化的默认参数且可由 F9 随时覆盖，不改变既有默认行为与外部饼菜单算子 ID。
 - **边均匀分布（`uv.uvck_distribute_edges`）**：一次性轻量工具，支持沿选中 UV 边链按**等距分布**或**按模型边长**比例重新分布顶点，随后安全松弛岛屿其余部分；不新增持久约束类型与覆盖着色，保持固定点、既有约束与岛屿面积。
-- **实用化局部条带四边形化（`Quadrify`）**：规则纯四边形岛保持 `quad_grid.py` 精确整数网格路径；在混合面或含极点岛屿上，支持对选中的无极点四边条带执行拉直固定，并安全松弛其余面。
-- **Blender 5.3.0 实测通过**：沿用经源校验的 `1.7.66` 原生 CPU/GPU/读取器/`numeric_stage` 二进制（51/51 成员与 `blender --command extension build` 逐字节一致）；10/10 宿主测试（含无头 UI/i18n/图标与新功能测试 `test_v190_host.py` 及事件模拟交互测试 `test_v190_modal_host.py`）、31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`16.8481s` 总中位耗时，较 `1.7.62` 降 `57.20%`，较 `1.7.65` 降 `43.54%`；`coastal mark` `6.1915s`、`rocks mark` `5.6688s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
+- **Blender 5.3.0 实测通过**：49/49 成员与 `blender --command extension build` 逐字节一致；9/9 宿主测试全过（含 `test_v190_host.py` 无头 UI/图标/汉化、含极点整岛 Quadrify、防重叠邻岛避让与边均匀分布）；31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`11.2343s` 总中位耗时，较 `1.7.62` 降 `67.71%` / 提速 `3.10x`，较 `1.7.65` 降 `62.35%`；`coastal mark` `3.5481s`、`rocks mark` `3.7499s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
 
 ## 从已有 UV 开始
 
@@ -129,9 +129,10 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 四边形网格。F9 可以调整面比例和平均方式。它会整理岛屿的网格排列，与只把边界变成
 长方形的「方形化」不同。
 
-独立整数格算法支持规则纯四边形岛，包括拓扑兼容的网格孔洞。遇到极点、混合多边形、
-非流形连接或无法一致展开的网格闭环时，会保持原 UV，不输出局部结果。
-它不能保证适用于任意拓扑。
+独立整数格算法支持规则纯四边形岛（包括拓扑兼容的网格孔洞）；遇到含内部极点或凹口的
+整块纯四边形岛时，自动切换至无环四边流（Quad-Flow DAG）整岛求解路径，并严格保持固定点、
+已有约束、岛屿面积与零翻转/零重叠；混合多边形岛屿支持选中无极点四边条带局部拉直并安全
+松弛其余面，不可行输入安全拒绝且不产生半写。
 
 ![四边形网格整理前后对照](docs/images/quadrify.svg)
 
@@ -166,11 +167,11 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 
 ## 从源码构建
 
-Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.9.0 沿用经源校验的 `1.7.66` CPU/GPU 引擎、数值阶段辅助库与原生读取器二进制，并继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
+Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.9.0 重新编译了 CPU 引擎（`engine.cpp`）、CUDA GPU 宿主库（`engine_gpu.cpp`、`gpu_driver.hpp`）与 `numeric_stage`，沿用经源校验未改动的 `1.7.66` CUDA PTX（`gpu_metric.cu`）与原生读取器（`mesh_reader.cpp`），并继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
 **Windows x64 / MSVC**；宿主检查使用 Blender 5.3.0。从源码构建 CUDA 引擎需要
 CUDA Toolkit / NVRTC 12.4；预构建包只需要兼容 NVIDIA 驱动。读取器运行时使用
 Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
-以下命令是独立的完整重建示例，并未用于生成此发行包。
+以下命令是独立的完整重建示例；任何重新编译的制品均需重新验收并记录身份。
 
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --numeric --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
@@ -194,7 +195,6 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_selection_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_host.py
-blender --enable-event-simulate --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v190_modal_host.py -- --addon-root extracted/uv_constraint_kit --output test-results/v190-modal.json
 ```
 
 测试只生成合成网格，请在独立工厂配置进程中运行；不保存用户场景或偏好。
@@ -205,11 +205,11 @@ blender --enable-event-simulate --factory-startup --disable-autoexec --python-ex
 工厂 GUI 检查通过排队的鼠标移动事件检查活动中的 G/R/S 变换及撤回／重做；
 不包含人工鼠标输入或用户安装环境。1.7.55 最终包检查和验收范围见验收记录。
 
-使用前请阅读[已知问题](docs/KNOWN_ISSUES.md)。整岛网格四边形化仅支持规则纯四边形岛；在混合面或含极点岛上，可选中无极点四边条带进行局部拉直并松弛其余面。GPU 只用于符合条件的求解路径，不保证提速。
+使用前请阅读[已知问题](docs/KNOWN_ISSUES.md)。规则纯四边形岛走精确整数网格四边形化，含极点与凹口的整块纯四边形岛自动走四边流 DAG 整岛求解，混合面岛屿可选中无极点四边条带局部拉直并松弛其余面。GPU 只用于符合条件的求解路径，不保证提速。
 
 ## 版本区分
 
-- 1.9.0 为当前正式版：新增 `uv.uvck_constrained_drag`（约束拖拽）、`uv.uvck_relax_brush`（松弛笔刷）、默认折叠「求解预设」抽屉、`uv.uvck_distribute_edges` 与局部条带 `Quadrify`，完成 10/10 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB（`-57.20%` vs 1.7.62、`-43.54%` vs 1.7.65）与隔离 Blender 5.3.0 升级验收。
+- 1.9.0 为当前正式版：新增整岛四边流 DAG `Quadrify`、高可靠「防止重叠」接触求解与自动邻岛避让、重建 CPU/GPU/Python 全链路提速（较 `1.7.62` 降 `67.71%` / `3.10x`）、默认折叠「求解预设」抽屉与 `uv.uvck_distribute_edges`，完成 9/9 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB 与隔离 Blender 5.3.0 升级验收。
 - 1.7.66 为上一里程碑（P3-E/P3-A/P3-B 提速与 `build_native.py --numeric`）。
 - 1.7.65 为上一公开标签发行版，其记录见 [v1.7.65 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json)。
 - 更早结果分别记录在[验收记录](docs/VALIDATION.md)。
