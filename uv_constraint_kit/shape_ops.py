@@ -14,7 +14,7 @@ def _poll(context):
     return circle_ops._poll(context)
 
 
-def _run(context, function, **kwargs):
+def _run(context, function, pass_selected_faces=False, **kwargs):
     changed = face_count = new_uv_boundaries = 0
     skipped = []
     selected = False
@@ -29,12 +29,16 @@ def _run(context, function, **kwargs):
             del bm
             continue
         faces = circle.selected_island_faces(context, bm, uvl)
+        call_kwargs = dict(kwargs)
+        if pass_selected_faces:
+            from . import quadrify
+            call_kwargs["selected_faces"] = quadrify.selected_faces_in_edit(context, bm, uvl)
         del bm, uvl
         if not faces:
             continue
         selected = True
         try:
-            result = function(context, obj, faces, **kwargs)
+            result = function(context, obj, faces, **call_kwargs)
         except Exception as exc:
             skipped.append(str(exc))
             continue
@@ -102,8 +106,13 @@ class UVCK_OT_rectify(bpy.types.Operator):
     def poll(cls, context):
         return _poll(context)
 
+    def invoke(self, context, event):
+        ops._apply_preset_defaults(self, context, ("prevent_overlap",))
+        return self.execute(context)
+
     def execute(self, context):
         from . import rectangle
+        ops._apply_preset_defaults(self, context, ("prevent_overlap",))
         return _finish(
             self, context, rectangle.rectify,
             shape=self.shape, spacing=self.spacing,
@@ -118,7 +127,10 @@ class UVCK_OT_rectify(bpy.types.Operator):
 class UVCK_OT_quadrify(bpy.types.Operator):
     bl_idname = "uv.uvck_quadrify"
     bl_label = "Quadrify Island Grid"
-    bl_description = "Quadrify selected UV islands"
+    bl_description = (
+        "Quadrify regular quad UV islands, or straighten selected pole-free "
+        "quad strips on mixed/pole islands and relax the rest"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     shape: EnumProperty(
@@ -137,10 +149,16 @@ class UVCK_OT_quadrify(bpy.types.Operator):
     def poll(cls, context):
         return _poll(context)
 
+    def invoke(self, context, event):
+        ops._apply_preset_defaults(self, context, ("prevent_overlap",))
+        return self.execute(context)
+
     def execute(self, context):
         from . import quadrify
+        ops._apply_preset_defaults(self, context, ("prevent_overlap",))
         return _finish(
             self, context, quadrify.quadrify,
+            pass_selected_faces=True,
             shape=self.shape, average_shape=self.average_shape,
             skip_non_quads=self.skip_non_quads,
             respect_pins=self.respect_pins,

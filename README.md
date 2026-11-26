@@ -5,8 +5,8 @@
 **Keep the UV edges you care about straight or shaped while the rest of the
 island adjusts around them, inside Blender.**
 
-> **Version 1.7.66 — Windows x64 CPU+GPU with native reader.**
-> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.66/uv_constraint_kit-1.7.66.zip)
+> **Version 1.8.0 — Windows x64 CPU+GPU with native reader.**
+> [Download the extension](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.8.0/uv_constraint_kit-1.8.0.zip)
 > · [Validation scope](docs/VALIDATION.md).
 
 Select an edge run and give it a horizontal, vertical or straight-line
@@ -15,8 +15,8 @@ cutout. With **Optimize after marking** enabled, the affected island updates
 when you add or remove a constraint. Constraints remain available for later
 optimization, rather than being a one-time alignment.
 
-The [1.7.66 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.66)
-provides **`uv_constraint_kit-1.7.66.zip`**. Requires **Blender 5.2+**.
+The [1.8.0 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.8.0)
+provides **`uv_constraint_kit-1.8.0.zip`**. Requires **Blender 5.2+**.
 [Package identity](release_checks.json).
 [Known issues](docs/KNOWN_ISSUES.md).
 Eligible large solves use the GPU automatically; small meshes and some special
@@ -26,12 +26,13 @@ not require the CUDA Toolkit. Other hardware and unsupported GPU setups use the
 CPU path. Published builds remain in the
 [release history](https://github.com/goushi-1/uv-constraint-kit/releases).
 
-## What changed in 1.7.66
+## What changed in 1.8.0
 
-- **P3-E recovery, probe & topology overhead cuts**: Vectorized `AcceptanceProbe` / `_overlap_buffers` (lazy dict materialization), cached `selection_border_loops` with manifold radial connectivity, reused caller `UVTopology` across `LOCAL`/`METRIC` recovery, added fast orientation prechecks before pose restoration, and replaced unordered-map grid allocations in `check_overlaps_impl` with a flat CSR open-addressing spatial hash + AABB pre-filtering.
-- **P3-A early subspace handoff & P3-B analytic flip-free step**: Soft H/V warm-up stages exit early once `hard_subspace_ready` passes; GPU-scale (`nt >= 32768`) line search applies lazy Smith & Schaefer (2015) analytic flip-free bounds on flip rejection, with border-first energy rejection and `base_tol = 0.015` for `nt >= 32768`.
-- **Build tooling**: Added `scripts/build_native.py --numeric` to build `uvck_numeric_stage` and emit `numeric_stage.json` directly for `scripts/package.py --require-numeric` (48/48 member parity with `blender --command extension build`).
-- **Blender 5.3.0 verification**: Passed 31-case (62-op) P2 quality gates (`hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals), 8-run CPU-0 pinned 12-op ABBA+BAAB (`determinism_ok=true`, `17.2432s` total median vs `1.7.62`'s `40.7890s` [`-57.73%`] and `1.7.65`'s `29.8393s` [`-42.21%`]; `coastal mark` `6.3110s`, `rocks mark` `5.8432s`), 7/7 host checks, and isolated `1.7.65 -> 1.7.66` upgrade/F9/CPU+GPU acceptance.
+- **Collapsible pre-mark Solve Presets drawer**: Added a default-collapsed **Solve presets** drawer in the UV Editor and 3D Viewport sidebar panels with `Prevent overlaps`, `Fix boundary`, and `Use density map` switches wired into marking, optimizing, and F9 defaults without changing existing defaults or operator IDs.
+- **Auto Constrain H/V (`uv.uvck_auto_constrain_hv`)**: Automatically marks near-horizontal and near-vertical UV edges within a configurable angle threshold (default `20°`). Prioritizes local selected edges and falls back to selected island outer contours when no local edges are selected, with optional **Include sharp edges** (default off) in F9 and full `Optimize after marking` support.
+- **Distribute Edges (`uv.uvck_distribute_edges`)**: One-shot spacing tool supporting **Even** and **Geometry** (3D edge length ratio) redistribution along selected UV edge chains followed by safe island relaxation, preserving pins, existing constraints, and island area without adding persistent constraint types or overlays.
+- **Practical partial quad-strip `Quadrify`**: Keeps regular pure-quad islands on the exact `quad_grid.py` integer-grid path while allowing selected pole-free quad strips on mixed or pole-containing islands to be straightened, pinned, and safely relaxed with the rest of the island.
+- **Blender 5.3.0 verification**: Built on the verified `1.7.66` C++/CUDA/reader/`numeric_stage` native binaries (49/49 member parity between `blender --command extension build` and `scripts/package.py`). Passed 9/9 host tests (including new headless UI/i18n/icon & feature suite `test_v180_host.py`), 31-case (62-op) P2 quality gates (`hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals), 8-run CPU-0 pinned 12-op ABBA+BAAB (`determinism_ok=true`, `17.5101s` total median vs `1.7.62`'s `41.0957s` [`-57.39%`] and `1.7.65`'s `29.8393s` [`-41.32%`]; `coastal mark` `6.4161s`, `rocks mark` `5.9072s`), and isolated `1.7.66 -> 1.8.0` upgrade/F9/CPU+GPU acceptance.
 
 ## Start with an existing UV layout
 
@@ -197,7 +198,7 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 ## Building from source
 
 Python handles Blender's interface, selection, undo and overlays; C++17 engines
-handle numeric solves. Version 1.7.66 updates both the CPU and GPU engines (`gpu_metric.cu` and `mesh_reader.cpp` unchanged) and adds `--numeric` to `scripts/build_native.py` alongside `scripts/package.py --require-numeric`. Native builds target
+handle numeric solves. Version 1.8.0 reuses the source-matched `1.7.66` CPU, GPU, `numeric_stage`, and stable-ABI reader binaries unchanged (`scripts/build_native.py --numeric` and `scripts/package.py --require-numeric` remain supported). Native builds target
 **Windows x64 / MSVC**; host checks used Blender 5.3.0. Building the CUDA engine
 from source requires CUDA Toolkit / NVRTC 12.4; the prebuilt ZIP needs only a
 supported NVIDIA driver. The reader uses Blender's bundled Python at runtime.
@@ -208,7 +209,7 @@ produce this release.
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --numeric --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.7.66.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.8.0.zip
 ```
 
 `--reader` requires `--python-include` containing `Python.h` and
@@ -228,6 +229,7 @@ python tests/test_native.py --engine-dir build/native/bin/windows-x64
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_quad_grid_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_selection_host.py
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v180_host.py
 ```
 
 Use disposable Blender processes. Tests create synthetic meshes and do not
@@ -242,14 +244,16 @@ to sample active G/R/S transforms and undo/redo. It does not cover manual mouse
 input or a user's installed Blender environment. The 1.7.55 package checks and
 their scope are listed in the validation record.
 
-Read [known issues](docs/KNOWN_ISSUES.md) before production use. Pole vertices,
-inconsistent quad cycles and mixed polygon charts may be rejected by the grid
-tool. GPU execution is limited to eligible paths and does not guarantee a speedup.
+Read [known issues](docs/KNOWN_ISSUES.md) before production use. Whole-island
+grid quadrification requires regular pure-quad charts; on mixed or pole islands,
+select a pole-free quad strip to straighten and relax the rest. GPU execution is
+limited to eligible paths and does not guarantee a speedup.
 
 ## Versions
 
-- 1.7.66 is the current release; isolated Blender 5.3.0 upgrade, P2 62-op, and ABBA+BAAB checks passed.
-- 1.7.65 is the previous release; its record is at the [v1.7.65 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json).
+- 1.8.0 is the current release; adds collapsible pre-mark solve presets, `uv.uvck_auto_constrain_hv`, `uv.uvck_distribute_edges`, and partial pole-free quad-strip `Quadrify`, passing 9/9 host tests, P2 62-op, ABBA+BAAB, and isolated Blender 5.3.0 upgrade checks.
+- 1.7.66 is the previous milestone introducing P3-E/P3-A/P3-B speedups and `build_native.py --numeric`.
+- 1.7.65 is the previous published tag; its record is at the [v1.7.65 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json).
 - Earlier results are recorded separately in [validation](docs/VALIDATION.md).
 
 ## License

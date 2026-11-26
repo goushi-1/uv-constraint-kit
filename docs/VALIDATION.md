@@ -8,7 +8,8 @@
 | Previous published 1.7.55 | Recovery precheck input reuse; final package, GPU, GUI and modal checks passed. 上一已发布版，验收记录见下文。 |
 | Previous published release, 1.7.57 | CPU native reference-frame batching; solver equations unchanged. Final package, numeric, integration, GPU, GUI and modal checks passed. 已发布版，列出的最终验收均已通过。 |
 | Previous published release, 1.7.65 | P3 exact subspace handoff, `float32`-safe boundary guard, active-set contact pinning, and `numeric_stage` packaging parity (48 members). |
-| Current release, 1.7.66 | P3-E overhead cuts (CSR spatial hash, vectorized probes/borders), P3-A early subspace handoff, lazy P3-B analytic step (`nt >= 32768`), and `build_native.py --numeric`. 当前正式版：全量 P2 62/62 通过、8 轮 ABBA+BAAB 确定性通过（`-57.73%` vs 1.7.62、`-42.21%` vs 1.7.65）。 |
+| Previous milestone, 1.7.66 | P3-E overhead cuts (CSR spatial hash, vectorized probes/borders), P3-A early subspace handoff, lazy P3-B analytic step (`nt >= 32768`), and `build_native.py --numeric`. 上一里程碑：全量 P2 62/62 通过、8 轮 ABBA+BAAB 确定性通过（`-57.73%` vs 1.7.62、`-42.21%` vs 1.7.65）。 |
+| Current release, 1.8.0 | Collapsible pre-mark Solve Presets drawer, `uv.uvck_auto_constrain_hv`, `uv.uvck_distribute_edges`, and practical partial pole-free quad-strip `Quadrify` on top of the verified `1.7.66` native engines. 当前正式版：9/9 宿主测试、全量 P2 62/62 与 8 轮 ABBA+BAAB（`-57.39%` vs 1.7.62、`-41.32%` vs 1.7.65）全过。 |
 | Earlier previews and `experimental/numeric-trials` | Historical or experimental tracks; their reports do not validate the current package and are not cumulative speed claims. 历史／实验路径，单独保留证据边界。 |
 
 Historical timing values are observations on a particular machine, not a
@@ -39,13 +40,14 @@ included. 旧数据只用于说明开发状态，不替代本仓库的可复跑�
 - `test_uv_area_host.py` and `test_transaction_state_host.py`: live/numeric area, fallback and transaction rollback checks; see [BUILD.md](BUILD.md).
 - `test_triangle_frames_host.py`: mathutils numeric oracle, triangle-frame
   geometry preparation and ABI failure sentinels; see [`BUILD.md`](BUILD.md).
+- `test_v180_host.py`: headless UI panel/menu/preference draw (collapsed & expanded Solve Presets drawer), Blender RNA icon validation, `zh_HANS` translation coverage, preset wiring/override, `uv.uvck_auto_constrain_hv` (local edges, face fallback, UV sync, `include_sharp`), `uv.uvck_distribute_edges` (`EVEN`, `GEOMETRY`, pinned splits, closed border), and partial pole-free quad-strip `Quadrify`.
 - `check_public_tree.py`: source parsing, packaging metadata, private-path/
   credential-pattern scan, absent excluded adaptation, and required notices.
 
 Historical CPU and CPU+GPU summaries are retained in
 [`publication_checks.json`](../publication_checks.json) and
 [`gpu_publication_checks.json`](../gpu_publication_checks.json); they describe
-1.7.42, not the 1.7.66 release. The 1.7.66 final archive identity and gates are recorded in [release_checks.json](../release_checks.json).
+1.7.42, not the 1.8.0 release. The 1.8.0 final archive identity and gates are recorded in [release_checks.json](../release_checks.json).
 These summaries omit machine paths and raw logs.
 A passed automated check is not user acceptance of every GUI transformation or
 production mesh.
@@ -90,7 +92,20 @@ not establish acceptance for every machine, asset or workflow.
 
 公开恢复输入测试的 384 项是 live BMesh 与给定数字输入、沿用旧 cross oracle 的比较，不使用私有 1.7.54 基线；`--require-native` 要求读取器，但含 NaN 的 topology 用例允许现有 Python fallback。另有独立的 576 项私有 1.7.54 对 1.7.55 直接对照。性能数据是特定机器和有限用例的观测，不承诺通用提速或低于一秒；这些数据与下方历史 1.7.53 对 1.7.51 结果分开，不相加。检查结果仅覆盖所列主机和用例，不代表所有机器、资产或工作流。
 
-## Current release: 1.7.66 / 当前发行版
+## Current release: 1.8.0 / 当前发行版
+
+The 1.8.0 release adds the default-collapsed Solve Presets sidebar drawer (`Prevent overlaps`, `Fix boundary`, `Use density map`), `uv.uvck_auto_constrain_hv` (local edge priority + outer-contour fallback + optional `Include sharp edges`), `uv.uvck_distribute_edges` (`Even` / `Geometry` one-shot chain distribution + safe island relaxation), and partial pole-free quad-strip `Quadrify` fallback on mixed/pole islands while keeping regular quad islands on `quad_grid.py`. All native binaries (`uvck_engine`, `uvck_gpu` DLL+PTX, `uvck_numeric_stage`, and `uvck_reader`) are source-matched and unchanged from `1.7.66`.
+
+| Evidence | Status |
+| --- | --- |
+| Final ZIP | 49 members, 619,563 bytes, SHA-256 `2414bdc34a49c50f7c8de55754ac0343f09d25b30944a3f5a6acfe674271ba60`; 49/49 byte-for-byte parity between `blender --command extension build` and `scripts/package.py --require-gpu --require-reader --require-numeric` |
+| Unit & tree checks | `test_safety.py` (18/18), `test_native.py --gpu` (CPU + GPU + bad-PTX retry), `test_package.py` (10 tests), `check_public_tree.py` (`source_only=true`, 82 files) |
+| Blender 5.3.0 host tests | 9/9 passed (`test_host`, `test_v180_host`, `test_quad_grid_host`, `test_selection_host`, `test_transaction_state_host`, `test_recovery_input_host`, `test_gpu_host`, `test_gui_host`, `test_modal_host`) |
+| P2 31-case (62-op) suite vs 1.7.62 | Passed: `hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals |
+| 8-run CPU-0 pinned ABBA+BAAB (1.7.62 → 1.8.0) | Passed: `determinism_ok=true`, `hard_failures=0`, `soft_failures=0`; 12-op total median `41.0957s → 17.5101s` (`-57.39%`; `-41.32%` vs `1.7.65`'s `29.8393s`); `coastal mark` `6.4161s`, `rocks mark` `5.9072s`; total evals `-63.48%` (`14912 → 5446`), GPU energy `-83.26%` (`6050 → 1013`) |
+| Isolated Blender 5.3.0 lifecycle | Clean install + `1.7.66 -> 1.8.0` upgrade + mark/clear + undo/redo + CPU/GPU switch + F9 & sidebar visual check |
+
+## Previous milestone: 1.7.66 / 上一里程碑：1.7.66
 
 The 1.7.66 release adds `scripts/build_native.py --numeric`, P3-E Python/BMesh/probe/CSR-overlap overhead cuts, P3-A early subspace handoff, and lazy P3-B analytic flip-free bounds (`nt >= 32768`) with `base_tol = 0.015` for `nt >= 32768`. `gpu_metric.cu`, `mesh_reader.cpp`, and `numeric_stage.cpp` binaries are source-matched and unchanged.
 

@@ -56,7 +56,7 @@ def _coordinates(intervals, minimum, maximum, shape, average, seed_length, limit
 
 
 def solve(bm, uvl, face_ids, seed, shape='PER_FACE', average_shape=True,
-          min_limit=0.002):
+          min_limit=0.002, *, require_complete=True, apply=True, topo=None):
     """Lay out one complete UV chart; unsupported input raises without writes.
 
     EVEN uses unit grid spacing. FACE uses the seed's two geometric edge-pair
@@ -83,7 +83,8 @@ def solve(bm, uvl, face_ids, seed, shape='PER_FACE', average_shape=True,
     if any(len(face.loops) != 4 for face in faces):
         raise ValueError('Grid quadrification supports pure quad charts only')
 
-    topo = core.UVTopology(bm, uvl)
+    if topo is None:
+        topo = core.UVTopology(bm, uvl)
     rows = {}
     edge_rows = defaultdict(list)
     original = []
@@ -129,7 +130,8 @@ def solve(bm, uvl, face_ids, seed, shape='PER_FACE', average_shape=True,
             edge = entry[4]
             source = rows[entry[0]][0][entry[1]]
             for linked in edge.link_loops:
-                if linked.face.index not in wanted and core.UVTopology._edge_uv_matches(source, linked, uvl):
+                if (require_complete and linked.face.index not in wanted and
+                        core.UVTopology._edge_uv_matches(source, linked, uvl)):
                     raise ValueError('Select the complete connected UV chart')
 
     lattice = {}
@@ -217,14 +219,18 @@ def solve(bm, uvl, face_ids, seed, shape='PER_FACE', average_shape=True,
             raise ValueError('Grid layout would collapse at UV precision')
     # Commit only after the entire chart, including numeric output, is valid.
     # Retaining the exact initial float32 values also makes write errors atomic.
-    try:
-        for corners, ids, _points in rows.values():
-            for loop, group in zip(corners, ids):
-                loop[uvl].uv = output[group]
-    except Exception:
-        for loop, point in original:
-            loop[uvl].uv = point
-        raise
-    return {'algorithm': 'INTEGER_GRID', 'faces': len(faces),
-            'vertices': len(lattice),
-            'grid_width': max(xs) - min(xs), 'grid_height': max(ys) - min(ys)}
+    if apply:
+        try:
+            for corners, ids, _points in rows.values():
+                for loop, group in zip(corners, ids):
+                    loop[uvl].uv = output[group]
+        except Exception:
+            for loop, point in original:
+                loop[uvl].uv = point
+            raise
+    report = {'algorithm': 'INTEGER_GRID', 'faces': len(faces),
+              'vertices': len(lattice),
+              'grid_width': max(xs) - min(xs), 'grid_height': max(ys) - min(ys)}
+    if not apply:
+        report['output'] = output
+    return report

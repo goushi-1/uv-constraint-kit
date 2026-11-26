@@ -32,6 +32,30 @@ class UVCKPreferences(bpy.types.AddonPreferences):
         default=True,
     )
 
+    show_solve_presets: BoolProperty(
+        name="Solve presets",
+        description="Show or hide pre-mark solver preset switches in the sidebar panel",
+        default=False,
+    )
+
+    preset_prevent_overlap: BoolProperty(
+        name="Prevent overlaps",
+        description="Default Prevent Overlaps setting applied before marking or optimizing",
+        default=False,
+    )
+
+    preset_fix_boundary: BoolProperty(
+        name="Fix boundary",
+        description="Default Fix Boundary setting applied before marking or optimizing",
+        default=False,
+    )
+
+    preset_use_density_map: BoolProperty(
+        name="Use density map",
+        description="Default Use Density Map setting applied before marking or optimizing",
+        default=True,
+    )
+
     show_overlay: BoolProperty(
         name="Show constraint colours",
         description="Highlight constrained edges with RizomUV's colours in the "
@@ -178,6 +202,9 @@ class UVCKPreferences(bpy.types.AddonPreferences):
 
         col = layout.column(heading="Workflow")
         col.prop(self, "auto_optimize")
+        col.prop(self, "preset_prevent_overlap")
+        col.prop(self, "preset_fix_boundary")
+        col.prop(self, "preset_use_density_map")
 
         layout.separator()
         col = layout.column(heading="Overlay colours")

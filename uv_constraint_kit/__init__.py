@@ -29,7 +29,7 @@ layer from the mirror on load; see `core.CONSTRAINT_STORE`.
 
 import bpy
 
-from . import core, i18n, ops, overlay, prefs, ui, symmetry, circle_ops, shape_ops, live_symmetry
+from . import core, distribute, i18n, ops, overlay, prefs, ui, symmetry, circle_ops, shape_ops, live_symmetry
 from . import shape_constraints, native_engine
 
 __all__ = ("register", "unregister")
@@ -85,6 +85,8 @@ def register():
     bpy.utils.register_class(circle_ops.UVCK_OT_circularize)
     for cls in shape_ops.CLASSES:
         bpy.utils.register_class(cls)
+    for cls in distribute.CLASSES:
+        bpy.utils.register_class(cls)
     for cls in ui.CLASSES:
         bpy.utils.register_class(cls)
 
@@ -117,6 +119,8 @@ def unregister():
         bpy.app.handlers.load_post.remove(_on_data_changed)
 
     for cls in reversed(ui.CLASSES):
+        bpy.utils.unregister_class(cls)
+    for cls in reversed(distribute.CLASSES):
         bpy.utils.unregister_class(cls)
     for cls in reversed(shape_ops.CLASSES):
         bpy.utils.unregister_class(cls)

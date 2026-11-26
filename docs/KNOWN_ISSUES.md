@@ -1,12 +1,14 @@
 # Known issues / 已知问题
 
-The 1.7.66 final ZIP passed all recorded unit, host, P2 (62-op), ABBA+BAAB, and isolated Blender 5.3.0 acceptance gates. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
+The 1.8.0 final ZIP passed all recorded unit, 9/9 host (including `test_v180_host.py`), P2 (62-op), ABBA+BAAB, and isolated Blender 5.3.0 acceptance gates. See [VALIDATION.md](VALIDATION.md). Factory GUI checks inject Blender events; they are not manual OS mouse or user-install acceptance.
 
-- **Grid tool topology.** The public quadrification replacement has a narrower
-  supported topology than general UV tools. An integer-grid chart can contain
-  regular grid holes, but poles, inconsistent cycles, non-manifold links,
-  disconnected inputs and non-quads are rejected without a partial write.
-  不支持的拓扑会安全拒绝；不保证适用任意 UV 岛或与其它插件的结果一致。
+- **Grid tool topology.** Whole-island integer-grid quadrification requires regular
+  pure-quad charts (regular grid holes are allowed). On mixed-polygon or
+  pole-containing islands, select a pole-free quad strip to straighten and pin
+  that strip while safely relaxing the rest of the island; unsupported
+  whole-island inputs or selected strips containing poles/non-quads are rejected
+  without a partial write.
+  整岛网格四边形化仅支持规则纯四边形岛；在混合面或含极点岛上，选中无极点四边条带可局部拉直并安全松弛其余面，不支持的拓扑仍会安全拒绝且不产生半写。
 - **No RizomUV equivalence.** This repository does not contain its proprietary
   solver. Strong constraints can have no nonfolding feasible solution. Recovery
   and rollback can leave the UVs unchanged; inspect the operation's outcome.

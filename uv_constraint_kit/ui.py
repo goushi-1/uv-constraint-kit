@@ -19,6 +19,8 @@ class _ConstraintButtons:
         row.operator("uv.uvck_constrain_vertical", icon="EDGESEL")
         row = col.row(align=True)
         row.operator("uv.uvck_constrain_aligned", icon="EDGESEL")
+        row = col.row(align=True)
+        row.operator("uv.uvck_auto_constrain_hv", icon="SNAP_GRID")
 
         col = layout.column(align=True)
         col.operator("uv.uvck_unconstrain", icon="X")
@@ -30,13 +32,30 @@ class _ConstraintButtons:
         if prefs is not None:
             row.prop(prefs, "auto_optimize", text="", icon="AUTO")
 
-        row=layout.row(align=True)
+        if prefs is not None:
+            box = layout.box()
+            header = box.row(align=True)
+            header.prop(
+                prefs,
+                "show_solve_presets",
+                text="Solve presets",
+                icon="DISCLOSURE_TRI_DOWN" if prefs.show_solve_presets else "DISCLOSURE_TRI_RIGHT",
+                emboss=False,
+            )
+            if prefs.show_solve_presets:
+                sub = box.column(align=True)
+                sub.prop(prefs, "preset_prevent_overlap")
+                sub.prop(prefs, "preset_fix_boundary")
+                sub.prop(prefs, "preset_use_density_map")
+
+        row = layout.row(align=True)
         row.operator("uv.uvck_symmetrize", icon="MOD_MIRROR")
         if live_symmetry.has_links(context):
             row.operator("uv.uvck_stop_symmetry", icon="UNLINKED")
         layout.operator("uv.uvck_circularize", icon="MESH_CIRCLE")
         layout.operator("uv.uvck_rectify", icon="MESH_PLANE")
         layout.operator("uv.uvck_quadrify", icon="MESH_GRID")
+        layout.operator("uv.uvck_distribute_edges", icon="ALIGN_JUSTIFY")
 
         if prefs is not None:
             row = layout.row(align=True)
@@ -95,6 +114,7 @@ def _draw_menu(self, context):
     layout.operator("uv.uvck_constrain_horizontal", icon="EDGESEL")
     layout.operator("uv.uvck_constrain_vertical", icon="EDGESEL")
     layout.operator("uv.uvck_constrain_aligned", icon="EDGESEL")
+    layout.operator("uv.uvck_auto_constrain_hv", icon="SNAP_GRID")
     layout.separator()
     layout.operator("uv.uvck_unconstrain", icon="X")
     layout.separator()
@@ -103,6 +123,7 @@ def _draw_menu(self, context):
     layout.operator("uv.uvck_symmetrize", icon="MOD_MIRROR")
     layout.operator("uv.uvck_rectify", icon="MESH_PLANE")
     layout.operator("uv.uvck_quadrify", icon="MESH_GRID")
+    layout.operator("uv.uvck_distribute_edges", icon="ALIGN_JUSTIFY")
 
 
 CLASSES = (UVCK_PT_uv_editor, UVCK_PT_view3d)

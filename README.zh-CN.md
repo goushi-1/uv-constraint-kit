@@ -4,16 +4,16 @@
 
 **在 Blender 中，把需要控制的 UV 边保持为直线、圆形或方形，让岛屿其余部分围绕这些约束调整。**
 
-> **1.7.66 正式版：Windows x64 CPU+GPU，附原生读取器。**
-> [下载安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.7.66/uv_constraint_kit-1.7.66.zip)
+> **1.8.0 正式版：Windows x64 CPU+GPU，附原生读取器。**
+> [下载安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.8.0/uv_constraint_kit-1.8.0.zip)
 > · [查看验收范围](docs/VALIDATION.md)。
 
 选中一段边，可以添加水平、垂直或直线约束；选中一个完整闭合环，可以把开孔变圆，
 或把边界整理成长方形。开启「标记后自动优化」时，添加或解除约束后，相关 UV 岛会随之
 优化。约束会保留下来，供后续优化继续使用，而不只是当次把选区对齐。
 
-[1.7.66 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.7.66)
-提供 **`uv_constraint_kit-1.7.66.zip`**。需要 **Blender 5.2+**。
+[1.8.0 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.8.0)
+提供 **`uv_constraint_kit-1.8.0.zip`**。需要 **Blender 5.2+**。
 [安装包身份](release_checks.json)。
 [查看已知问题](docs/KNOWN_ISSUES.md)。
 符合条件的大型求解会自动使用 GPU；小网格和部分特殊求解仍使用 CPU。GPU 需要
@@ -21,12 +21,13 @@ NVIDIA 计算能力 8.9+ 显卡及支持 CUDA 12.4+ 的驱动。预构建扩展�
 Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 已发布的版本见[历史发行版](https://github.com/goushi-1/uv-constraint-kit/releases)。
 
-## 1.7.66 的变化
+## 1.8.0 的变化
 
-- **P3-E 恢复、探针与拓扑开销大幅削减**：向量化 `AcceptanceProbe` / `_overlap_buffers`（按需惰性构造字典）、基于流形径向连接向量化并缓存 `selection_border_loops`、`LOCAL`/`METRIC` 恢复复用调用方 `UVTopology` 与定向快速预检，并将 `check_overlaps_impl` 替换为零逐格堆分配的扁平 CSR 开放寻址空间哈希 + AABB 预过滤。
-- **P3-A 提前子空间移交与 P3-B 解析步长**：软惩罚热身阶段一旦通过 `hard_subspace_ready` 检查即提前退出；GPU 级大网格（`nt >= 32768`）启用惰性 Smith & Schaefer (2015) 无翻转解析步长、边界优先拦截与 `base_tol = 0.015`。
-- **构建工具链补齐**：`scripts/build_native.py` 新增 `--numeric` 参数，直接编译 `uvck_numeric_stage` 并生成 `numeric_stage.json`，与 `scripts/package.py --require-numeric` 及 `blender --command extension build` 达成 48/48 成员逐字节一致。
-- **Blender 5.3.0 实测通过**：31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 标记精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`17.2432s` 总中位耗时，较 `1.7.62` 的 `40.7890s` 降 `57.73%`，较 `1.7.65` 的 `29.8393s` 降 `42.21%`；`coastal mark` `6.3110s`、`rocks mark` `5.8432s`）；7/7 宿主测试及 `1.7.65 -> 1.7.66` 隔离升级/F9/CPU+GPU 验收全过。
+- **默认折叠的「求解预设」抽屉**：在 UV 编辑器与 3D 视图侧边栏新增默认折叠的「求解预设」开关组（`防止重叠`、`固定边界条件`、`使用密度贴图`），自动作为标记与优化前的默认参数且可由 F9 随时覆盖，不改变既有默认行为与外部饼菜单算子 ID。
+- **自动水平/垂直约束（`uv.uvck_auto_constrain_hv`）**：按角度阈值（默认 `20°`）自动标记接近水平和垂直的 UV 边；优先作用于当前局部选中边，无局部边选中时自动回退为选中岛屿外轮廓边界；F9 提供可选的「包含锐边」（默认关闭），并遵循全局「标记后自动优化」开关。
+- **边均匀分布（`uv.uvck_distribute_edges`）**：一次性轻量工具，支持沿选中 UV 边链按**等距分布**或**按模型边长**比例重新分布顶点，随后安全松弛岛屿其余部分；不新增持久约束类型与覆盖着色，保持固定点、既有约束与岛屿面积。
+- **实用化局部条带四边形化（`Quadrify`）**：规则纯四边形岛保持 `quad_grid.py` 精确整数网格路径；在混合面或含极点岛屿上，支持对选中的无极点四边条带执行拉直固定，并安全松弛其余面。
+- **Blender 5.3.0 实测通过**：沿用经源校验的 `1.7.66` 原生 CPU/GPU/读取器/`numeric_stage` 二进制（49/49 成员与 `blender --command extension build` 逐字节一致）；9/9 宿主测试（含新增无头 UI/i18n/图标与新功能测试 `test_v180_host.py`）、31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`17.5101s` 总中位耗时，较 `1.7.62` 降 `57.39%`，较 `1.7.65` 降 `41.32%`；`coastal mark` `6.4161s`、`rocks mark` `5.9072s`）；并完成 `1.7.66 -> 1.8.0` 隔离升级/F9/CPU+GPU 验收。
 
 ## 从已有 UV 开始
 
@@ -164,7 +165,7 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 
 ## 从源码构建
 
-Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.7.66 更新了 CPU 与 GPU 引擎（`gpu_metric.cu` 与 `mesh_reader.cpp` 未改动），并为 `scripts/build_native.py` 补充 `--numeric` 选项以对接 `scripts/package.py --require-numeric`。原生构建面向
+Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.8.0 沿用经源校验的 `1.7.66` CPU/GPU 引擎、数值阶段辅助库与原生读取器二进制，并继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
 **Windows x64 / MSVC**；宿主检查使用 Blender 5.3.0。从源码构建 CUDA 引擎需要
 CUDA Toolkit / NVRTC 12.4；预构建包只需要兼容 NVIDIA 驱动。读取器运行时使用
 Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
@@ -173,7 +174,7 @@ Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --numeric --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
 python tests/test_native.py --engine-dir build/native_gpu_reader/bin/windows-x64 --gpu
-python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.7.66.zip
+python scripts/package.py --native-dir build/native_gpu_reader/bin/windows-x64 --require-gpu --require-reader --require-numeric --output dist/uv_constraint_kit-1.8.0.zip
 ```
 
 `--reader` 必须同时提供 `--python-include`（其中有 `Python.h`）和
@@ -191,6 +192,7 @@ python tests/test_native.py --engine-dir build/native/bin/windows-x64
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_quad_grid_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_host.py
 blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_selection_host.py
+blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python tests/test_v180_host.py
 ```
 
 测试只生成合成网格，请在独立工厂配置进程中运行；不保存用户场景或偏好。
@@ -201,13 +203,13 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 工厂 GUI 检查通过排队的鼠标移动事件检查活动中的 G/R/S 变换及撤回／重做；
 不包含人工鼠标输入或用户安装环境。1.7.55 最终包检查和验收范围见验收记录。
 
-使用前请阅读[已知问题](docs/KNOWN_ISSUES.md)。新四边形化对极点、不一致拓扑
-闭环和混合多边形可能安全拒绝。GPU 只用于符合条件的求解路径，不保证提速。
+使用前请阅读[已知问题](docs/KNOWN_ISSUES.md)。整岛网格四边形化仅支持规则纯四边形岛；在混合面或含极点岛上，可选中无极点四边条带进行局部拉直并松弛其余面。GPU 只用于符合条件的求解路径，不保证提速。
 
 ## 版本区分
 
-- 1.7.66 为当前正式版，已完成隔离 Blender 5.3.0 升级、P2 62 操作（0 硬/软失败）及 8 轮 CPU-0 绑核 ABBA+BAAB 验收（`-57.73%` vs 1.7.62、`-42.21%` vs 1.7.65）。
-- 1.7.65 为上一发行版，其记录见 [v1.7.65 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json)。
+- 1.8.0 为当前正式版：新增默认折叠「求解预设」抽屉、`uv.uvck_auto_constrain_hv`、`uv.uvck_distribute_edges` 与局部条带 `Quadrify`，完成 9/9 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB（`-57.39%` vs 1.7.62、`-41.32%` vs 1.7.65）与隔离 Blender 5.3.0 升级验收。
+- 1.7.66 为上一里程碑（P3-E/P3-A/P3-B 提速与 `build_native.py --numeric`）。
+- 1.7.65 为上一公开标签发行版，其记录见 [v1.7.65 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json)。
 - 更早结果分别记录在[验收记录](docs/VALIDATION.md)。
 
 ## 许可

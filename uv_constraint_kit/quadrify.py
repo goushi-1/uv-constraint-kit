@@ -3,7 +3,99 @@
 import math
 import time
 import bmesh
-from . import core, safety, quad_grid
+from . import circle, core, safety, quad_grid
+
+
+def selected_faces_in_edit(context, bm, uvl):
+    """Explicitly selected visible faces prior to flooding to whole islands."""
+    sync = context.scene.tool_settings.use_uv_select_sync
+    if sync:
+        return {f.index for f in bm.faces if not f.hide and f.select}
+    mode = context.scene.tool_settings.uv_select_mode
+    if mode in {'FACE', 'ISLAND'}:
+        return {f.index for f in bm.faces if not f.hide and f.select and f.uv_select}
+    if mode == 'EDGE':
+        return {f.index for f in bm.faces
+                if not f.hide and f.select and all(lp.uv_select_edge for lp in f.loops)}
+    return {f.index for f in bm.faces
+            if not f.hide and f.select and all(lp.uv_select_vert for lp in f.loops)}
+
+
+def _connected_quad_components(bm, uvl, face_ids):
+    """Split a face subset into UV-edge-connected components."""
+    wanted = set(face_ids)
+    visited = set()
+    components = []
+    for start in sorted(wanted):
+        if start in visited:
+            continue
+        comp = set()
+        stack = [start]
+        visited.add(start)
+        while stack:
+            fi = stack.pop()
+            comp.add(fi)
+            for loop in bm.faces[fi].loops:
+                for linked in loop.edge.link_loops:
+                    other = linked.face.index
+                    if other in wanted and other not in visited:
+                        if core.UVTopology._edge_uv_matches(loop, linked, uvl):
+                            visited.add(other)
+                            stack.append(other)
+        components.append(comp)
+    return components
+
+
+def _output_pose(bm, topo, face_ids, output):
+    """Area and centroid of a proposed {vgroup: (u, v)} mapping on `face_ids`."""
+    area = 0.0
+    cx = cy = 0.0
+    for fi in sorted(face_ids):
+        face = bm.faces[fi]
+        points = [output[topo.loop_to_vgroup[topo.loop_pos[lp]]] for lp in face.loops]
+        twice = sum(a[0]*b[1] - b[0]*a[1]
+                    for a, b in zip(points, points[1:] + points[:1]))
+        signed = twice * 0.5
+        if abs(signed) <= 1e-14:
+            continue
+        px = sum((a[0]+b[0])*(a[0]*b[1]-b[0]*a[1])
+                 for a, b in zip(points, points[1:] + points[:1])) / (6*signed)
+        py = sum((a[1]+b[1])*(a[0]*b[1]-b[0]*a[1])
+                 for a, b in zip(points, points[1:] + points[:1])) / (6*signed)
+        weight = abs(signed)
+        area += weight
+        cx += px * weight
+        cy += py * weight
+    if area <= 1e-14:
+        raise ValueError('UV island has zero area')
+    return area, (cx/area, cy/area)
+
+
+def _build_partial_strip(topo, island, shape, average_shape, min_limit, strip_faces):
+    """Solve pole-free quad strip(s) inside `island`, fitted to their own UV pose."""
+    bm, uvl = topo.bm, topo.uvl
+    components = _connected_quad_components(bm, uvl, strip_faces)
+    held = {}
+    for sub in components:
+        sub_seed = _seed(bm, uvl, sub)
+        if sub_seed is None:
+            raise ValueError('Island has no visible quad face')
+        report = quad_grid.solve(
+            bm, uvl, sub, sub_seed, shape, average_shape, min_limit,
+            require_complete=False, apply=False, topo=topo,
+        )
+        sub_output = report['output']
+        orig_area, orig_center = _pose(bm, uvl, sub)
+        curr_area, curr_center = _output_pose(bm, topo, sub, sub_output)
+        scale = math.sqrt(orig_area / curr_area)
+        for group, (x, y) in sub_output.items():
+            target = (orig_center[0] + (x - curr_center[0]) * scale,
+                      orig_center[1] + (y - curr_center[1]) * scale)
+            if group in held and math.dist(held[group], target) > 1e-6:
+                raise ValueError('Selected quad strips conflict at a shared UV vertex')
+            held[group] = target
+    return held, dict(progressive_metric=True, strip_faces=sorted(strip_faces),
+                      strips=len(components))
 
 
 def _signed_area(points):
@@ -140,7 +232,8 @@ def _seed(bm, uvl, island):
 
 
 def _island(context, obj, island, shape, average_shape, skip_non_quads,
-            respect_pins, prevent_overlap, preserve_uv_connections):
+            respect_pins, prevent_overlap, preserve_uv_connections,
+            selected_faces=None):
     bm = bmesh.from_edit_mesh(obj.data)
     core.prepare_bm(bm)
     uvl = core.uv_layer(bm)
@@ -159,11 +252,42 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
                   for positions in topo.vgroup_loops.values()
                   if any(state['pins'][p] and topo.loops[p].face.index in island for p in positions)]
     started = time.perf_counter()
+    algorithm = 'INTEGER_GRID'
+    strip_faces = []
     try:
         image = getattr(getattr(context, 'space_data', None), 'image', None)
         min_limit = 1.0/image.size[0] if image and image.size[0] else 0.002
-        quad_grid.solve(bm, uvl, island, seed, shape, average_shape, min_limit)
-        _fit_pose(bm, uvl, island, area, center)
+        try:
+            quad_grid.solve(bm, uvl, island, seed, shape, average_shape, min_limit, topo=topo)
+            _fit_pose(bm, uvl, island, area, center)
+        except ValueError:
+            strip = {fi for fi in (selected_faces or ())
+                     if fi in island and not bm.faces[fi].hide}
+            if not (strip and strip < island and
+                    all(len(bm.faces[fi].loops) == 4 for fi in strip)):
+                raise
+            del topo, uvl, bm
+            builder = (lambda t_topo, t_island, _spacing, _aspect:
+                       _build_partial_strip(t_topo, t_island, shape, average_shape,
+                                            min_limit, strip))
+            reshape = circle._reshape(
+                context, obj, island, builder,
+                spacing='UV', iterations=150,
+                respect_pins=respect_pins,
+                prevent_overlap=prevent_overlap,
+                template_only=False,
+            )
+            bm = bmesh.from_edit_mesh(obj.data)
+            core.prepare_bm(bm)
+            uvl = core.uv_layer(bm)
+            topo = core.UVTopology(bm, uvl)
+            if not reshape.get('changed'):
+                reason = (reshape['skipped'][0] if reshape.get('skipped')
+                          else 'Partial quad strip relaxation failed')
+                raise ValueError(reason)
+            algorithm = 'PARTIAL_QUAD_STRIP'
+            strip_faces = sorted(strip)
+
         loops = core.loops_in_order(bm)
         if respect_pins:
             for positions, anchor in pin_groups:
@@ -185,7 +309,7 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
         after_area, after_center = _pose(bm, uvl, island)
         area_error = abs(after_area/area-1.0)
         center_error = math.dist(after_center, center)
-        if area_error > 1e-5 or center_error > 1e-7:
+        if area_error > 1e-5 or (algorithm == 'INTEGER_GRID' and center_error > 1e-7):
             raise ValueError('Area or centroid restoration failed')
         changed = any(math.dist(tuple(lp[uvl].uv), state['uv'][p]) > 1e-7
                       for p, lp in enumerate(loops) if lp.face.index in island)
@@ -197,19 +321,25 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
             area_error = center_error = 0.0
         row = dict(passed=True, changed=changed, faces=sorted(island), seed=seed,
                    chosen_seed=seed, quads=len(island)-non_quads, non_quads=non_quads,
-                   algorithm='INTEGER_GRID', shape=shape, average_shape=average_shape,
+                   algorithm=algorithm, shape=shape, average_shape=average_shape,
                    before_quality=before_quality, quality=quality,
                    area_error=area_error, centroid_error=center_error,
                    new_uv_boundaries=len(cuts), new_uv_boundary_edges=_connection_rows(cuts),
                    uv_connections_before=len(connections), uv_connections_after=len(current_connections),
                    elapsed_seconds=time.perf_counter()-started)
+        if strip_faces:
+            row['strip_faces'] = strip_faces
     except Exception as error:
         reason = str(error) or type(error).__name__
         error.__traceback__ = error.__context__ = error.__cause__ = None
+        bm = bmesh.from_edit_mesh(obj.data)
+        core.prepare_bm(bm)
+        uvl = core.uv_layer(bm)
         _restore_uv(bm, uvl, state['uv'])
         row = dict(faces=sorted(island), skipped=True, reason=reason,
                    chosen_seed=seed, elapsed_seconds=time.perf_counter()-started)
     _restore_marks(bm, uvl, state)
+    topo = None
     del topo, uvl, bm
     bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
     # The update may flush selection; restore exact marks without changing UVs.
@@ -221,10 +351,12 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
 
 def quadrify(context, obj, faces, mode=None, respect_pins=True,
              prevent_overlap=False, preserve_uv_connections=False,
-             shape='PER_FACE', average_shape=True, skip_non_quads=False):
-    """Integer-grid quadrification of whole islands touched by the selection.
+             shape='PER_FACE', average_shape=True, skip_non_quads=False,
+             selected_faces=None):
+    """Integer-grid quadrification for regular quad islands, with partial
+    pole-free quad strip fallback + safe island relaxation on mixed/pole islands.
 
-    Preserve the original island area/centroid and all marks/selection flags.
+    Preserve the original island area and all marks/selection flags.
     Inconsistent lattice topology is rejected without introducing UV cuts.
     The old ``mode`` argument remains accepted for existing scripts.
     """
@@ -247,6 +379,7 @@ def quadrify(context, obj, faces, mode=None, respect_pins=True,
         result['skipped'].append('Mesh has no UV map')
         return result
     topo = core.UVTopology(bm, uvl)
+    explicit = {int(i) for i in (faces if selected_faces is None else selected_faces)}
     requested = core.islands_touching_faces(topo, {int(i) for i in faces})
     from . import live_symmetry
     requested = live_symmetry.source_faces(obj, requested)
@@ -254,7 +387,8 @@ def quadrify(context, obj, faces, mode=None, respect_pins=True,
     del topo, uvl, bm
     for island in groups:
         row = _island(context, obj, island, shape, average_shape, skip_non_quads,
-                      respect_pins, prevent_overlap, preserve_uv_connections)
+                      respect_pins, prevent_overlap, preserve_uv_connections,
+                      selected_faces=explicit & island)
         result['islands'].append(row)
         if row.get('skipped'):
             result['skipped'].append(row['reason'])

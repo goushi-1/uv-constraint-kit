@@ -1,20 +1,20 @@
 {
-  "version": "1.7.66",
+  "version": "1.8.0",
   "status": "passed",
   "release_track": "Windows x64 CPU + GPU + numeric_stage + native reader",
   "date": "2026-11-26",
   "package": {
-    "filename": "uv_constraint_kit-1.7.66.zip",
-    "sha256": "15e8bde4e6b056f529866d4de4592dda6644c8e9a80daab05e8f784236d13db6",
-    "bytes": 610452,
-    "members": 48,
+    "filename": "uv_constraint_kit-1.8.0.zip",
+    "sha256": "2414bdc34a49c50f7c8de55754ac0343f09d25b30944a3f5a6acfe674271ba60",
+    "bytes": 619563,
+    "members": 49,
     "extension_build_and_package_script_parity": true
   },
   "blender": "5.3.0",
   "gates": {
     "package_identity": {
       "status": "passed",
-      "members": 48,
+      "members": 49,
       "crc": true,
       "source_and_extracted_match": true,
       "sensitive_pattern_scan": true,
@@ -28,14 +28,12 @@
         "numeric_stage",
         "stable-ABI reader"
       ],
-      "rebuilt_components": [
-        "CPU",
-        "CUDA GPU host",
-        "numeric_stage"
-      ],
+      "rebuilt_components": [],
       "reused_source_matched_artifacts": [
-        "CUDA PTX (gpu_metric.cu unchanged)",
-        "stable-ABI reader (mesh_reader.cpp unchanged)"
+        "CPU engine (engine.cpp unchanged from 1.7.66)",
+        "CUDA GPU host & PTX (engine_gpu.cpp, gpu_driver.hpp, gpu_metric.cu unchanged from 1.7.66)",
+        "numeric_stage (numeric_stage.cpp unchanged from 1.7.66)",
+        "stable-ABI reader (mesh_reader.cpp unchanged from 1.7.66)"
       ]
     },
     "native_numeric": {
@@ -58,6 +56,8 @@
       "status": "passed",
       "tests": [
         "test_host",
+        "test_v180_host",
+        "test_quad_grid_host",
         "test_selection_host",
         "test_transaction_state_host",
         "test_recovery_input_host",
@@ -65,7 +65,7 @@
         "test_gui_host",
         "test_modal_host"
       ],
-      "passed_count": 7
+      "passed_count": 9
     },
     "p2_quality_suite": {
       "status": "passed",
@@ -87,14 +87,14 @@
       "determinism_ok": true,
       "hard_failures": 0,
       "soft_failures": 0,
-      "baseline_12op_median_s": 40.7889954,
-      "candidate_12op_median_s": 17.243195,
-      "time_delta_pct_vs_1_7_62": -57.7259,
-      "time_delta_pct_vs_1_7_65": -42.2131,
+      "baseline_12op_median_s": 41.09565305,
+      "candidate_12op_median_s": 17.51012545,
+      "time_delta_pct_vs_1_7_62": -57.3918,
+      "time_delta_pct_vs_1_7_65": -41.3186,
       "eval_delta_pct_vs_1_7_62": -63.4791,
       "gpu_energy_delta_pct_vs_1_7_62": -83.2562,
-      "coastal_mark_median_s": 6.311037,
-      "rocks_mark_median_s": 5.843205
+      "coastal_mark_median_s": 6.41605205,
+      "rocks_mark_median_s": 5.90719095
     }
   }
 }

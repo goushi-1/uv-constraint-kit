@@ -48,8 +48,13 @@ class UVCK_OT_circularize(bpy.types.Operator):
     def poll(cls, context):
         return _poll(context)
 
+    def invoke(self, context, event):
+        ops._apply_preset_defaults(self, context, ("prevent_overlap",))
+        return self.execute(context)
+
     def execute(self, context):
         started = perf_counter()
+        ops._apply_preset_defaults(self, context, ("prevent_overlap",))
         changed = 0
         face_count = 0
         skipped = []

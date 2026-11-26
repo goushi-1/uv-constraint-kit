@@ -165,6 +165,7 @@ class PackageTests(unittest.TestCase):
                 self.assertIsNone(archive.testzip())
                 names = set(archive.namelist())
                 for name in (
+                    "distribute.py",
                     "mesh_reader.py",
                     "native_source/mesh_reader.cpp",
                     "numeric_stage.py",
