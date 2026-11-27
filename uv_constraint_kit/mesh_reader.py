@@ -17,6 +17,7 @@ _attempted = False
 _error = None
 _captures = 0
 _reads = 0
+_writes = 0
 _loop_collects = 0
 _record_reads = 0
 _area_reads = 0
@@ -93,6 +94,127 @@ def read_uv(loops, layer):
     return value
 
 
+def write_uv(loops, layer, uv):
+    """Batch-write UV pairs onto a live loop sequence."""
+    global _writes
+    module = _load()
+    function = getattr(module, 'write_uv', None)
+    if function is None:
+        rows = uv.tolist() if isinstance(uv, np.ndarray) else uv
+        for loop, xy in zip(loops, rows):
+            loop[layer].uv = xy
+        return
+    _main_thread()
+    arr = np.ascontiguousarray(uv, dtype=np.float64).reshape(-1, 2)
+    function(loops, layer, arr.tobytes())
+    _writes += 1
+
+
+def write_uv_indexed(loops, layer, positions, uv):
+    """Batch-write UV pairs onto indexed slots of a live loop sequence."""
+    global _writes
+    pos_arr = np.ascontiguousarray(positions, dtype=np.int64).reshape(-1)
+    if not len(pos_arr):
+        return
+    uv_arr = np.ascontiguousarray(uv, dtype=np.float64).reshape(-1, 2)
+    module = _load()
+    function = getattr(module, 'write_uv_indexed', None)
+    if function is None:
+        for p, xy in zip(pos_arr.tolist(), uv_arr.tolist()):
+            loops[p][layer].uv = xy
+        return
+    _main_thread()
+    function(loops, layer, pos_arr.tobytes(), uv_arr.tobytes())
+    _writes += 1
+
+
+def read_pins(loops, layer):
+    """Read pin_uv flags into a compact bytes mask (0/1 per loop)."""
+    module = _load()
+    function = getattr(module, 'read_pins', None)
+    if function is None:
+        return bytes(1 if loop[layer].pin_uv else 0 for loop in loops)
+    _main_thread()
+    return function(loops, layer)
+
+
+def write_pins(loops, layer, pins):
+    """Write pin_uv flags from a bytes mask, ndarray, or iterable of bools."""
+    if isinstance(pins, bytes):
+        mask = pins
+    elif isinstance(pins, bytearray):
+        mask = bytes(pins)
+    elif isinstance(pins, np.ndarray):
+        mask = np.ascontiguousarray(pins, dtype=np.bool_).tobytes()
+    else:
+        mask = bytes(1 if p else 0 for p in pins)
+    module = _load()
+    function = getattr(module, 'write_pins', None)
+    if function is None:
+        for loop, flag in zip(loops, mask):
+            loop[layer].pin_uv = bool(flag)
+        return
+    _main_thread()
+    function(loops, layer, mask)
+
+
+def read_uv_select(loops):
+    """Read uv_select_edge/uv_select_vert flags into a compact bytes mask, or None."""
+    module = _load()
+    function = getattr(module, 'read_uv_select', None)
+    if function is None:
+        return None
+    _main_thread()
+    return function(loops)
+
+
+def write_uv_select(loops, mask):
+    """Write uv_select_edge/uv_select_vert flags from a compact bytes mask."""
+    raw = bytes(mask) if not isinstance(mask, bytes) else mask
+    module = _load()
+    function = getattr(module, 'write_uv_select', None)
+    if function is None:
+        for pos, loop in enumerate(loops):
+            if pos < len(raw):
+                b = raw[pos]
+                loop.uv_select_edge = bool(b & 1)
+                loop.uv_select_vert = bool(b & 2)
+        return
+    _main_thread()
+    function(loops, raw)
+
+
+def set_uv_select_all(loops, layer, vert_flag, edge_flag, pin_mode=-1):
+    """Bulk-set uv_select_vert, uv_select_edge, and optionally pin_uv (-1=leave)."""
+    module = _load()
+    function = getattr(module, 'set_uv_select_all', None)
+    if function is None:
+        vf, ef = bool(vert_flag), bool(edge_flag)
+        if pin_mode >= 0:
+            pf = bool(pin_mode)
+            for loop in loops:
+                loop.uv_select_vert = vf
+                loop.uv_select_edge = ef
+                loop[layer].pin_uv = pf
+        else:
+            for loop in loops:
+                loop.uv_select_vert = vf
+                loop.uv_select_edge = ef
+        return
+    _main_thread()
+    function(loops, layer, int(bool(vert_flag)), int(bool(edge_flag)), int(pin_mode))
+
+
+def constrained_loops(bm, layer):
+    """Scan face-major constrained (position, face_index) flat list, or None."""
+    module = _load()
+    function = getattr(module, 'constrained_loops', None)
+    if function is None:
+        return None
+    _main_thread()
+    return function(bm, layer)
+
+
 def collect_loops(bm):
     """Fresh face-major handles, or None when the optional method is absent."""
     global _loop_collects
@@ -133,10 +255,11 @@ def island_area(faces, layer):
 
 
 def diagnostics(reset=False):
-    global _captures, _reads, _loop_collects, _record_reads, _area_reads
+    global _captures, _reads, _writes, _loop_collects, _record_reads, _area_reads
     value = dict(attempted=_attempted, loaded=_module is not None, error=_error,
-                 captures=_captures, reads=_reads, loop_collects=_loop_collects,
-                 record_reads=_record_reads, area_reads=_area_reads)
+                 captures=_captures, reads=_reads, writes=_writes,
+                 loop_collects=_loop_collects, record_reads=_record_reads,
+                 area_reads=_area_reads)
     if reset:
-        _captures = _reads = _loop_collects = _record_reads = _area_reads = 0
+        _captures = _reads = _writes = _loop_collects = _record_reads = _area_reads = 0
     return value

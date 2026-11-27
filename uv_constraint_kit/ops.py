@@ -201,7 +201,7 @@ def _describe(stats, faces, solved):
            before.get("density", 0.0), after.get("density", 0.0)))
 
 
-def _optimize_islands(context, obj, face_indices, fix_boundary=False, parameters=None):
+def _optimize_islands(context, obj, face_indices, fix_boundary=False, parameters=None, *, _topo_box=None):
     """Re-solve the given islands: constrain, re-unwrap, restore the pose.
 
     This is RizomUV's Optimize. Every island is re-solved with the constrained
@@ -217,11 +217,15 @@ def _optimize_islands(context, obj, face_indices, fix_boundary=False, parameters
     from . import live_symmetry
     face_indices = live_symmetry.source_faces(obj, face_indices)
     if not face_indices:
+        if _topo_box:
+            _topo_box.clear()
         return 0, 0, {}
     settings = _optimize_settings()
     if parameters:
         settings.update(parameters)
     if settings["mix"] <= 0.0:
+        if _topo_box:
+            _topo_box.clear()
         return 0, 0, {"skipped": True}
     iterations, step = _relax_settings(context)
     method, margin = _unwrap_settings(context)
@@ -230,6 +234,8 @@ def _optimize_islands(context, obj, face_indices, fix_boundary=False, parameters
     core.prepare_bm(bm)
     uvl = bm.loops.layers.uv.active
     if uvl is None:
+        if _topo_box:
+            _topo_box.clear()
         return 0, 0, {}
     positions = core.constrained_loops(bm, only_faces=face_indices)
     # `bpy.ops.uv.unwrap` rebuilds the edit mesh, so no BMesh handle may be
@@ -238,11 +244,14 @@ def _optimize_islands(context, obj, face_indices, fix_boundary=False, parameters
 
     from . import shape_constraints
     with shape_constraints.preserve(obj,face_indices) as shapes:
+        if shapes is not None and _topo_box:
+            _topo_box.clear()
         result = core.rebuild_islands(context, obj, face_indices, positions,
                                  method=method, margin=margin,
                                  iterations=iterations, step=step,
                                  fix_boundary=fix_boundary,
                                  _report_quality=False,
+                                 _topo_box=_topo_box,
                                  **settings)
         if shapes is not None:shapes['accepted']=not result[2].get('rejected')
     result[2]['engine'] = 'REPLICA'
@@ -251,14 +260,15 @@ def _optimize_islands(context, obj, face_indices, fix_boundary=False, parameters
     return result
 
 
-def _solve_and_record(context, obj, faces, fix_boundary=False, parameters=None):
+def _solve_and_record(context, obj, faces, fix_boundary=False, parameters=None, *, _topo_box=None):
     """Shared solve body; the calling operator owns its single undo step."""
     started = perf_counter()
     stats = None
     _set_last_optimize_result(obj, "RUNNING")
     try:
         solved, flips, stats = _optimize_islands(
-            context, obj, faces, fix_boundary=fix_boundary, parameters=parameters)
+            context, obj, faces, fix_boundary=fix_boundary, parameters=parameters,
+            _topo_box=_topo_box)
         health = stats.get("health") or {}
         if stats.get('rejected'):
             _set_last_optimize_result(obj, "REJECTED", _rejection_reason(stats),
@@ -278,6 +288,8 @@ def _solve_and_record(context, obj, faces, fix_boundary=False, parameters=None):
         _set_last_optimize_result(obj, "ERROR", str(exc))
         raise
     finally:
+        if _topo_box:
+            _topo_box.clear()
         elapsed = perf_counter()-started
         last_optimize_result['elapsed_seconds'] = elapsed
         last_optimize_result['engine'] = 'REPLICA'
@@ -296,17 +308,30 @@ def _auto_optimize_edges(context, fix_boundary, positions, parameters=None):
     bm = bmesh.from_edit_mesh(obj.data)
     core.prepare_bm(bm)
     uvl = bm.loops.layers.uv.active
-    loops = core.loops_in_order(bm)
-    source_faces = {loops[p].face.index for p in positions}
     visible_faces = core.visible_editable_faces(bm, context)
-    faces = core.connected_uv_faces(bm, uvl, source_faces) & visible_faces
-    del bm, uvl, loops
+    topo_box = None
+    if uvl is not None and len(bm.faces) >= 4096 and core.mesh_reader._load() is not None:
+        topo = core.UVTopology(bm, uvl)
+        source_faces = {int(topo.loop_faces[p]) for p in positions}
+        roots = {topo.face_island[fi] for fi in source_faces}
+        faces = {fi for r in roots for fi in topo.island_faces[r]} & visible_faces
+        topo_box = [(topo, obj.data.as_pointer(), uvl.name)]
+        del topo, bm, uvl
+    else:
+        loops = core.loops_in_order(bm)
+        source_faces = {loops[p].face.index for p in positions}
+        faces = core.connected_uv_faces(bm, uvl, source_faces) & visible_faces
+        del bm, uvl, loops
     try:
         _, _, stats = _solve_and_record(
             context, obj, faces, fix_boundary,
-            parameters=dict(parameters or {}, respect_uv_selection=False))
+            parameters=dict(parameters or {}, respect_uv_selection=False),
+            _topo_box=topo_box)
     except Exception:
         return {'CANCELLED'}
+    finally:
+        if topo_box:
+            topo_box.clear()
     return {'CANCELLED'} if stats.get('rejected') else {'FINISHED'}
 
 
@@ -660,6 +685,7 @@ class UVCK_OT_optimize(bpy.types.Operator):
 
         # Resolve UV selection inside the visible scope; with no UV selection,
         # optimize the visible mesh-selection scope (or all visible faces in sync mode).
+        topo_box = None
         if self.target_faces:
             requested = {int(i) for i in self.target_faces.split(",")}
             if any(i < 0 or i >= len(bm.faces) for i in requested):
@@ -682,11 +708,20 @@ class UVCK_OT_optimize(bpy.types.Operator):
             if selected_faces:
                 # The flood may cross into hidden neighbors; keep this action
                 # within the visible, editable part of the current edit mesh.
-                faces = core.connected_uv_faces(bm, uvl, selected_faces) & visible_faces
+                if len(bm.faces) >= 4096 and len(selected_faces) < len(bm.faces) and core.mesh_reader._load() is not None:
+                    topo = core.UVTopology(bm, uvl)
+                    roots = {topo.face_island[fi] for fi in selected_faces}
+                    faces = {fi for r in roots for fi in topo.island_faces[r]} & visible_faces
+                    topo_box = [(topo, obj.data.as_pointer(), uvl.name)]
+                    del topo
+                else:
+                    faces = core.connected_uv_faces(bm, uvl, selected_faces) & visible_faces
             else:
                 faces = set(visible_faces)
 
         if not faces:
+            if topo_box:
+                topo_box.clear()
             del bm, uvl
             _set_last_optimize_result(obj, "CANCELLED", "no visible face selection")
             self.report({"WARNING"}, t("No visible selected UV or mesh faces to optimize"))
@@ -698,7 +733,8 @@ class UVCK_OT_optimize(bpy.types.Operator):
             snapped, flips, stats = _solve_and_record(
                 context, obj, faces, fix_boundary=self.fix_boundary,
                 parameters=dict(self.solver_parameters(),
-                                respect_uv_selection=not bool(self.target_faces)))
+                                respect_uv_selection=not bool(self.target_faces)),
+                _topo_box=topo_box)
         except Exception as exc:
             self.report({'WARNING'},
                         _elapsed_text(last_optimize_result['elapsed_seconds']))

@@ -460,6 +460,17 @@ def quad_flow_runs(bm, uvl, face_ids, seed, *, topo=None, exclude_poles=False, e
         node_list = sorted(node_set)
         nid = {g: i for i, g in enumerate(node_list)}
         n_nodes = len(node_list)
+        ordered = sorted(cands, key=lambda item: item[0])
+
+        from . import native_engine
+        ou = [nid[a] for a, _b in order_pairs]
+        ov = [nid[b] for _a, b in order_pairs]
+        ca = [nid[a] for _pr, a, _b, _lp in ordered]
+        cb = [nid[b] for _pr, _a, b, _lp in ordered]
+        native_acc = native_engine.filter_acyclic(n_nodes, ou, ov, ca, cb)
+        if native_acc is not None:
+            return [item[3] for item, ok in zip(ordered, native_acc.tolist()) if ok]
+
         parent = list(range(n_nodes))
 
         def find(x):
@@ -470,8 +481,7 @@ def quad_flow_runs(bm, uvl, face_ids, seed, *, topo=None, exclude_poles=False, e
 
         out_adj = [set() for _ in range(n_nodes)]
         in_adj = [set() for _ in range(n_nodes)]
-        for a, b in order_pairs:
-            ia, ib = nid[a], nid[b]
+        for ia, ib in zip(ou, ov):
             if ia != ib:
                 out_adj[ia].add(ib)
                 in_adj[ib].add(ia)
@@ -495,8 +505,8 @@ def quad_flow_runs(bm, uvl, face_ids, seed, *, topo=None, exclude_poles=False, e
             return False
 
         accepted_lpos = []
-        for _pr, a, b, lp in sorted(cands, key=lambda item: item[0]):
-            ra, rb = find(nid[a]), find(nid[b])
+        for (_pr, _a, _b, lp), ia, ib in zip(ordered, ca, cb):
+            ra, rb = find(ia), find(ib)
             if ra == rb:
                 accepted_lpos.append(lp)
                 continue

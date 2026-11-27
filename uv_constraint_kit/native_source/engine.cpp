@@ -53,9 +53,28 @@ struct Output { I accepted, evaluations, reciprocal, finite; double energy, grad
 static double dot(const Vec& a, const Vec& b) {
     double r=0; for(std::size_t i=0;i<a.size();++i) r+=a[i]*b[i]; return r;
 }
+template<bool Subtract>
+static double update_and_dot(Vec& target,const Vec& delta,double scale,const Vec& probe) {
+    double r=0;
+    for(std::size_t i=0;i<target.size();++i) {
+        const double value=Subtract?(target[i]-scale*delta[i]):(target[i]+scale*delta[i]);
+        target[i]=value;
+        r+=probe[i]*value;
+    }
+    return r;
+}
 static double max_abs(const Vec& a) {
     double r=0; for(double x:a) r=std::max(r,std::abs(x)); return r;
 }
+struct RecentTriangles {
+    std::array<I,8> ids{{-1,-1,-1,-1,-1,-1,-1,-1}};
+    void remember(I triangle) {
+        auto at=std::find(ids.begin(),ids.end(),triangle);
+        if(at==ids.end()) --at;
+        std::move_backward(ids.begin(),at,at+1);
+        ids.front()=triangle;
+    }
+};
 struct AxisSet { I axis; std::vector<I> members; bool anchored=false; double anchor=0; };
 struct Problem {
     const Input& p;
@@ -70,6 +89,7 @@ struct Problem {
     I evaluations=0;
     mutable I witness_i=-1,witness_j=-1;
     mutable bool border_rejected=false,flip_rejected=false;
+    RecentTriangles invalid_triangles;
     const Vec* baseline_uv=nullptr;
     double root_penalty_scale=1.;
     struct BorderBound {double low,high,ylow,yhigh;I index;};
@@ -495,17 +515,48 @@ struct Problem {
     double energy(const Vec& x) {
         flip_rejected=false;++evaluations;
         if(p.prevent_overlap==1 && !borders_valid(x)) return INF;
-        build_j(x);double e=0;
+        const bool check_flip=(p.prevent_flips || reciprocal);
+        const double* __restrict xp=x.data();
+        const I* __restrict tri=p.tri;
+        const double* __restrict inv=p.inverse;
+        const double* __restrict weights=p.weights;
+        double* __restrict jac=jacobian.data();
+        if(check_flip) {
+            for(I t:invalid_triangles.ids) {
+                if(t<0 || t>=p.nt) continue;
+                const I a=tri[3*t],b=tri[3*t+1],c=tri[3*t+2];
+                const double* v=inv+4*t;
+                const double ux=xp[2*b]-xp[2*a],wx=xp[2*c]-xp[2*a];
+                const double uy=xp[2*b+1]-xp[2*a+1],wy=xp[2*c+1]-xp[2*a+1];
+                const double j0=ux*v[0]+wx*v[2],j1=ux*v[1]+wx*v[3];
+                const double j2=uy*v[0]+wy*v[2],j3=uy*v[1]+wy*v[3];
+                if(!std::isfinite(j0) || !std::isfinite(j1) || !std::isfinite(j2) || !std::isfinite(j3)) return INF;
+                const double det=j0*j3-j1*j2;
+                if(!std::isfinite(det) || det<=1e-6) {flip_rejected=true;return INF;}
+            }
+        }
+        double e=0;
+        const double w_ang=1-p.angle_length,w_len=p.angle_length;
         for(I t=0;t<p.nt;++t) {
-            const double* j=&jacobian[4*t];
-            for(int k=0;k<4;++k) if(!std::isfinite(j[k])) return INF;
-            double det=j[0]*j[3]-j[1]*j[2];
-            if((p.prevent_flips || reciprocal) && det<=1e-6) {flip_rejected=true;return INF;}
-            double norm=j[0]*j[0]+j[1]*j[1]+j[2]*j[2]+j[3]*j[3],squared=det*det+1e-16;
-            double denominator=(p.prevent_flips || reciprocal)?det:std::sqrt(squared);
-            double root=std::sqrt(std::max(norm+2*det,1e-20));
-            double length=reciprocal?.5*(norm+norm/squared-4):norm-2*root+2;
-            e+=((1-p.angle_length)*norm/denominator+p.angle_length*length)*p.weights[t];
+            const I a=tri[3*t],b=tri[3*t+1],c=tri[3*t+2];
+            const double* v=inv+4*t;
+            const double ux=xp[2*b]-xp[2*a],wx=xp[2*c]-xp[2*a];
+            const double uy=xp[2*b+1]-xp[2*a+1],wy=xp[2*c+1]-xp[2*a+1];
+            const double j0=ux*v[0]+wx*v[2],j1=ux*v[1]+wx*v[3];
+            const double j2=uy*v[0]+wy*v[2],j3=uy*v[1]+wy*v[3];
+            double* j=jac+4*t;
+            j[0]=j0;j[1]=j1;j[2]=j2;j[3]=j3;
+            if(!std::isfinite(j0) || !std::isfinite(j1) || !std::isfinite(j2) || !std::isfinite(j3)) {
+                if(check_flip) invalid_triangles.remember(t);
+                return INF;
+            }
+            const double det=j0*j3-j1*j2;
+            if(check_flip && det<=1e-6) {invalid_triangles.remember(t);flip_rejected=true;return INF;}
+            const double norm=j0*j0+j1*j1+j2*j2+j3*j3,squared=det*det+1e-16;
+            const double denominator=check_flip?det:std::sqrt(squared);
+            const double root=std::sqrt(std::max(norm+2*det,1e-20));
+            const double length=reciprocal?.5*(norm+norm/squared-4):norm-2*root+2;
+            e+=(w_ang*norm/denominator+w_len*length)*weights[t];
         }
         if(p.prevent_overlap!=1 && !borders_valid(x)) return INF;
         if(p.prevent_overlap==2) {double contact_energy=contact(x,nullptr);if(!std::isfinite(contact_energy)) return INF;e+=contact_energy;}
@@ -727,7 +778,7 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
         double e=problem.energy(x);*stats={0,problem.evaluations,problem.reciprocal,0,e,INF};
         if(!std::isfinite(e)) return 1; // Do not publish even the initial projection.
         Vec g;problem.gradient(x,g);
-        struct History {Vec s,y;double rho;};std::vector<History> history;
+        struct History {Vec s,y;double rho,sy,yy;};std::vector<History> history;
         history.reserve(8);
         Vec q,direction,candidate,next_g,change(x.size()),y(x.size());std::vector<double> coefficients;
         const SoftMetric soft_metric=make_soft_metric(problem);
@@ -781,8 +832,17 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
         I limit=p.automatic?1000:std::max<I>(1,p.iterations);
         for(I iteration=0;iteration<limit;++iteration) {
             if(p.automatic && max_abs(g)<1e-6) break;
-            q=g;coefficients.clear();
-            for(auto i=history.rbegin();i!=history.rend();++i) {double alpha=i->rho*dot(i->s,q);coefficients.push_back(alpha);for(std::size_t k=0;k<q.size();++k) q[k]-=alpha*i->y[k];}
+            q=g;coefficients.resize(history.size());
+            if(!history.empty()) {
+                double alpha=history.back().rho*dot(history.back().s,q);
+                coefficients.back()=alpha;
+                for(std::size_t i=history.size()-1;i-->0;) {
+                    const double next_dot=update_and_dot<true>(q,history[i+1].y,alpha,history[i].s);
+                    alpha=history[i].rho*next_dot;
+                    coefficients[i]=alpha;
+                }
+                for(std::size_t k=0;k<q.size();++k) q[k]-=alpha*history.front().y[k];
+            }
             bool preconditioned=false;
             if(soft_metric.enabled()) {
                 Vec mapped;double gamma=1.;bool finite=true;
@@ -791,7 +851,7 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                     finite=soft_metric.apply_pair(problem,history.back().y,q,mapped_y,mapped);
                     double denominator=finite?dot(history.back().y,mapped_y):0.;
                     finite=finite && denominator>0. && std::isfinite(denominator);
-                    if(finite) gamma=dot(history.back().s,history.back().y)/std::max(denominator,1e-20);
+                    if(finite) gamma=history.back().sy/std::max(denominator,1e-20);
                 }
                 finite=finite && gamma>0. && std::isfinite(gamma);
                 if(finite && history.empty()) finite=soft_metric.apply(problem,q,mapped);
@@ -799,7 +859,7 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                 if(finite) {q.swap(mapped);preconditioned=true;}
             }
             if(!preconditioned) {
-                double scale=history.empty()?std::max(p.density*p.density,1e-6)*.05:dot(history.back().s,history.back().y)/std::max(dot(history.back().y,history.back().y),1e-20);
+                double scale=history.empty()?std::max(p.density*p.density,1e-6)*.05:history.back().sy/std::max(history.back().yy,1e-20);
                 if(history.empty()) {
                     const double g_inf=max_abs(g);
                     const double max_disp=.05*std::sqrt(std::max(p.penalty_scale,1e-20));
@@ -807,8 +867,15 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                 }
                 for(double& v:q) v*=scale;
             }
-            for(std::size_t i=0;i<history.size();++i) {double v=coefficients[history.size()-i-1]-history[i].rho*dot(history[i].y,q);for(std::size_t k=0;k<q.size();++k) q[k]+=history[i].s[k]*v;}
-            direction=q;for(double& v:direction) v=-v;double slope=dot(g,direction);
+            if(!history.empty()) {
+                double v=coefficients[0]-history.front().rho*dot(history.front().y,q);
+                for(std::size_t i=1;i<history.size();++i) {
+                    const double next_dot=update_and_dot<false>(q,history[i-1].s,v,history[i].y);
+                    v=coefficients[i]-history[i].rho*next_dot;
+                }
+                for(std::size_t k=0;k<q.size();++k) q[k]+=history.back().s[k]*v;
+            }
+            direction.swap(q);for(double& v:direction) v=-v;double slope=dot(g,direction);
             if(slope>=0) {
                 const double g_inf=max_abs(g);
                 const double max_disp=.05*std::sqrt(std::max(p.penalty_scale,1e-20));
@@ -818,7 +885,7 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
                 history.clear();
             }
             double step=1,next_e=INF;candidate.resize(x.size());bool accepted=false,used_analytic=false,used_border_ccd=false;
-            const bool analytic_bound=(p.nt>=32768) && (p.prevent_flips || problem.reciprocal) && (problem.soft || problem.axes_only);
+            const bool analytic_bound=(p.nt>=1024) && (p.prevent_flips || problem.reciprocal) && (problem.soft || problem.axes_only);
             problem.baseline_uv=keep_initial_border?&initial_uv:nullptr;
             problem.border_rejected=false;
             problem.flip_rejected=false;
@@ -866,10 +933,15 @@ API int uvck_solve(const Input* input,double* output,Output* stats) noexcept {
             if(pinned_border_count>0) {
                 for(I v=0;v<p.n;++v) if(contact_pinned[v]) {next_g[2*v]=0.;next_g[2*v+1]=0.;}
             }
-            for(std::size_t k=0;k<x.size();++k) {change[k]=candidate[k]-x[k];y[k]=next_g[k]-g[k];}
-            double sy=dot(change,y);
+            double sy=0,yy=0;
+            for(std::size_t k=0;k<x.size();++k) {
+                change[k]=candidate[k]-x[k];
+                y[k]=next_g[k]-g[k];
+                sy+=change[k]*y[k];
+                yy+=y[k]*y[k];
+            }
             if(sy>1e-14) {
-                History entry{std::move(change),std::move(y),1/sy};
+                History entry{std::move(change),std::move(y),1/sy,sy,yy};
                 if(history.size()==8) {
                     change=std::move(history.front().s);
                     y=std::move(history.front().y);
@@ -1219,10 +1291,16 @@ static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint
             // A cell count above 64 takes the existing large-triangle route.
             long double width=static_cast<long double>(b.ix1)-b.ix0+1,height=static_cast<long double>(b.iy1)-b.iy0+1;
             b.large=width*height>64;
-            const BoxLite lite{b.x0,b.y0,b.x1,b.y1,i};
-            bucket_boxes[b.bucket].push_back(lite);
-            if(b.large) large_boxes[b.bucket].push_back(lite);
+            if(b.large) large_boxes[b.bucket].push_back({b.x0,b.y0,b.x1,b.y1,i});
             else total_entries+=static_cast<std::size_t>(b.ix1-b.ix0+1)*static_cast<std::size_t>(b.iy1-b.iy0+1);
+        }
+        const bool has_large=!large_boxes.empty();
+        if(has_large) {
+            for(I i=0;i<n;++i) {
+                const auto& b=boxes[i];
+                if(b.valid && large_boxes.count(b.bucket))
+                    bucket_boxes[b.bucket].push_back({b.x0,b.y0,b.x1,b.y1,i});
+            }
         }
         std::size_t ht_size=256;
         while(ht_size<total_entries*2+16) ht_size<<=1;
@@ -1300,8 +1378,10 @@ static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint
                 auto all_b=bucket_boxes.find(a.bucket);
                 if(all_b!=bucket_boxes.end()) add_boxes(all_b->second);
             } else {
-                auto big=large_boxes.find(a.bucket);
-                if(big!=large_boxes.end()) add_boxes(big->second);
+                if(has_large) {
+                    auto big=large_boxes.find(a.bucket);
+                    if(big!=large_boxes.end()) add_boxes(big->second);
+                }
                 for(std::size_t e=tri_off[i];e<tri_off[i+1];++e) {
                     const I cid=entry_cid[e];
                     const std::size_t s0=cell_off[cid],s1=cell_off[cid+1];
@@ -1392,19 +1472,14 @@ static int check_overlaps_impl(I n,const I* faces,const I* roots,const std::uint
                 const I hit=best_hit.load();
                 return hit<end ? hit : -1;
             };
-            const I first_hit=has_pair(0,n);
-            if(first_hit<0) {output[0]=0;output[1]=tested;return 0;}
-            I start=0,end=first_hit+1;
-            while(end-start>1) {
-                const I middle=start+(end-start)/2;
-                const I h=has_pair(start,middle);
-                if(h>=0) end=h+1;
-                else start=middle;
-            }
+            // Single-pass exact smallest-index finder: both single-thread and
+            // multi-thread paths guarantee the minimum row index `i` with an
+            // overlapping partner `j >= i`, eliminating repeated binary search.
+            const I start=has_pair(0,n);
+            if(start<0) {output[0]=0;output[1]=tested;return 0;}
             gather_into(start,seen,visit,candidates);
             I partner=n;
-            // For the single active row the legacy partner probes all have the
-            // same argument order. Choose the smallest passing original index.
+            // Choose the smallest passing original index for row `start`.
             for(I j:candidates) if(j<partner && test_pair(start,j,tested)) partner=j;
             if(partner==n) return -4;
             witness[0]=start;witness[1]=partner;
@@ -1594,6 +1669,106 @@ API int uvck_triangle_frames(I n,I nt,const float* xyz,const I* triangles,
             if(height_squared<=1e-24) continue;
             frame[2]=length;frame[4]=x;frame[5]=std::sqrt(height_squared);
             eligible[t]=1;
+        }
+        return 0;
+    }catch(...){return -3;}
+}
+
+// Acyclic candidate contraction for Quad-Flow DAG construction.
+// Exact match for quad_grid.py:filter_acyclic in tight native C++.
+API int uvck_filter_acyclic(I n_nodes,I n_order,const I* order_u,const I* order_v,
+                            I n_cands,const I* cand_a,const I* cand_b,std::uint8_t* accepted) noexcept {
+    try {
+        if(n_nodes<0 || n_order<0 || n_cands<0 || n_nodes>10000000 || n_cands>20000000) return -1;
+        if((n_order && (!order_u || !order_v)) || (n_cands && (!cand_a || !cand_b || !accepted))) return -1;
+        if(n_cands==0) return 0;
+        const std::size_t nn=static_cast<std::size_t>(n_nodes);
+        std::vector<std::int32_t> parent(nn);
+        for(std::size_t i=0;i<nn;++i) parent[i]=static_cast<std::int32_t>(i);
+        auto find_root=[&](std::int32_t x) {
+            while(parent[x]!=x) {parent[x]=parent[parent[x]];x=parent[x];}
+            return x;
+        };
+        std::vector<std::vector<std::int32_t>> out_adj(nn),in_adj(nn);
+        auto add_unique=[](std::vector<std::int32_t>& v,std::int32_t val) {
+            if(std::find(v.begin(),v.end(),val)==v.end()) v.push_back(val);
+        };
+        auto erase_val=[](std::vector<std::int32_t>& v,std::int32_t val) {
+            for(std::size_t i=0;i<v.size();++i) {
+                if(v[i]==val) {v[i]=v.back();v.pop_back();return;}
+            }
+        };
+        for(I k=0;k<n_order;++k) {
+            const I u=order_u[k],v=order_v[k];
+            if(u<0 || u>=n_nodes || v<0 || v>=n_nodes) return -1;
+            if(u!=v) {
+                add_unique(out_adj[u],static_cast<std::int32_t>(v));
+                add_unique(in_adj[v],static_cast<std::int32_t>(u));
+            }
+        }
+        std::vector<std::int32_t> seen(nn,0),stack;
+        stack.reserve(std::min<std::size_t>(nn,4096));
+        std::int32_t stamp=0;
+        auto next_stamp=[&]() -> std::int32_t {
+            if(++stamp==std::numeric_limits<std::int32_t>::max()) {
+                std::fill(seen.begin(),seen.end(),0);stamp=1;
+            }
+            return stamp;
+        };
+        auto reaches=[&](std::int32_t src,std::int32_t dst) -> bool {
+            const std::int32_t s=next_stamp();
+            stack.clear();
+            stack.push_back(src);
+            seen[src]=s;
+            while(!stack.empty()) {
+                const std::int32_t u=stack.back();stack.pop_back();
+                for(std::int32_t w:out_adj[u]) {
+                    if(w==dst) return true;
+                    if(seen[w]!=s) {seen[w]=s;stack.push_back(w);}
+                }
+            }
+            return false;
+        };
+        for(I k=0;k<n_cands;++k) {
+            accepted[k]=0;
+            const I a=cand_a[k],b=cand_b[k];
+            if(a<0 || a>=n_nodes || b<0 || b>=n_nodes) return -1;
+            std::int32_t ra=find_root(static_cast<std::int32_t>(a));
+            std::int32_t rb=find_root(static_cast<std::int32_t>(b));
+            if(ra==rb) {accepted[k]=1;continue;}
+            if(std::find(out_adj[ra].begin(),out_adj[ra].end(),rb)!=out_adj[ra].end() ||
+               std::find(out_adj[rb].begin(),out_adj[rb].end(),ra)!=out_adj[rb].end()) continue;
+            if(reaches(ra,rb) || reaches(rb,ra)) continue;
+            if(out_adj[ra].size()+in_adj[ra].size() < out_adj[rb].size()+in_adj[rb].size())
+                std::swap(ra,rb);
+            parent[rb]=ra;
+            {
+                const std::int32_t s=next_stamp();
+                for(std::int32_t w:out_adj[ra]) seen[w]=s;
+                for(std::int32_t w:out_adj[rb]) {
+                    erase_val(in_adj[w],rb);
+                    if(w!=ra && seen[w]!=s) {
+                        seen[w]=s;
+                        out_adj[ra].push_back(w);
+                        in_adj[w].push_back(ra);
+                    }
+                }
+            }
+            {
+                const std::int32_t s=next_stamp();
+                for(std::int32_t w:in_adj[ra]) seen[w]=s;
+                for(std::int32_t w:in_adj[rb]) {
+                    erase_val(out_adj[w],rb);
+                    if(w!=ra && seen[w]!=s) {
+                        seen[w]=s;
+                        in_adj[ra].push_back(w);
+                        out_adj[w].push_back(ra);
+                    }
+                }
+            }
+            out_adj[rb].clear();
+            in_adj[rb].clear();
+            accepted[k]=1;
         }
         return 0;
     }catch(...){return -3;}

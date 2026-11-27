@@ -100,6 +100,10 @@ def _load():
             if hasattr(lib, 'uvck_triangle_frames'):
                 lib.uvck_triangle_frames.argtypes = [ct.c_int64, ct.c_int64] + [ct.c_void_p]*4
                 lib.uvck_triangle_frames.restype = ct.c_int
+            if hasattr(lib, 'uvck_filter_acyclic'):
+                lib.uvck_filter_acyclic.argtypes = [ct.c_int64, ct.c_int64, ct.c_void_p, ct.c_void_p,
+                                                    ct.c_int64, ct.c_void_p, ct.c_void_p, ct.c_void_p]
+                lib.uvck_filter_acyclic.restype = ct.c_int
             _library = lib
         except (OSError, AttributeError, ValueError, KeyError, TypeError) as exc:
             _error = str(exc)
@@ -613,3 +617,23 @@ def triangle_frames(points, triangles):
     if not np.isfinite(frames).all():
         return None
     return frames, eligible.astype(bool)
+
+
+def filter_acyclic(n_nodes, order_u, order_v, cand_a, cand_b):
+    """Run acyclic DAG contraction natively when available, or return None."""
+    lib = _load()
+    fn = getattr(lib, 'uvck_filter_acyclic', None) if lib is not None else None
+    if fn is None:
+        return None
+    ou = _array(order_u, np.int64)
+    ov = _array(order_v, np.int64)
+    ca = _array(cand_a, np.int64)
+    cb = _array(cand_b, np.int64)
+    out = np.empty(len(ca), dtype=np.uint8)
+    status = fn(int(n_nodes), len(ou), ou.ctypes.data if len(ou) else 0,
+                ov.ctypes.data if len(ov) else 0, len(ca),
+                ca.ctypes.data if len(ca) else 0, cb.ctypes.data if len(cb) else 0,
+                out.ctypes.data if len(out) else 0)
+    if status != 0:
+        return None
+    return out

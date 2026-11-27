@@ -41,16 +41,33 @@ def _boundary_crosses(points, include_touch=False):
     return False
 
 
-def folded_face_candidates(topo, triangles, crosses, reference):
+def folded_face_candidates(topo, triangles, crosses, reference, *, _tri_faces=None):
     """Cache only input faces with mixed winding AND a crossing UV boundary.
 
     A normal mirrored or concave face is not a repair candidate. A repair must
     make every native triangle agree with the input face's net orientation;
     the caller still checks pins, area, selection and inter-face intersections.
     """
-    by_face = {}
-    for i, positions in enumerate(triangles):
-        by_face.setdefault(topo.loops[positions[0]].face.index, []).append(i)
+    if not len(triangles):
+        return {}
+    tri_f = _tri_faces
+    if tri_f is None and hasattr(topo, 'loop_faces'):
+        tri_f = topo.loop_faces[np.asarray([t[0] for t in triangles], dtype=np.intp)]
+    if tri_f is not None:
+        cross_arr = np.asarray(crosses, dtype=np.float64)
+        pos_f = set(np.unique(tri_f[cross_arr > 2e-14]).tolist())
+        neg_f = set(np.unique(tri_f[cross_arr < -2e-14]).tolist())
+        mixed = pos_f & neg_f
+        if not mixed:
+            return {}
+        by_face = {fi: [] for fi in mixed}
+        cand_idx = np.flatnonzero(np.isin(tri_f, sorted(mixed)))
+        for i in cand_idx.tolist():
+            by_face[int(tri_f[i])].append(i)
+    else:
+        by_face = {}
+        for i, positions in enumerate(triangles):
+            by_face.setdefault(topo.loops[positions[0]].face.index, []).append(i)
     candidates = {}
     for face, indices in by_face.items():
         areas = [float(crosses[i]) for i in indices]
@@ -328,9 +345,13 @@ class AcceptanceProbe:
         self.core, self.faces = core, set(faces)
         self.check_other_islands = check_other_islands
         layer = core.constraint_layer(topo.bm)
-        self.positions = ([topo.loop_pos[loop] for fi in sorted(self.faces)
-                           for loop in topo.bm.faces[fi].loops if loop[layer] != core.C_NONE]
-                          if layer is not None else [])
+        if layer is None:
+            self.positions = []
+        elif hasattr(core, 'constrained_loops'):
+            self.positions = core.constrained_loops(topo.bm, only_faces=self.faces)
+        else:
+            self.positions = [topo.loop_pos[loop] for fi in sorted(self.faces)
+                              for loop in topo.bm.faces[fi].loops if loop[layer] != core.C_NONE]
         self.roots = topo.face_island
         target_roots = {self.roots[f] for f in self.faces}
         self.target = []
@@ -338,7 +359,15 @@ class AcceptanceProbe:
         self.reference = {}
         tri_rows = (topo.triangle_rows()
                     if triangles is None and hasattr(topo, 'triangle_rows') else None)
-        if tri_rows is not None:
+        all_faces = (tri_rows is not None and hasattr(topo, 'bm')
+                     and len(self.faces) == len(topo.bm.faces))
+        if all_faces:
+            roots = self.roots
+            self.target = [(fi, pos, roots[fi]) for fi, pos in tri_rows]
+            self._target_idx = (topo._triangle_arrays()[1]
+                                if hasattr(topo, '_triangle_arrays')
+                                else np.asarray([pos for _, pos, _ in self.target], dtype=np.intp).reshape(-1, 3))
+        elif tri_rows is not None:
             for fi, pos in tri_rows:
                 if fi not in self.faces and not (check_other_islands or self.roots[fi] in target_roots):
                     continue
@@ -347,6 +376,7 @@ class AcceptanceProbe:
                     self.target.append(row)
                 elif check_other_islands or self.roots[fi] in target_roots:
                     self.static.append(row)
+            self._target_idx = np.asarray([pos for _, pos, _ in self.target], dtype=np.intp).reshape(-1, 3)
         else:
             for tri in topo.loop_triangles() if triangles is None else triangles:
                 fi = tri[0].face.index
@@ -357,16 +387,17 @@ class AcceptanceProbe:
                     self.target.append(row)
                 elif check_other_islands or self.roots[fi] in target_roots:
                     self.static.append(row)
-        self.target_positions = sorted({p for _, pos, _ in self.target for p in pos})
+            self._target_idx = np.asarray([pos for _, pos, _ in self.target], dtype=np.intp).reshape(-1, 3)
         self._reference_dict = None
-        self._target_idx = np.asarray([pos for _, pos, _ in self.target], dtype=np.intp).reshape(-1, 3)
         if self.target:
             slots, slot_order = np.unique(self._target_idx, return_inverse=True)
             self._target_slots = slots.tolist()
             self._target_slot_order = slot_order.reshape(-1, 3)
+            self.target_positions = list(self._target_slots)
         else:
             self._target_slots = []
             self._target_slot_order = np.empty((0, 3), dtype=np.intp)
+            self.target_positions = []
         self._ref_array = self._capture_triangles(topo, coordinates=coordinates)
         self._init_target = list(self.target)
         self._init_static = list(self.static)

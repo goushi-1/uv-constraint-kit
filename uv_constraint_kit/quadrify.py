@@ -139,8 +139,7 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
         geometry['inv_unit'] = np.linalg.inv(loc)
 
     def restore_base():
-        for lp, uv in zip(topo.loops, base_uv.tolist()):
-            lp[uvl].uv = uv
+        core.mesh_reader.write_uv(topo.loops, uvl, base_uv)
 
     last_reason = 'Quad-flow quadrification did not converge safely'
     for exclude_poles in (False, True):
@@ -157,6 +156,10 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
         # Combine temporary quad-flow H/V runs with any existing aligned runs.
         runs = list(q_runs) + [(k, ps) for k, ps in existing_runs if k == C_ALIGNED]
         probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=False, coordinates=base_uv)
+        ref_edges = probe._ref_array[:, 1:] - probe._ref_array[:, :1]
+        ref_cross = ref_edges[:, 0, 0] * ref_edges[:, 1, 1] - ref_edges[:, 0, 1] * ref_edges[:, 1, 0]
+        oriented = np.abs(ref_cross) > 2e-14
+        ref_sign = np.sign(ref_cross[oriented])
         from . import native_engine
         use_contact = bool(not held and native_engine.supports_contact(len(geometry['tri'])))
 
@@ -166,6 +169,21 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
         best_p50 = float('inf')
         best_p90 = float('inf')
 
+        run_idx_cache = {}
+        def _run_edge_arrays(active_runs):
+            key = id(active_runs)
+            cached = run_idx_cache.get(key)
+            if cached is None:
+                hp = [p for kind, pos_list in active_runs if kind == C_HORIZONTAL for p in pos_list]
+                vp = [p for kind, pos_list in active_runs if kind == C_VERTICAL for p in pos_list]
+                nxt = topo._loop_next_array
+                hp_arr = np.asarray(hp, dtype=np.intp)
+                vp_arr = np.asarray(vp, dtype=np.intp)
+                cached = (hp_arr, nxt[hp_arr] if len(hp_arr) else hp_arr,
+                          vp_arr, nxt[vp_arr] if len(vp_arr) else vp_arr)
+                run_idx_cache[key] = cached
+            return cached
+
         def eval_candidate(active_runs=q_runs, require_existing_exact=True):
             coords = np.asarray(core.mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64)
             if not np.all(np.isfinite(coords)):
@@ -173,28 +191,30 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
             tris = probe._capture_triangles(topo, coordinates=coords)
             edges = tris[:, 1:] - tris[:, :1]
             cross = edges[:, 0, 0] * edges[:, 1, 1] - edges[:, 0, 1] * edges[:, 1, 0]
-            ref_edges = probe._ref_array[:, 1:] - probe._ref_array[:, :1]
-            ref_cross = ref_edges[:, 0, 0] * ref_edges[:, 1, 1] - ref_edges[:, 0, 1] * ref_edges[:, 1, 0]
-            oriented = np.abs(ref_cross) > 2e-14
-            if np.any(np.sign(ref_cross[oriented]) * cross[oriented] <= 2e-14):
+            if np.any(ref_sign * cross[oriented] <= 2e-14):
                 return None, float('inf'), float('inf'), float('inf'), float('inf')
             # Measure angle deviations on the active quad-flow H/V runs.
-            devs = []
-            for kind, pos_list in active_runs:
-                for p in pos_list:
-                    q = topo.loop_next[p]
-                    du = float(coords[q, 0] - coords[p, 0])
-                    dv = float(coords[q, 1] - coords[p, 1])
-                    if math.hypot(du, dv) < 1e-10:
-                        return None, float('inf'), float('inf'), float('inf'), float('inf')
-                    ang = abs(math.degrees(math.atan2(dv, du)))
-                    devs.append(min(ang, abs(180.0 - ang)) if kind == C_HORIZONTAL else abs(90.0 - ang))
-            if not devs:
+            hp, hq, vp, vq = _run_edge_arrays(active_runs)
+            dev_parts = []
+            if len(hp):
+                d = coords[hq] - coords[hp]
+                if np.any(np.hypot(d[:, 0], d[:, 1]) < 1e-10):
+                    return None, float('inf'), float('inf'), float('inf'), float('inf')
+                ang = np.abs(np.degrees(np.arctan2(d[:, 1], d[:, 0])))
+                dev_parts.append(np.minimum(ang, np.abs(180.0 - ang)))
+            if len(vp):
+                d = coords[vq] - coords[vp]
+                if np.any(np.hypot(d[:, 0], d[:, 1]) < 1e-10):
+                    return None, float('inf'), float('inf'), float('inf'), float('inf')
+                ang = np.abs(np.degrees(np.arctan2(d[:, 1], d[:, 0])))
+                dev_parts.append(np.abs(90.0 - ang))
+            if not dev_parts:
                 return None, float('inf'), float('inf'), float('inf'), float('inf')
+            devs = np.concatenate(dev_parts) if len(dev_parts) > 1 else dev_parts[0]
             devs.sort()
-            worst = devs[-1]
-            p50 = devs[len(devs) // 2]
-            p90 = devs[int((len(devs) - 1) * 0.90)]
+            worst = float(devs[-1])
+            p50 = float(devs[len(devs) // 2])
+            p90 = float(devs[int((len(devs) - 1) * 0.90)])
             ex_dev = 0.0
             if existing_pos:
                 m_ex = probe.measure(topo, coordinates=probe._triangle_view(tris),
@@ -218,8 +238,7 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
                 core._restore_anchored_area(topo, island, held, runs, orig_area)
 
         def write_uv_array(arr):
-            for lp, uv in zip(topo.loops, arr.tolist()):
-                lp[uvl].uv = uv
+            core.mesh_reader.write_uv(topo.loops, uvl, arr)
 
         def is_better(dev, p50, p90):
             if best_uv is None:
@@ -244,16 +263,21 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
                 return q_stats
 
         # Stage 1..4: soft penalty continuation + hard-barrier fallback + exact snap
+        if not exclude_poles and q_stats.get('poles', 0) >= 16 and q_stats.get('cut_quads', 0) >= 32:
+            # On heavily poled organic meshes, exact pole-inclusive H/V alignment
+            # cannot reach <= 0.05 deg; move directly to exclude_poles=True.
+            continue
         restore_base()
         warm = base_uv
         warm_p90 = float('inf')
         warm_p50 = float('inf')
         warm_dev = float('inf')
+        prefer_contact = use_contact
         for strength in (1.0, 100.0, 1e4, 1e6):
             cand = None
             dev = p50 = p90 = ex_dev = float('inf')
-            barriers = (True, False) if use_contact else (False,)
-            for cb in barriers:
+            barriers = ((True, False) if prefer_contact else (False, True)) if use_contact else (False,)
+            for bi, cb in enumerate(barriers):
                 write_uv_array(warm)
                 n, _ = metric.solve(
                     core, topo, island, held, runs, 1, angle_length=1.0,
@@ -266,6 +290,8 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
                 fit_after_solve()
                 cand, dev, p50, p90, ex_dev = eval_candidate(require_existing_exact=False)
                 if cand is not None:
+                    if bi == 1 and prefer_contact and not cb:
+                        prefer_contact = False
                     break
             if cand is not None:
                 if (p90, p50, dev) < (warm_p90, warm_p50, warm_dev):
@@ -413,6 +439,8 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
             del topo, uvl, bm
             return q_stats
         last_reason = f'Quad-flow convergence limited (dev={best_dev:.2f} deg, p50={best_p50:.2f} deg)'
+        if not exclude_poles and q_stats.get('poles', 0) == 0:
+            break
 
     restore_base()
     del topo, uvl, bm
@@ -454,17 +482,21 @@ def _internal_uv_connections(bm, uvl, faces):
     """Identity set of originally joined UV edges internal to these faces."""
     wanted = set(faces)
     connections = set()
+    match = core.UVTopology._edge_uv_matches
     for edge in bm.edges:
-        linked_faces = sorted(edge.link_faces, key=lambda face: face.index)
-        if len(linked_faces) != 2 or any(face.index not in wanted
-                                         for face in linked_faces):
+        ll = edge.link_loops
+        if len(ll) != 2:
             continue
-        loops = [next(loop for loop in face.loops if loop.edge == edge)
-                 for face in linked_faces]
-        if core.UVTopology._edge_uv_matches(loops[0], loops[1], uvl):
-            connections.add((edge.index, linked_faces[0].index,
-                             linked_faces[1].index,
-                             tuple(sorted(v.index for v in edge.verts))))
+        l0, l1 = ll[0], ll[1]
+        f0, f1 = l0.face.index, l1.face.index
+        if f0 == f1 or f0 not in wanted or f1 not in wanted:
+            continue
+        if match(l0, l1, uvl):
+            v0, v1 = edge.verts[0].index, edge.verts[1].index
+            connections.add((edge.index,
+                             f0 if f0 < f1 else f1,
+                             f1 if f0 < f1 else f0,
+                             (v0, v1) if v0 < v1 else (v1, v0)))
     return connections
 
 

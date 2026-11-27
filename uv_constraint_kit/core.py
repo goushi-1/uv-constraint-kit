@@ -521,18 +521,35 @@ class UVTopology:
         native_coordinates = np.asarray(coordinates, dtype=np.float64)
         native_groups = native_engine.uv_groups(
             self._loop_vertices, native_coordinates, UV_EPS)
+        self._vgroup_first_cache = None
         if native_groups is None:
             self._build_uv_vertices(coordinates)
         else:
             self.loop_to_vgroup = native_groups
-            vg = defaultdict(list)
-            for position, group in enumerate(native_groups):
-                vg[group].append(position)
-            self.vgroup_loops = dict(vg)
+            self.__dict__.pop('vgroup_loops', None)
         self._build_islands(coordinates, _native_coordinates=native_coordinates)
         # Numeric values only: the checked solver can reuse this exact input
         # snapshot instead of immediately reading all UV slots a second time.
         self.initial_uv = coordinates
+
+    def __getattr__(self, name):
+        if name == 'vgroup_loops':
+            vg = defaultdict(list)
+            for position, group in enumerate(self.loop_to_vgroup):
+                vg[group].append(position)
+            vg = dict(vg)
+            self.__dict__['vgroup_loops'] = vg
+            return vg
+        raise AttributeError(f'{type(self).__name__!r} object has no attribute {name!r}')
+
+    def _vgroup_first_positions(self, groups_arr):
+        """Return first loop position per requested UV group without building vgroup_loops."""
+        cache = getattr(self, '_vgroup_first_cache', None)
+        if cache is None:
+            g = np.asarray(self.loop_to_vgroup, dtype=np.int64)
+            cache = self._vgroup_first_cache = np.unique(g, return_index=True)
+        all_u, all_first = cache
+        return all_first[np.searchsorted(all_u, groups_arr)]
 
     def refresh_uv(self):
         """Refresh UV partitions after coordinate writes within this operation.
@@ -543,14 +560,12 @@ class UVTopology:
         coordinates = mesh_reader.read_uv(self.loops, self.uvl)
         native_coordinates = np.asarray(coordinates, dtype=np.float64)
         groups = native_engine.uv_groups(self._loop_vertices, native_coordinates, UV_EPS)
+        self._vgroup_first_cache = None
         if groups is None:
             self._build_uv_vertices(coordinates)
         else:
             self.loop_to_vgroup = groups
-            vg = defaultdict(list)
-            for position, group in enumerate(groups):
-                vg[group].append(position)
-            self.vgroup_loops = dict(vg)
+            self.__dict__.pop('vgroup_loops', None)
         self._build_islands(coordinates, _native_coordinates=native_coordinates)
         self.initial_uv = coordinates
         # This mapping contains UV groups; the mesh tessellation itself is
@@ -575,9 +590,11 @@ class UVTopology:
         rows = getattr(self, '_triangle_rows', None)
         if rows is None:
             pos = self.loop_pos
+            lf = self.loop_faces.tolist()
             rows = self._triangle_rows = tuple(
-                (tri[0].face.index, (pos[tri[0]], pos[tri[1]], pos[tri[2]]))
+                (lf[p0], (p0, pos[tri[1]], pos[tri[2]]))
                 for tri in self.loop_triangles()
+                for p0 in (pos[tri[0]],)
             )
         return rows
 
@@ -732,9 +749,15 @@ class UVTopology:
             coordinates if _native_coordinates is None else _native_coordinates, UV_EPS)
         if native is not None:
             self.face_island = native
-            self.island_faces = {}
-            for fi, root in enumerate(native):
-                self.island_faces.setdefault(root, []).append(fi)
+            if nf == 0:
+                self.island_faces = {}
+            elif native.count(native[0]) == nf:
+                self.island_faces = {native[0]: list(range(nf))}
+            else:
+                isl = defaultdict(list)
+                for fi, root in enumerate(native):
+                    isl[root].append(fi)
+                self.island_faces = dict(isl)
             return
         parent = list(range(nf))
 
@@ -857,6 +880,12 @@ def constrained_loops(bm, only_faces=None):
     layer = constraint_layer(bm)
     if layer is None:
         return []
+    native = mesh_reader.constrained_loops(bm, layer)
+    if native is not None:
+        if only_faces is None:
+            return native[0::2]
+        faces = set(only_faces)
+        return [native[i] for i in range(0, len(native), 2) if native[i + 1] in faces]
     faces = None if only_faces is None else set(only_faces)
     out = []
     offset = 0
@@ -1067,13 +1096,30 @@ def triangles_for_faces(topo, faces):
     if missing:
         for fi in missing:
             by_face[fi] = []
-        for triangle in topo.loop_triangles():
-            fi = triangle[0].face.index
-            if fi not in missing:
-                continue
-            groups = tuple(topo.loop_to_vgroup[topo.loop_pos[l]] for l in triangle)
-            if len(set(groups)) == 3:
-                by_face[fi].append(groups)
+        if hasattr(topo, '_triangle_arrays'):
+            tri_faces, tri_loops = topo._triangle_arrays()
+            if len(tri_faces):
+                if len(missing) == len(topo.bm.faces):
+                    sel_f, sel_l = tri_faces, tri_loops
+                else:
+                    mask = np.isin(tri_faces, sorted(missing))
+                    sel_f, sel_l = tri_faces[mask], tri_loops[mask]
+                if len(sel_f):
+                    g = np.asarray(topo.loop_to_vgroup, dtype=np.int64)
+                    tri_g = g[sel_l]
+                    distinct = ((tri_g[:, 0] != tri_g[:, 1])
+                                & (tri_g[:, 0] != tri_g[:, 2])
+                                & (tri_g[:, 1] != tri_g[:, 2]))
+                    for fi, row in zip(sel_f[distinct].tolist(), tri_g[distinct].tolist()):
+                        by_face[fi].append(tuple(row))
+        else:
+            for triangle in topo.loop_triangles():
+                fi = triangle[0].face.index
+                if fi not in missing:
+                    continue
+                groups = tuple(topo.loop_to_vgroup[topo.loop_pos[l]] for l in triangle)
+                if len(set(groups)) == 3:
+                    by_face[fi].append(groups)
     return [triangle for fi in faces for triangle in by_face.get(fi, ())]
 
 
@@ -1226,7 +1272,8 @@ def deform_constraint_boundary(topo, faces, runs, held, transport=False):
     index = {g: i for i, g in enumerate(groups)}
     if not groups:
         return 0
-    original = np.array([tuple(topo.vgroup_uv(g)) for g in groups], dtype=np.float64)
+    rep_loops = [topo.loops[topo.vgroup_loops[g][0]] for g in groups]
+    original = np.asarray(mesh_reader.read_uv(rep_loops, topo.uvl), dtype=np.float64)
     target = original.copy()
     arrays = []
     seeds = []
@@ -1246,11 +1293,12 @@ def deform_constraint_boundary(topo, faces, runs, held, transport=False):
         if g in index:
             fixed[index[g]] = True
             target[index[g]] = tuple(uv)
-    edges = set()
-    for tri in triangles:
-        for a, b in zip(tri, tri[1:]+tri[:1]):
-            edges.add(tuple(sorted((index[a], index[b]))))
-    edge = np.array(sorted(edges), dtype=np.int64)
+    if not triangles:
+        return 0
+    tri_idx = np.asarray([[index[a], index[b], index[c]] for a, b, c in triangles], dtype=np.int64)
+    e_all = np.vstack((tri_idx[:, [0, 1]], tri_idx[:, [1, 2]], tri_idx[:, [2, 0]]))
+    e_all.sort(axis=1)
+    edge = np.unique(e_all, axis=0)
     if not edge.size:
         return 0
     a, b = edge[:, 0], edge[:, 1]
@@ -2020,13 +2068,7 @@ def face_islands(topo, faces):
     around relative to each other instead of putting each one back.
     """
     if len(faces) == len(topo.bm.faces):
-        cached = getattr(topo, '_all_face_islands', None)
-        if cached is None:
-            cached = {}
-            for index, root in enumerate(topo.face_island):
-                cached.setdefault(root, []).append(index)
-            topo._all_face_islands = cached
-        return {root: list(group) for root, group in cached.items()}
+        return {root: list(group) for root, group in topo.island_faces.items()}
     out = {}
     # Sorted, so the order in which islands are solved -- and therefore the
     # order of anything the caller reports about them -- does not wobble
@@ -2252,9 +2294,7 @@ def rotate_faces_uv(topo, faces, degrees, center=None):
     dx = pts[:, 0] - cx
     dy = pts[:, 1] - cy
     rotated = np.column_stack((cx + ct * dx - st * dy, cy + st * dx + ct * dy))
-    uvl = topo.uvl
-    for loop, uv in zip(loops, rotated.tolist()):
-        loop[uvl].uv = uv
+    mesh_reader.write_uv(loops, topo.uvl, rotated)
     return degrees
 
 
@@ -2510,8 +2550,7 @@ def restore_pose(topo, faces, reference, allow_rotation=True, target_area=0.0,
             rounded = new_uv.astype(np.float32)
         if np.isfinite(rounded).all() and _same_uv_bits(rounded, Q):
             return {"applied": True, "theta_deg": math.degrees(theta), "scale": scale}
-    for loop, uv in zip(loops, new_uv.tolist()):
-        loop[uvl].uv = uv
+    mesh_reader.write_uv(loops, uvl, new_uv)
     return {"applied": True, "theta_deg": math.degrees(theta),
             "scale": scale}
 
@@ -2561,6 +2600,23 @@ def land_uv_groups(topo, groups_uv, faces):
     group wholesale would drag the other island's corner along with it.
     """
     wanted = set(faces)
+    all_faces = len(wanted) == len(topo.bm.faces)
+    if len(groups_uv) >= 32:
+        lf = topo.loop_faces.tolist()
+        out_pos = []
+        out_uv = []
+        for group, uv in groups_uv.items():
+            positions = topo.vgroup_loops.get(group)
+            if not positions:
+                continue
+            pair = (float(uv[0]), float(uv[1]))
+            for position in positions:
+                if all_faces or lf[position] in wanted:
+                    out_pos.append(position)
+                    out_uv.append(pair)
+        if out_pos:
+            mesh_reader.write_uv_indexed(topo.loops, topo.uvl, out_pos, out_uv)
+        return
     for group, uv in groups_uv.items():
         positions = topo.vgroup_loops.get(group)
         if not positions:
@@ -2569,11 +2625,11 @@ def land_uv_groups(topo, groups_uv, faces):
         v = float(uv[1])
         for position in positions:
             loop = topo.loops[position]
-            if loop.face.index in wanted:
+            if all_faces or loop.face.index in wanted:
                 loop[topo.uvl].uv = (u, v)
 
 
-def _capture_selection(bm, loops=None):
+def _capture_selection(bm, loops=None, *, _compact=False):
     """Capture the mesh *and* the UV selection, so neither is a casualty.
 
     Saving the mesh flags alone is not enough, and that is not obvious. The
@@ -2592,8 +2648,12 @@ def _capture_selection(bm, loops=None):
     UVs, not topology -- which is the same assumption `constraint_positions`
     already relies on, since those are read before the unwrap and used after.
     """
-    uv_sel = [(loop.uv_select_edge, loop.uv_select_vert)
-              for loop in (loops_in_order(bm) if loops is None else loops)]
+    loop_list = loops_in_order(bm) if loops is None else loops
+    uv_sel = mesh_reader.read_uv_select(loop_list)
+    if uv_sel is None:
+        uv_sel = [(loop.uv_select_edge, loop.uv_select_vert) for loop in loop_list]
+    elif not _compact:
+        uv_sel = [(bool(b & 1), bool(b & 2)) for b in uv_sel]
     return ([f.select for f in bm.faces],
             [e.select for e in bm.edges],
             [v.select for v in bm.verts],
@@ -2611,9 +2671,13 @@ def _apply_selection(bm, saved, *, loops=None):
     for v in bm.verts:
         if v.index < len(verts):
             v.select = verts[v.index]
-    for position, loop in enumerate(loops_in_order(bm) if loops is None else loops):
-        if position < len(uv_sel):
-            loop.uv_select_edge, loop.uv_select_vert = uv_sel[position]
+    loop_list = loops_in_order(bm) if loops is None else loops
+    if isinstance(uv_sel, (bytes, bytearray)):
+        mesh_reader.write_uv_select(loop_list, uv_sel)
+    else:
+        for position, loop in enumerate(loop_list):
+            if position < len(uv_sel):
+                loop.uv_select_edge, loop.uv_select_vert = uv_sel[position]
 
 
 def select_faces_only(bm, faces):
@@ -2891,14 +2955,14 @@ def rebuild_islands(context, obj, faces, constraint_positions=(), **settings):
 
 
 def _checked_rebuild_islands(context, obj, faces, constraint_positions=(),
-                             _report_quality=True, _recovered=None, **settings):
+                             _report_quality=True, _recovered=None, _topo_box=None, **settings):
     # The complete transaction owns the outside-UV invariant. Internal trials
     # can fail, restore and retry; scan the unchanged mesh region only once at
     # this boundary. Keep numeric snapshots, never BMesh wrappers, over unwrap.
     state = {}
     result = _checked_rebuild_body(context, obj, faces, constraint_positions,
         _report_quality=_report_quality, _recovered=_recovered,
-        _outside_state=state, **settings)
+        _outside_state=state, _topo_box=_topo_box, **settings)
     if state:
         bm = bmesh.from_edit_mesh(obj.data)
         prepare_bm(bm)
@@ -2912,13 +2976,11 @@ def _checked_rebuild_islands(context, obj, faces, constraint_positions=(),
             else:
                 outside_moved = any(tuple(loops[p][layer].uv) != state['saved'][p] for p in state['outside'])
         except BaseException:
-            for loop, xy in zip(loops, state['saved']):
-                loop[layer].uv = xy
+            mesh_reader.write_uv(loops, layer, state['saved'])
             bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
             raise
         if outside_moved:
-            for loop, xy in zip(loops, state['saved']):
-                loop[layer].uv = xy
+            mesh_reader.write_uv(loops, layer, state['saved'])
             bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
             return 0, state['flips'], dict(rejected=True, reason='outside_selection_moved',
                 before=result[2].get('before', {}), after=result[2].get('before', {}))
@@ -2927,47 +2989,69 @@ def _checked_rebuild_islands(context, obj, faces, constraint_positions=(),
 
 def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                           _report_quality=True, _recovered=None,
-                          _outside_state=None, **settings):
+                          _outside_state=None, _topo_box=None, **settings):
     """Enforce requested guards and invariants, restoring rejected UV/UI state."""
     faces = set(faces)
     if not faces or settings.get('mix', 1.0) <= 0.0:
+        if _topo_box:
+            _topo_box.clear()
         return 0, 0, {'skipped': True}
     import sys
     from . import safety
     module = sys.modules[__name__]
-    bm = bmesh.from_edit_mesh(obj.data)
-    uvl = uv_layer(bm)
-    topo = UVTopology(bm, uvl)
-    # Legacy numerical/safety consumers visit coordinates one at a time.
-    # Materialize Python tuples once here rather than allocating ndarray row
-    # views at every triangle/probe. Keep the packed snapshot for the outer
-    # fresh outside-UV guard and native topology arrays.
+    reused = _topo_box.pop() if _topo_box else None
+    topo = None
+    if reused is not None:
+        cand_topo, cand_ptr, cand_uv = reused
+        if (getattr(cand_topo.bm, 'is_valid', False)
+                and cand_ptr == obj.data.as_pointer()
+                and cand_topo.uvl.name == cand_uv
+                and getattr(obj.data.uv_layers.active, 'name', None) == cand_uv):
+            topo = cand_topo
+            bm = topo.bm
+            uvl = topo.uvl
+    del reused
+    if topo is None:
+        bm = bmesh.from_edit_mesh(obj.data)
+        uvl = uv_layer(bm)
+        topo = UVTopology(bm, uvl)
+    # Keep packed float64 ndarray whenever available so downstream probes,
+    # recovery and restores avoid materializing 150K Python tuples.
     saved = topo.initial_uv
-    # The native reader owns immutable bytes; fallback lists are copied.
-    # Numeric state only, scoped to this checked transaction.
-    saved_array = np.asarray(saved, dtype=float)
+    saved_array = np.asarray(saved, dtype=np.float64)
     if isinstance(saved, np.ndarray):
-        saved = list(map(tuple, saved.tolist()))
-    triangle_positions = [pos for fi, pos in topo.triangle_rows() if fi in faces]
-    triangle_indices = np.asarray(triangle_positions, dtype=np.intp)
-    old_triangles = (saved_array[triangle_indices] if triangle_positions else
-                     np.asarray([[saved[p] for p in tri] for tri in triangle_positions]))
+        saved = saved_array
+    all_faces = len(faces) == len(bm.faces)
+    tri_faces, tri_loops = topo._triangle_arrays()
+    if all_faces:
+        triangle_positions = [pos for _, pos in topo.triangle_rows()]
+        triangle_indices = tri_loops
+        tri_faces_sel = tri_faces
+    else:
+        tri_mask = np.isin(tri_faces, sorted(faces))
+        triangle_positions = [pos for fi, pos in topo.triangle_rows() if fi in faces]
+        triangle_indices = tri_loops[tri_mask]
+        tri_faces_sel = tri_faces[tri_mask]
+    old_triangles = (saved_array[triangle_indices] if len(triangle_indices) else
+                     np.empty((0, 3, 2), dtype=np.float64))
     old_edges = old_triangles[:, 1:] - old_triangles[:, :1]
     old_cross = old_edges[:, 0, 0]*old_edges[:, 1, 1] - old_edges[:, 0, 1]*old_edges[:, 1, 0]
     oriented = np.abs(old_cross) > 2e-14
     expected_orientation = np.sign(old_cross)
     fold_candidates = ({} if settings.get('prevent_flips', False) or
                        not (np.any(old_cross > 2e-14) and np.any(old_cross < -2e-14)) else
-                       safety.folded_face_candidates(topo, triangle_positions, old_cross, saved))
-    pins = [bool(loop[uvl].pin_uv) for loop in topo.loops]
-    outside_positions = [p for p, loop in enumerate(topo.loops) if loop.face.index not in faces]
+                       safety.folded_face_candidates(topo, triangle_positions, old_cross, saved,
+                                                     _tri_faces=tri_faces_sel))
+    pins = mesh_reader.read_pins(topo.loops, uvl)
+    outside_positions = ([] if all_faces else
+                         np.flatnonzero(~np.isin(topo.loop_faces, list(faces))).tolist())
     _outside_state.setdefault('saved', topo.initial_uv)
     _outside_state.setdefault('outside', outside_positions)
     # Only hole-fill unwrap changes UI flags here. Input recovery owns its
     # separate native selection/pin transaction. Pure numerical solves never
     # touch these flags, so avoid rewriting the complete edit mesh afterwards.
     restore_ui=bool(settings.get('fill_holes',False))
-    selected = _capture_selection(bm, topo.loops) if restore_ui else None
+    selected = _capture_selection(bm, topo.loops, _compact=True) if restore_ui else None
     uv_face_selection = [face.uv_select for face in bm.faces] if restore_ui else None
     selection_valid = bm.uv_select_sync_valid
     sync = context.scene.tool_settings.use_uv_select_sync
@@ -2988,8 +3072,9 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     input_islands = face_islands(topo, faces)
     original_areas = {root: island_area(topo, island, coordinates=saved_array)
                       for root, island in input_islands.items()}
-    has_any_pins = any(pins)
-    fixed_positions = set(i for i, pin in enumerate(pins) if pin) if has_any_pins else set()
+    has_any_pins = b'\x01' in pins
+    fixed_positions = (set(np.flatnonzero(np.frombuffer(pins, dtype=np.uint8)).tolist())
+                       if has_any_pins else set())
     for island in input_islands.values():
         for g in selection_region_pins(topo,island,settings.get('free_selection_borders',False),
                                       context,settings.get('respect_uv_selection',True)):
@@ -3001,8 +3086,8 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     fixed_positions.update(topo.vgroup_loops[g])
 
     fixed_groups = sorted({topo.loop_to_vgroup[p] for p in fixed_positions
-                           if topo.loops[p].face.index in faces})
-    fixed_details = [dict(uv=list(saved[topo.vgroup_loops[g][0]]),
+                           if all_faces or int(topo.loop_faces[p]) in faces})
+    fixed_details = [dict(uv=saved_array[topo.vgroup_loops[g][0]].tolist(),
                          loop_positions=list(topo.vgroup_loops[g]),
                          mesh_vertex=topo.loops[topo.vgroup_loops[g][0]].vert.index)
                      for g in fixed_groups]
@@ -3024,23 +3109,25 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
 
     # Separate pinned vertices in one axis run must share that axis coordinate.
     # An exact constraint cannot move these pins to make the request feasible.
+    runs_all = constraint_runs(bm, topo, constraint_positions) if constraint_positions else []
     conflicts = 0
     conflict_points = []
-    for kind, positions in constraint_runs(bm, topo, constraint_positions):
-        if kind not in (C_HORIZONTAL, C_VERTICAL):
-            continue
-        groups = {g for p in positions for g in topo.loop_edge_vgroups(p)}
-        axis = 1 if kind == C_HORIZONTAL else 0
-        pinned_groups = [g for g in groups
-                         if any(p in fixed_positions for p in topo.vgroup_loops[g])]
-        values = [saved[topo.vgroup_loops[g][0]][axis] for g in pinned_groups]
-        if values and max(values)-min(values) > 2e-7:
-            conflicts += 1
-            for g in (min(pinned_groups,key=lambda g:saved[topo.vgroup_loops[g][0]][axis]),
-                      max(pinned_groups,key=lambda g:saved[topo.vgroup_loops[g][0]][axis])):
-                conflict_points.append(dict(uv=list(saved[topo.vgroup_loops[g][0]]),
-                    loop_positions=list(topo.vgroup_loops[g]),
-                    mesh_vertex=topo.loops[topo.vgroup_loops[g][0]].vert.index))
+    if fixed_positions:
+        for kind, positions in runs_all:
+            if kind not in (C_HORIZONTAL, C_VERTICAL):
+                continue
+            groups = {g for p in positions for g in topo.loop_edge_vgroups(p)}
+            axis = 1 if kind == C_HORIZONTAL else 0
+            pinned_groups = [g for g in groups
+                             if any(p in fixed_positions for p in topo.vgroup_loops[g])]
+            values = [float(saved_array[topo.vgroup_loops[g][0], axis]) for g in pinned_groups]
+            if values and max(values)-min(values) > 2e-7:
+                conflicts += 1
+                for g in (min(pinned_groups,key=lambda g:float(saved_array[topo.vgroup_loops[g][0], axis])),
+                          max(pinned_groups,key=lambda g:float(saved_array[topo.vgroup_loops[g][0], axis]))):
+                    conflict_points.append(dict(uv=saved_array[topo.vgroup_loops[g][0]].tolist(),
+                        loop_positions=list(topo.vgroup_loops[g]),
+                        mesh_vertex=topo.loops[topo.vgroup_loops[g][0]].vert.index))
     if conflicts:
         return 0, before['flips'], dict(rejected=True,
             reason='pinned_constraint_conflict', conflicts=conflicts,
@@ -3050,36 +3137,47 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     # An exact run containing all three corners has no nondegenerate endpoint.
     # Diagnose it before numerical trials instead of publishing a folded map.
     components = {}
-    for run_id, (kind, positions) in enumerate(constraint_runs(bm, topo, constraint_positions)):
+    constrained_group_set = set()
+    for run_id, (kind, positions) in enumerate(runs_all):
         mapping = components.setdefault(kind, {})
         for p in positions:
             for g in topo.loop_edge_vgroups(p):
+                constrained_group_set.add(g)
                 if kind == C_ALIGNED:
                     mapping.setdefault(g, set()).add(run_id)
                 else:
                     mapping[g] = run_id
     collapsed = set()
-    for positions, area in zip(triangle_positions, old_cross):
-        if abs(area) <= 2e-14:
-            continue
-        groups = [topo.loop_to_vgroup[p] for p in positions]
-        if any(groups[0] in mapping and
-               (mapping[groups[0]].intersection(mapping.get(groups[1], ()), mapping.get(groups[2], ()))
-                if kind == C_ALIGNED else
-                all(mapping.get(g) == mapping[groups[0]] for g in groups))
-               for kind, mapping in components.items()):
-            collapsed.add(topo.loops[positions[0]].face.index)
+    if components and len(triangle_indices):
+        g_arr = np.asarray(topo.loop_to_vgroup, dtype=np.int64)
+        tri_g = g_arr[triangle_indices]
+        in_c = np.isin(tri_g, list(constrained_group_set))
+        cand_tris = np.flatnonzero(in_c.all(axis=1) & (np.abs(old_cross) > 2e-14))
+        for ti in cand_tris.tolist():
+            groups = tri_g[ti].tolist()
+            if any(groups[0] in mapping and
+                   (mapping[groups[0]].intersection(mapping.get(groups[1], ()), mapping.get(groups[2], ()))
+                    if kind == C_ALIGNED else
+                    all(mapping.get(g) == mapping[groups[0]] for g in groups))
+                   for kind, mapping in components.items()):
+                collapsed.add(int(tri_faces_sel[ti]))
     if collapsed and settings.get('mix',1.)==1.:
         return 0,before['flips'],dict(rejected=True,reason='constraint_triangle_conflict',
             conflicts=len(collapsed),conflict_faces=sorted(collapsed),health=before,
             before=quality_before,after=quality_before)
-    chart_signs={}
-    chart_roots=[topo.face_island[topo.loops[tri[0]].face.index] for tri in triangle_positions]
-    for root,area in zip(chart_roots,old_cross):
-        chart_signs.setdefault(root,set()).add(1 if area>2e-14 else -1 if area < -2e-14 else 0)
-    healthy_roots={root for root,signs in chart_signs.items() if signs-{0} in ({1},{-1})}
-    healthy_mask=np.asarray([root in healthy_roots for root in chart_roots]) & oriented
-    healthy_input=bool(np.any(healthy_mask))
+    if len(tri_faces_sel):
+        face_island_arr = np.asarray(topo.face_island, dtype=np.int64)
+        chart_roots_arr = face_island_arr[tri_faces_sel]
+        pos_mask = old_cross > 2e-14
+        neg_mask = old_cross < -2e-14
+        pos_roots = set(np.unique(chart_roots_arr[pos_mask]).tolist()) if np.any(pos_mask) else set()
+        neg_roots = set(np.unique(chart_roots_arr[neg_mask]).tolist()) if np.any(neg_mask) else set()
+        healthy_roots = pos_roots ^ neg_roots
+        healthy_mask = (np.isin(chart_roots_arr, list(healthy_roots)) & oriented
+                        if healthy_roots else np.zeros(len(old_cross), dtype=bool))
+    else:
+        healthy_mask = np.zeros(0, dtype=bool)
+    healthy_input = bool(np.any(healthy_mask))
     repaired_probes = {}
     def capture_health(topo, loop_coordinates=None):
         # Capture afresh for each trial; no coordinate cache crosses writes.
@@ -3204,9 +3302,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         target = saved if value is None else value
         if _skip_same_uv and _same_uv_bits(mesh_reader.read_uv(loops, layer), target):
             return
-        rows = target.tolist() if isinstance(target, np.ndarray) else target
-        for loop, uv in zip(loops, rows):
-            loop[layer].uv = uv
+        mesh_reader.write_uv(loops, layer, target)
         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
 
     def interpolation(candidate, alpha, positions, *, scale_pinned=False):
@@ -3247,8 +3343,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         release_trial(clear_layout=True)
         # Only successful trials touch the edit mesh. Recheck live coordinates
         # once after commit, including the exact outside-selection guard.
-        for p in probe.target_positions:
-            topo.loops[p][topo.uvl].uv = value[p]
+        if len(probe.target_positions) == topo.loop_count:
+            mesh_reader.write_uv(topo.loops, topo.uvl, value)
+        else:
+            mesh_reader.write_uv_indexed(topo.loops, topo.uvl, probe.target_positions, value[probe.target_positions])
         coordinates, health, triangles = capture_health(topo)
         if not valid(topo, health, coordinates, triangles):
             return None
@@ -3263,7 +3361,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         if not clean_relaxation or not probe.check_overlaps(
                 topo, include_existing=True, coordinates=coordinates)['self_overlaps']:
             return coordinates, health, None
-        candidate = np.asarray([tuple(loop[topo.uvl].uv) for loop in topo.loops])
+        candidate = np.array(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64, copy=True)
         def try_guarded_relaxation():
             if not reusable:
                 return None
@@ -3288,8 +3386,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 guarded_res = try_guarded_relaxation()
                 if guarded_res is not None:
                     return guarded_res
-                for p in probe.target_positions:
-                    topo.loops[p][topo.uvl].uv = candidate[p]
+                mesh_reader.write_uv_indexed(topo.loops, topo.uvl, probe.target_positions, candidate[probe.target_positions])
             alpha = .5 ** attempt
             value, current, checked, triangles = interpolation(candidate, alpha, probe.target_positions, scale_pinned=True)
             if valid(topo, checked, current, triangles, value):
@@ -3307,8 +3404,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 return guarded_res
         # Constraints can require an overlap. Retain the ordinary accepted
         # result if no tested clean step meets every existing acceptance gate.
-        for p in probe.target_positions:
-            topo.loops[p][topo.uvl].uv = candidate[p]
+        mesh_reader.write_uv_indexed(topo.loops, topo.uvl, probe.target_positions, candidate[probe.target_positions])
         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
         return coordinates, health, None
 
@@ -3512,9 +3608,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 if recalled:
                     # This is a fresh topology after the caller restored the
                     # exact original input. No native operator runs here.
-                    for loop, xy in zip(topo.loops, recalled['seed']):
-                        loop[uvl].uv = xy
-                    loop = None
+                    mesh_reader.write_uv(topo.loops, uvl, recalled['seed'])
                     bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
                     topo.refresh_uv()
                     recovery_report = recalled['report']
@@ -3710,7 +3804,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         # Otherwise the last fallback replaces the useful candidate and can
         # turn a partially blocked optimize into an unchanged rollback.
         if not settings.get('keep_metric') and before['max_deviation'] <= 0.05 and before['zero_edges'] == 0:
-            candidate = np.asarray([tuple(loop[topo.uvl].uv) for loop in topo.loops])
+            candidate = np.array(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64, copy=True)
             for attempt in range(1, 13):
                 alpha = 0.5 ** attempt
                 value, coordinates, health, triangles = interpolation(candidate, alpha, range(len(saved)))

@@ -141,17 +141,44 @@ def plan(core, topo, faces, settings, *, _coordinates=None, _initial_probe=None)
                 continue
         # Mixed winding on an inconsistently oriented 3D mesh is ambiguous.
         consistent = True
-        for fi in island:
-            for loop in topo.bm.faces[fi].loops:
-                if len(loop.edge.link_loops) > 2:
+        structure = getattr(topo, '_radial_connectivity', None)
+        if structure is not None and hasattr(topo, '_loop_edges_array'):
+            offsets, radial = structure
+            edges_arr = topo._loop_edges_array()
+            if edges_arr is not None and len(radial) == topo.loop_count:
+                in_isl = (np.ones(topo.loop_count, dtype=bool)
+                          if len(island) == len(topo.bm.faces)
+                          else np.isin(topo.loop_faces, list(island)))
+                counts = np.diff(offsets)
+                if np.any(counts[edges_arr[in_isl]] > 2):
                     consistent = False
-                    break
-                for other in loop.edge.link_loops:
-                    if other.face.index not in island or other == loop:
-                        continue
-                    if (loop.vert != other.link_loop_next.vert or
-                            loop.link_loop_next.vert != other.vert):
+                else:
+                    e2 = np.flatnonzero(counts == 2)
+                    if len(e2):
+                        lp0 = radial[offsets[e2]]
+                        lp1 = radial[offsets[e2] + 1]
+                        both = in_isl[lp0] & in_isl[lp1]
+                        if np.any(both):
+                            lp0 = lp0[both]
+                            lp1 = lp1[both]
+                            verts = topo._loop_vertices
+                            nxt = topo._loop_next_array
+                            if np.any((verts[lp0] != verts[nxt[lp1]]) | (verts[nxt[lp0]] != verts[lp1])):
+                                consistent = False
+            else:
+                structure = None
+        if structure is None:
+            for fi in island:
+                for loop in topo.bm.faces[fi].loops:
+                    if len(loop.edge.link_loops) > 2:
                         consistent = False
+                        break
+                    for other in loop.edge.link_loops:
+                        if other.face.index not in island or other == loop:
+                            continue
+                        if (loop.vert != other.link_loop_next.vert or
+                                loop.link_loop_next.vert != other.vert):
+                            consistent = False
         area = abs(float(cross.sum()))*.5
         if not consistent or area <= 1e-14:
             result['skipped'].append(dict(faces=sorted(island), reason='ambiguous_winding'))
@@ -181,9 +208,11 @@ def _chart_state(core, topo, chart, fixed_positions):
     target = np.flatnonzero(mask).tolist()
     outside = np.flatnonzero(~mask).tolist()
     fixed_groups = {topo.loop_to_vgroup[p] for p in fixed_positions}
-    island_groups = {topo.loop_to_vgroup[p] for p in target}
-    held = {g: tuple(topo.vgroup_uv(g)) for g in topo.vgroup_loops
-            if g in fixed_groups and g in island_groups}
+    if fixed_groups:
+        island_groups = {topo.loop_to_vgroup[p] for p in target}
+        held = {g: tuple(topo.vgroup_uv(g)) for g in (fixed_groups & island_groups)}
+    else:
+        held = {}
     positions = core.constrained_loops(topo.bm, only_faces=island)
     runs = core.constraint_runs(topo.bm, topo, positions)
     boundary_groups = {g for p in core.selection_border_loops(topo, island)
@@ -222,13 +251,12 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
         core.prepare_bm(bm)
         uvl = core.uv_layer(bm)
         loops = core.loops_in_order(bm)
-        vals = value.tolist() if isinstance(value, np.ndarray) else value
-        if positions is None:
-            for lp, uv in zip(loops, vals):
-                lp[uvl].uv = uv
-        else:
-            for p in positions:
-                loops[p][uvl].uv = vals[p]
+        arr = np.asarray(value, dtype=np.float64)
+        if positions is None or len(positions) == len(loops):
+            core.mesh_reader.write_uv(loops, uvl, arr)
+        elif len(positions):
+            pos_arr = np.asarray(positions, dtype=np.int64)
+            core.mesh_reader.write_uv_indexed(loops, uvl, pos_arr, arr[pos_arr])
         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
 
     report = dict(repaired=[], failed=[], skipped=plan['skipped'])
@@ -254,11 +282,18 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
             # Direction constraints leave the along-axis coordinate free. Only
             # actual pins and locked borders fix both coordinates of a point.
             native_fixed = state['native_fixed']
-            target_set, native_fixed_set = set(target), set(native_fixed)
-            chart_tri_idx = (
-                np.asarray([pos for fi, pos in numeric_topology.triangle_rows() if fi in island], dtype=np.intp).reshape(-1, 3)
-                if numeric_topology is not None else None
-            )
+            native_fixed_set = set(native_fixed)
+            target_set = None if not outside else set(target)
+            if numeric_topology is not None:
+                if not outside and hasattr(numeric_topology, '_triangle_arrays'):
+                    chart_tri_idx = numeric_topology._triangle_arrays()[1]
+                else:
+                    chart_tri_idx = np.asarray(
+                        [pos for fi, pos in numeric_topology.triangle_rows() if fi in island],
+                        dtype=np.intp,
+                    ).reshape(-1, 3)
+            else:
+                chart_tri_idx = None
             # Numeric attempts preserve mesh topology. Keep this wrapper only
             # until native unwrap; failed array-only repairs need no mesh reset.
             failure = 'no_feasible_initialization'
@@ -328,7 +363,7 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                         bm = bmesh.from_edit_mesh(obj.data)
                         core.prepare_bm(bm)
                         if ui_saved is None:
-                            selected = core._capture_selection(bm)
+                            selected = core._capture_selection(bm, _compact=True)
                             uv_faces = [f.uv_select for f in bm.faces]
                             selection_valid = bm.uv_select_sync_valid
                             tools = {p: getattr(ts, p) for p in
@@ -352,16 +387,16 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                             for face in bm.faces:
                                 face.uv_select = face.index in island
                         flip_x = chart['sign'] < 0
-                        if all_target and not native_fixed_set and not flip_x and not any(pins):
-                            for loop in loops:
-                                loop.uv_select_vert = loop.uv_select_edge = True
-                                loop[uvl].pin_uv = False
+                        has_pins = (b'\x01' in pins) if isinstance(pins, (bytes, bytearray)) else any(pins)
+                        loop = None
+                        if all_target and not native_fixed_set and not flip_x and not has_pins:
+                            core.mesh_reader.set_uv_select_all(loops, uvl, 1, 1, 0)
                         else:
                             for p, loop in enumerate(loops):
                                 member = all_target or (p in target_set)
                                 fixed = p in native_fixed_set
                                 loop.uv_select_vert = loop.uv_select_edge = member and not fixed
-                                loop[uvl].pin_uv = pins[p] or fixed
+                                loop[uvl].pin_uv = bool(pins[p]) or fixed
                                 if member and flip_x:
                                     loop[uvl].uv.x *= -1
                         bm.uv_select_sync_valid = True
@@ -400,13 +435,15 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                         topo = numeric_topology
                         topo.refresh_uv()
                         last_topo = topo
-                    else:
+                    elif method == 'LOCAL':
                         land(raw, target)
-                        if method == 'LOCAL':
-                            topo = numeric_topology
-                            topo.refresh_uv()
-                        else:
-                            topo = topology()
+                        topo = numeric_topology
+                        topo.refresh_uv()
+                        last_topo = topo
+                    else:
+                        if chart['sign'] < 0 or native_fixed:
+                            land(raw, target)
+                        topo = topology()
                         last_topo = topo
                     if topo.loop_to_vgroup != connectivity or topo.face_island != islands:
                         failure = 'uv_connectivity_changed'
@@ -421,7 +458,10 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
                             if not np.array_equal(repaired[outside], best[outside]):
                                 failure = 'native_integrity'
                                 continue
-                            land(repaired, target)
+                            changed = np.flatnonzero(np.any(repaired != raw, axis=1))
+                            if len(changed):
+                                core.mesh_reader.write_uv_indexed(topo.loops, topo.uvl, changed, repaired[changed])
+                                bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
                             topo.refresh_uv()
                             if topo.loop_to_vgroup != connectivity or topo.face_island != islands:
                                 failure = 'uv_connectivity_changed'
@@ -486,8 +526,7 @@ def seed(core, context, obj, plan, saved, pins, fixed_positions, settings, *, _p
             core.prepare_bm(bm)
             uvl = core.uv_layer(bm)
             loops = core.loops_in_order(bm)
-            for loop, pin in zip(loops, pins):
-                loop[uvl].pin_uv = pin
+            core.mesh_reader.write_pins(loops, uvl, pins)
             for prop, value in tools.items():
                 setattr(ts, prop, value)
             core._apply_selection(bm, selected, loops=loops)

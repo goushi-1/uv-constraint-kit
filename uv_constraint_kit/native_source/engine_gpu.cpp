@@ -433,10 +433,12 @@ struct Problem {
     }
     void gradient(const Vec& x,Vec& g) {
         Vec gu;
-        g.assign(2*p.n,0);
         if(gpu) {
+            g.resize(2*p.n);
             try {gpu->gradient(reciprocal,p.prevent_flips!=0,p.angle_length,g);}
-            catch(const std::exception& error) {gpu_failure(error);gpu.reset();build_j(x);}
+            catch(const std::exception& error) {gpu_failure(error);gpu.reset();g.assign(2*p.n,0);build_j(x);}
+        } else {
+            g.assign(2*p.n,0);
         }
         if(!gpu) gu.resize(4*p.nt);
         if(!gpu) for(I t=0;t<p.nt;++t) {

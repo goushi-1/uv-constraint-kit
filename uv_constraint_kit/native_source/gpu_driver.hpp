@@ -22,7 +22,14 @@ static std::array<I,7> gpu_counts{};
 static std::uint64_t fnv64_bytes(const void* data, std::size_t nbytes) noexcept {
     const auto* p = static_cast<const std::uint8_t*>(data);
     std::uint64_t h = 14695981039346656037ULL;
-    for(std::size_t i = 0; i < nbytes; ++i) {
+    std::size_t i = 0;
+    for(; i + 8 <= nbytes; i += 8) {
+        std::uint64_t w = 0;
+        std::memcpy(&w, p + i, 8);
+        h ^= w;
+        h *= 1099511628211ULL;
+    }
+    for(; i < nbytes; ++i) {
         h ^= static_cast<std::uint64_t>(p[i]);
         h *= 1099511628211ULL;
     }

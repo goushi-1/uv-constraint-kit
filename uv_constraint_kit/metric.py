@@ -97,7 +97,9 @@ def _prepare_geometry(core, topo, faces, shared_uv_groups=None):
         groups = groups_arr.tolist()
         tri_idx = inv_flat.reshape(-1, 3)
         index = {gr: i for i, gr in enumerate(groups)}
-        representatives = [topo.vgroup_loops[gr][0] for gr in groups]
+        representatives = (topo._vgroup_first_positions(groups_arr).tolist()
+                           if hasattr(topo, '_vgroup_first_positions')
+                           else [topo.vgroup_loops[gr][0] for gr in groups])
         rep_loops = [topo.loops[p] for p in representatives]
         prepared = native_engine.triangle_frames([loop.vert.co for loop in rep_loops], tri_idx)
         if prepared is not None:
@@ -321,8 +323,7 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
             current = core.mesh_reader.read_uv(write_loops, topo.uvl)
             if core._same_uv_bits(current, solved[write_idx]):
                 return len(tri), int((signed < 0).sum())
-        for loop, uv in zip(write_loops, solved[write_idx].tolist()):
-            loop[topo.uvl].uv = uv
+        core.mesh_reader.write_uv(write_loops, topo.uvl, solved[write_idx])
         return len(tri), int((signed < 0).sum())
     if local is None:
         local = _geometry['local'].copy()
@@ -523,8 +524,5 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
         with np.errstate(over='ignore', invalid='ignore'):
             rounded = x.astype(np.float32).astype(float)
         return len(tri), int((signed < 0).sum()), rounded
-    for group,i in index.items():
-        for pos in topo.vgroup_loops[group]:
-            if topo.loops[pos].face.index in faces:
-                topo.loops[pos][topo.uvl].uv=x[i]
+    core.mesh_reader.write_uv(_geometry['write_loops'], topo.uvl, x[_geometry['write_idx']])
     return len(tri),int((signed<0).sum())

@@ -284,7 +284,9 @@ def feasible_seed(topo, chart, held, engine, *, _diag=None):
     triangles = np.searchsorted(unique_groups, triangle_groups).astype(np.int64, copy=False)
     loop_faces = np.asarray(topo.loop_faces, dtype=np.int64)
     face_ids = loop_faces[positions[:, 0]]
-    representatives = [topo.vgroup_loops[int(group)][0] for group in unique_groups]
+    representatives = (topo._vgroup_first_positions(unique_groups).tolist()
+                       if hasattr(topo, '_vgroup_first_positions')
+                       else [topo.vgroup_loops[int(group)][0] for group in unique_groups])
     compact_uv = raw[representatives]
     if len(chart_faces) == len(topo.bm.faces):
         outside_groups = set()
@@ -301,5 +303,5 @@ def feasible_seed(topo, chart, held, engine, *, _diag=None):
     for compact_index in np.flatnonzero(np.any(repaired != compact_uv, axis=1)):
         if compact_index not in locked:
             group = int(unique_groups[compact_index])
-            raw[topo.vgroup_loops[group]] = repaired[compact_index]
+            raw[np.flatnonzero(loop_groups == group)] = repaired[compact_index]
     return raw

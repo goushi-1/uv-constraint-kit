@@ -25,10 +25,10 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 
 - **整岛四边流 DAG 四边形化（`Quadrify`）**：规则纯四边形岛保持 `quad_grid.py` 精确整数网格路径；针对含内部极点与凹口的整块纯四边形岛，新增整岛无环四边流（Quad-Flow DAG）求解路径（解决 `"Different UV vertices occupy the same grid point"` 报错，严格保持固定点、用户已有约束、岛屿面积与零翻转/零重叠）；在混合多边形岛上仍保留局部无极点四边条带拉直路径。
 - **单岛自重叠专用的「防止重叠」求解**：将优化、圆形化、矩形化、四边形化与边均匀分布中的「防止重叠」统一收敛为**仅防止单岛内部自重叠**（不拦截也不因擦碰邻岛而偏移独立岛屿，便于后续统一打包）；优先在严格 0 翻转 / 0 岛内自交校验下尝试纯净精确子空间求解，回退至软接触屏障与 `SoftMetric` 预条件器时从温和起点（`st=1.0`）起步并在收敛后执行精确子空间抛光（避免阶梯状边界 180° 折返与角部拉伸突刺）。
-- **CPU / GPU / Python 全链路大幅提速**：重新编译 `uvck_engine`（零重哈希与亲和度感知多线程重叠检测、解析 CCD 边界步长、`n <= 8192` 启用 `SoftMetric`、L-BFGS 原地历史复用）与 `uvck_gpu` 宿主层（GPU 与锁页暂存缓冲跨阶段缓存、FNV-1a 常量复用、解析 CCD 边界步长），并向量化 `island_area` / `recovery` / `UVTopology` 与 `Quadrify` 的原生 `AcceptanceProbe` 安全检查。
+- **CPU / GPU / Reader / Python 全链路大幅提速**：重新编译 `uvck_engine`（融合 `build_j`/`energy` 与 `RecentTriangles` 早退、单趟精确 `uvck_find_self_overlap_pair`、原生 `uvck_filter_acyclic` 四边流 DAG 收缩、懒构大盒空间网格、融合 L-BFGS 与 `nt >= 1024` 解析步长、零重哈希多线程重叠检测、解析 CCD 边界步长、`n <= 8192` `SoftMetric`）、`uvck_gpu` 宿主层（跨阶段缓冲缓存与 64 位 FNV-1a 常量复用）及稳定 ABI `uvck_reader`（批量 C++ `write_uv`/`write_uv_indexed`/`read_pins`/`write_pins`/`read_uv_select`/`write_uv_select`/`set_uv_select_all`/`constrained_loops`），配合 `UVTopology` 跨层单次复用及 `recovery`/`safety`/`untangle`/`Quadrify` 向量化热路径。
 - **默认折叠的「求解预设」抽屉**：在 UV 编辑器与 3D 视图侧边栏新增默认折叠的「求解预设」开关组（`防止重叠`、`固定边界条件`、`使用密度贴图`），自动作为标记与优化的默认参数且可由 F9 随时覆盖，不改变既有默认行为与外部饼菜单算子 ID。
 - **边均匀分布（`uv.uvck_distribute_edges`）**：一次性轻量工具，支持沿选中 UV 边链按**等距分布**或**按模型边长**比例重新分布顶点，随后安全松弛岛屿其余部分；不新增持久约束类型与覆盖着色，保持固定点、既有约束与岛屿面积。
-- **Blender 5.3.0 实测通过**：49/49 成员与 `blender --command extension build` 逐字节一致；9/9 宿主测试全过（含 `test_v190_host.py` 无头 UI/图标/汉化、含极点整岛 Quadrify、单岛自重叠专用「防止重叠」与阶梯边界防折返、边均匀分布）；31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`11.7406s` 总中位耗时，较 `1.7.62` 降 `67.04%` / 提速 `3.03x`，较 `1.7.65` 降 `60.65%`；`coastal mark` `3.6941s`、`rocks mark` `3.8761s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
+- **Blender 5.3.0 实测通过**：49/49 成员与 `blender --command extension build` 逐字节一致；9/9 宿主测试全过（含 `test_v190_host.py` 无头 UI/图标/汉化、含极点整岛 Quadrify、单岛自重叠专用「防止重叠」与阶梯边界防折返、边均匀分布）；31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`9.2259s` 总中位耗时，较 `1.7.62` 降 `77.43%` / 提速 `4.43x`，较 `1.7.65` 降 `69.08%`；`coastal mark` `3.1728s`、`rocks mark` `3.0168s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
 
 ## 从已有 UV 开始
 
@@ -167,7 +167,7 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 
 ## 从源码构建
 
-Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.9.0 重新编译了 CPU 引擎（`engine.cpp`）、CUDA GPU 宿主库（`engine_gpu.cpp`、`gpu_driver.hpp`）与 `numeric_stage`，沿用经源校验未改动的 `1.7.66` CUDA PTX（`gpu_metric.cu`）与原生读取器（`mesh_reader.cpp`），并继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
+Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.9.0 重新编译了 CPU 引擎（`engine.cpp`）、CUDA GPU 宿主库（`engine_gpu.cpp`、`gpu_driver.hpp`）、稳定 ABI 读取器（`mesh_reader.cpp`）与 `numeric_stage`，沿用经源校验未改动的 `1.7.66` CUDA PTX（`gpu_metric.cu`），并继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
 **Windows x64 / MSVC**；宿主检查使用 Blender 5.3.0。从源码构建 CUDA 引擎需要
 CUDA Toolkit / NVRTC 12.4；预构建包只需要兼容 NVIDIA 驱动。读取器运行时使用
 Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
@@ -209,7 +209,7 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 
 ## 版本区分
 
-- 1.9.0 为当前正式版：新增整岛四边流 DAG `Quadrify`、单岛自重叠专用「防止重叠」求解与精确子空间抛光、重建 CPU/GPU/Python 全链路提速（较 `1.7.62` 降 `67.04%` / `3.03x`）、默认折叠「求解预设」抽屉与 `uv.uvck_distribute_edges`，完成 9/9 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB 与隔离 Blender 5.3.0 升级验收。
+- 1.9.0 为当前正式版：新增整岛四边流 DAG `Quadrify`、单岛自重叠专用「防止重叠」求解与精确子空间抛光、重建 CPU/GPU/Reader/Python 全链路提速（较 `1.7.62` 降 `77.43%` / `4.43x`）、默认折叠「求解预设」抽屉与 `uv.uvck_distribute_edges`，完成 9/9 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB 与隔离 Blender 5.3.0 升级验收。
 - 1.7.66 为上一里程碑（P3-E/P3-A/P3-B 提速与 `build_native.py --numeric`）。
 - 1.7.65 为上一公开标签发行版，其记录见 [v1.7.65 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json)。
 - 更早结果分别记录在[验收记录](docs/VALIDATION.md)。
