@@ -1,8 +1,8 @@
 # Build from source / 从源码构建
 
-The 1.9.0 release rebuilds the CPU engine (`engine.cpp`), CUDA GPU host (`engine_gpu.cpp`, `gpu_driver.hpp`), stable-ABI reader (`mesh_reader.cpp`), and `numeric_stage` binaries while reusing the unchanged source-matched `1.7.66` CUDA PTX (`gpu_metric.cu`), and adds `distribute.py` to the `scripts/package.py` allowlist. The final archive has 49 members matching `blender --command extension build`; identity is recorded in [release_checks.json](../release_checks.json).
+The 1.9.0 release freshly rebuilds all native binaries: the CPU engine (`engine.cpp`), CUDA GPU host and `compute_86` PTX (`engine_gpu.cpp`, `gpu_driver.hpp`, `gpu_metric.cu`, `build_gpu.py`), stable-ABI reader (`mesh_reader.cpp`), and `numeric_stage` (`numeric_stage.cpp`), and includes `distribute.py` in the `scripts/package.py` allowlist. The final archive has 49 members matching `blender --command extension build`; identity is recorded in [release_checks.json](../release_checks.json).
 
-1.9.0 正式版重新编译了 CPU 引擎（`engine.cpp`）、CUDA GPU 宿主库（`engine_gpu.cpp`、`gpu_driver.hpp`）、稳定 ABI 读取器（`mesh_reader.cpp`）与 `numeric_stage`，沿用经源校验未改动的 `1.7.66` CUDA PTX（`gpu_metric.cu`），并在 `scripts/package.py` 打包清单中纳入 `distribute.py`。最终包共 49 个成员且与 `blender --command extension build` 逐字节一致，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
+1.9.0 正式版全新编译了全部原生组件：CPU 引擎（`engine.cpp`）、CUDA GPU 宿主库与 `compute_86` PTX（`engine_gpu.cpp`、`gpu_driver.hpp`、`gpu_metric.cu`、`build_gpu.py`）、稳定 ABI 读取器（`mesh_reader.cpp`）与 `numeric_stage`（`numeric_stage.cpp`），并在 `scripts/package.py` 打包清单中纳入 `distribute.py`。最终包共 49 个成员且与 `blender --command extension build` 逐字节一致，身份见 [release_checks.json](../release_checks.json)。以下命令是独立的完整重建方法；任何重新编译的制品都需重新验收并记录身份。
 
 ## Requirements / 工具
 
@@ -13,8 +13,9 @@ The 1.9.0 release rebuilds the CPU engine (`engine.cpp`), CUDA GPU host (`engine
 - CMake 3.20+, Visual Studio 2022 with C++ desktop tools and Windows SDK.
 - Blender 5.2+ for host tests; Blender's bundled Python already includes NumPy.
 - GPU build from source: CUDA Toolkit / NVRTC **12.4**, installed separately.
-  The current kernel target is `compute_89`; runtime GPU use requires an NVIDIA
-  GPU with compute capability 8.9+ and a driver supporting CUDA 12.4+.
+  The current kernel target is `compute_86`; runtime GPU use requires an NVIDIA
+  GPU with compute capability **8.6+** (RTX 30/40/50 series; validated locally on
+  RTX 40-series) and a driver supporting CUDA 12.4+.
 - The prebuilt CPU+GPU extension does not require the CUDA Toolkit. Unsupported
   hardware or GPU initialization failures use the CPU path.
 
@@ -65,14 +66,13 @@ python scripts/package.py --native-dir build/native_gpu/bin/windows-x64 --requir
 In PowerShell, environment references use `$env:CUDA_PATH`; in cmd use
 `%CUDA_PATH%`. Directory values may also be passed literally.
 
-The GPU builder uses NVRTC with C++17, disabled FMA/FTZ and precise division
-and square root; the host library dynamically loads the installed NVIDIA
+The GPU builder uses NVRTC 12.4 with C++17 targeting `compute_86` (with `--fmad=true`, disabled FTZ, and precise division/square root) for the full GPU-resident mixed-precision solver (FP32 L-BFGS sprint + FP64 final exact polish); the host library dynamically loads the installed NVIDIA
 driver. Its generated `gpu.json` identifies the DLL, PTX, source and build
 key. `--require-gpu` fails packaging unless both GPU binaries and the metadata
 have passed the package checks. Do not distribute CUDA Toolkit headers, NVRTC
 DLLs, or system driver DLLs as if they were this project's GPL source.
 
-GPU 构建使用 NVRTC 12.4；运行时通过系统 Driver API 加载。符合条件的大网格会自动分派
+GPU 构建使用 NVRTC 12.4 编译 `compute_86` PTX（混合精度全常驻求解：FP32 主冲刺 + FP64 末段抛光）；运行时通过系统 Driver API 加载。符合条件的大网格会自动分派
 到 GPU；小网格、部分特殊求解和 GPU 不可用时使用 CPU。GPU 失败会从原始输入回退。
 预构建扩展无需安装 Toolkit；其它硬件走 CPU 路径。
 

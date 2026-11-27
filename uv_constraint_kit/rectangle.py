@@ -31,16 +31,78 @@ def _box(points):
     return best[1:]
 
 
-def _corners(points, corners):
-    """Ordered corner assignment; eight nearest starting vertices suffice.
+def _corners(points, corners, blocked_triples=()):
+    """Ordered corner assignment avoiding collinear boundary triangles.
 
-    Dynamic programming keeps the other three corners distinct and ordered,
-    including concave borders where independent nearest points may coincide.
+    Dynamic programming keeps the four corners distinct and ordered, including
+    concave borders where independent nearest points may coincide. When
+    ``blocked_triples`` lists triangles whose three vertices all lie on this
+    boundary cycle, no single straight side is allowed to contain all three
+    vertices of any triple (preventing collinear zero-area boundary ears/chords).
     """
     n = len(points)
     if n < 4:
         raise ValueError('Rectification needs at least four boundary vertices')
     distance = ((points[:, None, :]-corners[None, :, :])**2).sum(axis=2)
+
+    if blocked_triples:
+        must = set()
+        for t0, t1, t2 in blocked_triples:
+            ps = sorted((t0, t1, t2))
+            diffs = [(ps[1]-ps[0]) % n, (ps[2]-ps[1]) % n, (ps[0]-ps[2]) % n]
+            if diffs.count(1) == 2:
+                for p in ps:
+                    if ((p - 1) % n) in ps and ((p + 1) % n) in ps:
+                        must.add(p)
+        if len(must) <= 4:
+            starts = sorted(must) if must else sorted(range(n), key=lambda i: (distance[i, 0], i))[:12]
+            best_safe = None
+            for start in starts:
+                order = np.roll(np.arange(n), -start)
+                pos_of = {int(order[i]): i for i in range(n)}
+                triples_ord = [sorted((pos_of[a], pos_of[b], pos_of[c]))
+                               for a, b, c in blocked_triples]
+                def lin_ok(u, v):
+                    for t0, _t1, t2 in triples_ord:
+                        if u <= t0 and t2 <= v:
+                            return False
+                    return True
+                def wrap_ok(u):
+                    for t0, t1, _t2 in triples_ord:
+                        if t0 >= u or (t0 == 0 and t1 >= u):
+                            return False
+                    return True
+                for shift in (range(4) if must else (0,)):
+                    costs = np.roll(distance[order], -shift, axis=1)
+                    dp = np.full((4, n), np.inf)
+                    parents = np.full((4, n), -1, dtype=int)
+                    dp[0, 0] = costs[0, 0]
+                    for stage in range(1, 4):
+                        for v in range(stage, n-(3-stage)):
+                            smallest, previous = np.inf, -1
+                            for u in range(stage-1, v):
+                                if dp[stage-1, u] < smallest and lin_ok(u, v):
+                                    smallest, previous = dp[stage-1, u], u
+                            if previous >= 0:
+                                dp[stage, v] = smallest+costs[v, stage]
+                                parents[stage, v] = previous
+                    for last in range(3, n):
+                        if not np.isfinite(dp[3, last]) or not wrap_ok(last):
+                            continue
+                        indices = [last]
+                        cur = last
+                        for stage in (3, 2, 1):
+                            cur = int(parents[stage, cur])
+                            indices.append(cur)
+                        indices.reverse()
+                        original = [int(order[i]) for i in indices]
+                        original = original[(-shift) % 4:] + original[:(-shift) % 4]
+                        key = (float(dp[3, last]), tuple(original))
+                        if best_safe is None or key < best_safe[0]:
+                            best_safe = key, original
+            if best_safe is not None:
+                return best_safe[1]
+
     starts = sorted(range(n), key=lambda i: (distance[i, 0], i))[:8]
     best = None
     for start in starts:
@@ -114,9 +176,13 @@ def _rectangle_cycle(topo, faces, cycle, spacing, aspect, shape,
     positive = signed_area > 0
     if not positive:
         box_corners = box_corners[[0, 3, 2, 1]]
+    cycle_pos = {g: i for i, g in enumerate(cycle)}
+    blocked_triples = [(cycle_pos[a], cycle_pos[b], cycle_pos[c])
+                       for a, b, c in core.triangles_for_faces(topo, faces)
+                       if a in cycle_pos and b in cycle_pos and c in cycle_pos]
     corners = (_marked_corners(topo, faces, cycle, local, box_corners, positive,
                                mark_positions)
-               or _corners(local, box_corners))
+               or _corners(local, box_corners, blocked_triples=blocked_triples))
     n = len(cycle)
     sides = []
     for i, start in enumerate(corners):
@@ -176,13 +242,10 @@ def _boundary(topo, faces, spacing, aspect, shape, orient_to_axis):
     held, details = _rectangle_cycle(
         topo, faces, outer, spacing, aspect, shape, orient_to_axis,
         target_area, core.selection_border_loops(topo, faces))
-    for i, cycle in enumerate(cycles):
-        if i != outer_index:
-            held.update({g: tuple(topo.vgroup_uv(g)) for g in cycle})
     details.update(shape_kind='RECTANGULAR', shape_cycles=[outer],
                     shape_options=dict(shape=shape, spacing=spacing,
                                        orient_to_axis=orient_to_axis),
-                    progressive_metric=len(cycles) > 1)
+                    progressive_metric=True)
     return held, details
 
 
@@ -193,6 +256,9 @@ def rectify(context, obj, faces, shape='RECTANGLE', spacing='GEOMETRY',
     if selected_only:
         bm = bmesh.from_edit_mesh(obj.data)
         selected_positions = core.selected_uv_edges(context, bm, mesh_fallback=False)
+        if (not selected_positions and context.scene.tool_settings.use_uv_select_sync
+                and not bm.uv_select_sync_valid):
+            selected_positions = core.selected_uv_edges(context, bm, mesh_fallback=True)
         del bm
 
     def boundary(topo, island, method, aspect):

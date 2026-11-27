@@ -263,28 +263,36 @@ def solve(core, topo, faces, fixed, runs, iterations, angle_length=1.0,
                 local[i] *= max(float(face[density_layer]), 1e-4)
         inv = np.linalg.inv(local)
     weights=_geometry['weights']
-    arrays=[]
-    for kind, positions in runs:
-        members={g for p in positions for g in topo.loop_edge_vgroups(p) if g in index}
-        arrays.append((kind,np.array(sorted({index[g] for g in members}),dtype=np.int64)))
+    run_cache = _geometry.setdefault('_run_cache', {})
+    run_key = (id(runs), len(runs))
+    cached_run = run_cache.get(run_key)
+    if cached_run is None or cached_run[0] is not runs:
+        arrays = []
+        raw_penalties = []
+        for kind, positions in runs:
+            members = {g for p in positions for g in topo.loop_edge_vgroups(p) if g in index}
+            arrays.append((kind, np.array(sorted({index[g] for g in members}), dtype=np.int64)))
+            if kind in (C_HORIZONTAL, C_VERTICAL):
+                edges = sorted({tuple(sorted((index[a], index[b]))) for p in positions
+                                for a, b in [topo.loop_edge_vgroups(p)]
+                                if a in index and b in index and index[a] != index[b]})
+                if edges:
+                    raw_penalties.append((1 if kind == C_HORIZONTAL else 0, np.asarray(edges, dtype=np.int64)))
+        cached_run = (runs, arrays, raw_penalties)
+        run_cache[run_key] = cached_run
+    else:
+        _, arrays, raw_penalties = cached_run
     held={index[g]:np.asarray(tuple(uv),dtype=float) for g,uv in fixed.items() if g in index}
     penalty_scale = max(float(np.ptp(x, axis=0) @ np.ptp(x, axis=0)), 1e-20)
     axis_penalties = []
     if constraint_strength is not None:
         # Penalize edge directions in their own scale. A short segment must
         # not disappear inside a long run's point-variance penalty.
-        for kind, positions in runs:
-            if kind not in (C_HORIZONTAL, C_VERTICAL):
-                continue
-            edges = sorted({tuple(sorted((index[a], index[b]))) for p in positions
-                            for a, b in [topo.loop_edge_vgroups(p)]
-                            if a in index and b in index and index[a] != index[b]})
-            if not edges:
-                continue
-            edges = np.asarray(edges, dtype=np.int64)
+        floor = penalty_scale * 1e-12
+        for axis, edges in raw_penalties:
             lengths = ((x[edges[:, 1]]-x[edges[:, 0]])**2).sum(axis=1)
-            weight = constraint_strength / (len(edges)*np.maximum(lengths, penalty_scale*1e-12))
-            axis_penalties.append((1 if kind == C_HORIZONTAL else 0, edges, weight))
+            weight = constraint_strength / (len(edges)*np.maximum(lengths, floor))
+            axis_penalties.append((axis, edges, weight))
     # The caller decides whether this is an intentional partial vertex solve.
     # Do not infer pins again from transient UV flags in the numeric solver.
     boundary=[]

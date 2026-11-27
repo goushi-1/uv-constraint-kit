@@ -31,7 +31,7 @@ import xml.etree.ElementTree as ET
 
 SOURCE = Path(__file__).resolve().parent
 NVRTC_OPTIONS = (
-    "--gpu-architecture=compute_89", "--std=c++17", "--fmad=false",
+    "--gpu-architecture=compute_86", "--std=c++17", "--fmad=true",
     "--ftz=false", "--prec-div=true", "--prec-sqrt=true",
 )
 HOST_FLAGS = ("/O2", "/fp:precise", "/MT")
@@ -248,7 +248,7 @@ def main() -> None:
         "ptx_sha256": ptx_hash,
         "abi": 1,
         "minimum_cuda_driver": 12040,
-        "minimum_compute_capability": 89,
+        "minimum_compute_capability": 86,
         "source_sha256": {name: source_hashes[name]
                            for name in ("gpu_driver.hpp", "gpu_metric.cu")},
         "engine_source_sha256": source_hashes["engine_gpu.cpp"],

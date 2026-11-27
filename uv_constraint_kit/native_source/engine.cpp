@@ -6,9 +6,6 @@
 #include <cmath>
 #include <cfenv>
 #include <cstring>
-#if defined(_M_X64) || defined(__SSE__)
-#include <xmmintrin.h>
-#endif
 #include <cfloat>
 #include <set>
 #include <cstdint>
@@ -51,20 +48,33 @@ struct Input {
 };
 struct Output { I accepted, evaluations, reciprocal, finite; double energy, gradient_max; };
 static double dot(const Vec& a, const Vec& b) {
-    double r=0; for(std::size_t i=0;i<a.size();++i) r+=a[i]*b[i]; return r;
+    const double* __restrict ap = a.data();
+    const double* __restrict bp = b.data();
+    const std::size_t n = a.size();
+    double r = 0;
+    for(std::size_t i = 0; i < n; ++i) r += ap[i] * bp[i];
+    return r;
 }
 template<bool Subtract>
-static double update_and_dot(Vec& target,const Vec& delta,double scale,const Vec& probe) {
-    double r=0;
-    for(std::size_t i=0;i<target.size();++i) {
-        const double value=Subtract?(target[i]-scale*delta[i]):(target[i]+scale*delta[i]);
-        target[i]=value;
-        r+=probe[i]*value;
+static double update_and_dot(Vec& target, const Vec& delta, double scale, const Vec& probe) {
+    double* __restrict tp = target.data();
+    const double* __restrict dp = delta.data();
+    const double* __restrict pp = probe.data();
+    const std::size_t n = target.size();
+    double r = 0;
+    for(std::size_t i = 0; i < n; ++i) {
+        const double value = Subtract ? (tp[i] - scale * dp[i]) : (tp[i] + scale * dp[i]);
+        tp[i] = value;
+        r += pp[i] * value;
     }
     return r;
 }
 static double max_abs(const Vec& a) {
-    double r=0; for(double x:a) r=std::max(r,std::abs(x)); return r;
+    const double* __restrict ap = a.data();
+    const std::size_t n = a.size();
+    double r = 0;
+    for(std::size_t i = 0; i < n; ++i) r = std::max(r, std::abs(ap[i]));
+    return r;
 }
 struct RecentTriangles {
     std::array<I,8> ids{{-1,-1,-1,-1,-1,-1,-1,-1}};
@@ -83,9 +93,13 @@ struct Problem {
     double contact_h=0,contact_sigma=0,contact_k=0;
     std::vector<std::pair<I,I>> contact_edges;
     std::vector<I> contact_vertices;
+    struct ContactPair { I vertex, edge; };
+    mutable std::vector<std::pair<double,I>> contact_ordered;
+    mutable std::vector<ContactPair> contact_pairs;
+    mutable bool contact_pairs_ready = false;
     bool soft, axes_only=true, reciprocal=false;
     std::vector<AxisSet> sets;
-    Vec jacobian, gradient_terms;
+    Vec jacobian;
     I evaluations=0;
     mutable I witness_i=-1,witness_j=-1;
     mutable bool border_rejected=false,flip_rejected=false;
@@ -412,63 +426,66 @@ struct Problem {
     double contact(const Vec& x,Vec* gradient) const {
         if(p.prevent_overlap!=2) return 0;
         if(!contact_valid) return INF;
-        double min0=INF,max0=-INF,min1=INF,max1=-INF;
-        for(I v:contact_vertices) {
-            min0=std::min(min0,x[2*v]);max0=std::max(max0,x[2*v]);
-            min1=std::min(min1,x[2*v+1]);max1=std::max(max1,x[2*v+1]);
-        }
-        int axis=(max0-min0)>=(max1-min1)?0:1,other=1-axis;
-        std::vector<std::pair<double,I>> ordered;
-        ordered.reserve(contact_vertices.size());
-        for(I v:contact_vertices) ordered.emplace_back(x[2*v+axis],v);
-        std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b) {
-            return a.first<b.first || (a.first==b.first && a.second<b.second);
-        });
-        struct Pair {I vertex,edge;};
-        std::vector<Pair> pairs;
         const double h2=contact_h*contact_h,sigma2=contact_sigma*contact_sigma;
-        for(I ei=0;ei<static_cast<I>(contact_edges.size());++ei) {
-            I a=contact_edges[ei].first,b=contact_edges[ei].second;
-            double low=std::min(x[2*a+axis],x[2*b+axis])-contact_h;
-            double high=std::max(x[2*a+axis],x[2*b+axis])+contact_h;
-            auto first=std::lower_bound(ordered.begin(),ordered.end(),low,
-                [](const auto& value,double key){return value.first<key;});
-            auto last=std::upper_bound(first,ordered.end(),high,
-                [](double key,const auto& value){return key<value.first;});
-            double lo=std::min(x[2*a+other],x[2*b+other]);
-            double hi=std::max(x[2*a+other],x[2*b+other]);
-            for(auto it=first;it!=last;++it) {
-                I v=it->second;if(v==a || v==b) continue;
-                double q=x[2*v+other];
-                double gap=std::max(std::max(lo-q,q-hi),0.);
-                // The sweep axis interval is already edge-expanded. Test the
-                // orthogonal AABB gap to reproduce the 2D squared-gap gate.
-                double along_gap=std::max(std::max(std::min(x[2*a+axis],x[2*b+axis])-it->first,
-                                                    it->first-std::max(x[2*a+axis],x[2*b+axis])),0.);
-                if(along_gap*along_gap+gap*gap>h2) continue;
-                pairs.push_back({v,ei});
+        if(!(gradient && contact_pairs_ready)) {
+            double min0=INF,max0=-INF,min1=INF,max1=-INF;
+            for(I v:contact_vertices) {
+                const double vx = x[2*v], vy = x[2*v+1];
+                if(vx < min0) min0 = vx; if(vx > max0) max0 = vx;
+                if(vy < min1) min1 = vy; if(vy > max1) max1 = vy;
             }
+            const int axis=(max0-min0)>=(max1-min1)?0:1,other=1-axis;
+            contact_ordered.clear();
+            contact_ordered.reserve(contact_vertices.size());
+            for(I v:contact_vertices) contact_ordered.emplace_back(x[2*v+axis],v);
+            std::sort(contact_ordered.begin(),contact_ordered.end(),[](const auto& a,const auto& b) {
+                return a.first<b.first || (a.first==b.first && a.second<b.second);
+            });
+            contact_pairs.clear();
+            for(I ei=0;ei<static_cast<I>(contact_edges.size());++ei) {
+                const I a=contact_edges[ei].first,b=contact_edges[ei].second;
+                const double xa=x[2*a+axis], xb=x[2*b+axis];
+                const double emin=std::min(xa,xb), emax=std::max(xa,xb);
+                const double low=emin-contact_h, high=emax+contact_h;
+                auto first=std::lower_bound(contact_ordered.begin(),contact_ordered.end(),low,
+                    [](const auto& value,double key){return value.first<key;});
+                auto last=std::upper_bound(first,contact_ordered.end(),high,
+                    [](double key,const auto& value){return key<value.first;});
+                const double lo=std::min(x[2*a+other],x[2*b+other]);
+                const double hi=std::max(x[2*a+other],x[2*b+other]);
+                for(auto it=first;it!=last;++it) {
+                    const I v=it->second;if(v==a || v==b) continue;
+                    const double q=x[2*v+other];
+                    const double gap=std::max(std::max(lo-q,q-hi),0.);
+                    const double along_gap=std::max(std::max(emin-it->first,it->first-emax),0.);
+                    if(along_gap*along_gap+gap*gap>h2) continue;
+                    contact_pairs.push_back({v,ei});
+                }
+            }
+            std::sort(contact_pairs.begin(),contact_pairs.end(),[](const ContactPair& a,const ContactPair& b) {
+                return a.vertex<b.vertex || (a.vertex==b.vertex && a.edge<b.edge);
+            });
+            contact_pairs_ready = true;
         }
-        std::sort(pairs.begin(),pairs.end(),[](const Pair& a,const Pair& b) {
-            return a.vertex<b.vertex || (a.vertex==b.vertex && a.edge<b.edge);
-        });
         double total=0;
         const double denominator=h2+sigma2;
-        for(const Pair& pair:pairs) {
-            I v=pair.vertex,a=contact_edges[pair.edge].first,b=contact_edges[pair.edge].second;
+        const double inv_den=1.0/denominator;
+        for(const ContactPair& pair:contact_pairs) {
+            const I v=pair.vertex,a=contact_edges[pair.edge].first,b=contact_edges[pair.edge].second;
             const double *q=&x[2*v],*pa=&x[2*a],*pb=&x[2*b];
-            double abx=pb[0]-pa[0],aby=pb[1]-pa[1];
-            double ab2=abx*abx+aby*aby;
-            double t=std::clamp(((q[0]-pa[0])*abx+(q[1]-pa[1])*aby)/std::max(ab2,sigma2),0.,1.);
-            double dx=q[0]-pa[0]-t*abx,dy=q[1]-pa[1]-t*aby;
-            double d2=dx*dx+dy*dy;
-            double s=(d2+sigma2)/denominator;
+            const double abx=pb[0]-pa[0],aby=pb[1]-pa[1];
+            const double ab2=abx*abx+aby*aby;
+            const double t=std::clamp(((q[0]-pa[0])*abx+(q[1]-pa[1])*aby)/std::max(ab2,sigma2),0.,1.);
+            const double dx=q[0]-pa[0]-t*abx,dy=q[1]-pa[1]-t*aby;
+            const double d2=dx*dx+dy*dy;
+            const double s=(d2+sigma2)*inv_den;
             if(!(s<1.)) continue;
-            double one=1.-s;
-            total+=-contact_k*one*one*std::log(s);
+            const double one=1.-s;
+            const double log_s=std::log(s);
+            total+=-contact_k*one*one*log_s;
             if(gradient) {
-                double db_dd2=contact_k*(2.*one*std::log(s)-one*one/s)/denominator;
-                double gx=2.*db_dd2*dx,gy=2.*db_dd2*dy;
+                const double db_dd2=contact_k*(2.*one*log_s-one*one/s)*inv_den;
+                const double gx=2.*db_dd2*dx,gy=2.*db_dd2*dy;
                 (*gradient)[2*v]+=gx;(*gradient)[2*v+1]+=gy;
                 (*gradient)[2*a]-=(1.-t)*gx;(*gradient)[2*a+1]-=(1.-t)*gy;
                 (*gradient)[2*b]-=t*gx;(*gradient)[2*b+1]-=t*gy;
@@ -530,14 +547,17 @@ struct Problem {
                 const double uy=xp[2*b+1]-xp[2*a+1],wy=xp[2*c+1]-xp[2*a+1];
                 const double j0=ux*v[0]+wx*v[2],j1=ux*v[1]+wx*v[3];
                 const double j2=uy*v[0]+wy*v[2],j3=uy*v[1]+wy*v[3];
-                if(!std::isfinite(j0) || !std::isfinite(j1) || !std::isfinite(j2) || !std::isfinite(j3)) return INF;
                 const double det=j0*j3-j1*j2;
-                if(!std::isfinite(det) || det<=1e-6) {flip_rejected=true;return INF;}
+                const double norm=j0*j0+j1*j1+j2*j2+j3*j3;
+                if(!std::isfinite(det) || !std::isfinite(norm)) return INF;
+                if(det<=1e-6) {flip_rejected=true;return INF;}
             }
         }
         double e=0;
-        const double w_ang=1-p.angle_length,w_len=p.angle_length;
-        for(I t=0;t<p.nt;++t) {
+        const double w_ang=1.0-p.angle_length, w_len=p.angle_length;
+        const bool rec = reciprocal;
+        contact_pairs_ready = false;
+        for(I t = 0; t < p.nt; ++t) {
             const I a=tri[3*t],b=tri[3*t+1],c=tri[3*t+2];
             const double* v=inv+4*t;
             const double ux=xp[2*b]-xp[2*a],wx=xp[2*c]-xp[2*a];
@@ -546,46 +566,71 @@ struct Problem {
             const double j2=uy*v[0]+wy*v[2],j3=uy*v[1]+wy*v[3];
             double* j=jac+4*t;
             j[0]=j0;j[1]=j1;j[2]=j2;j[3]=j3;
-            if(!std::isfinite(j0) || !std::isfinite(j1) || !std::isfinite(j2) || !std::isfinite(j3)) {
+            const double norm=j0*j0+j1*j1+j2*j2+j3*j3;
+            const double det=j0*j3-j1*j2;
+            if(!std::isfinite(norm) || !std::isfinite(det)) {
                 if(check_flip) invalid_triangles.remember(t);
                 return INF;
             }
-            const double det=j0*j3-j1*j2;
-            if(check_flip && det<=1e-6) {invalid_triangles.remember(t);flip_rejected=true;return INF;}
-            const double norm=j0*j0+j1*j1+j2*j2+j3*j3,squared=det*det+1e-16;
+            if(check_flip && det<=1e-6) {
+                invalid_triangles.remember(t);
+                flip_rejected = true;
+                return INF;
+            }
+            const double squared=det*det+1e-16;
             const double denominator=check_flip?det:std::sqrt(squared);
-            const double root=std::sqrt(std::max(norm+2*det,1e-20));
-            const double length=reciprocal?.5*(norm+norm/squared-4):norm-2*root+2;
-            e+=(w_ang*norm/denominator+w_len*length)*weights[t];
+            double length;
+            if(rec) {
+                length = 0.5*(norm + norm/squared - 4.0);
+            } else {
+                const double root = std::sqrt(std::max(norm + 2.0*det, 1e-20));
+                length = norm - 2.0*root + 2.0;
+            }
+            e += (w_ang*norm/denominator + w_len*length)*weights[t];
         }
         if(p.prevent_overlap!=1 && !borders_valid(x)) return INF;
         if(p.prevent_overlap==2) {double contact_energy=contact(x,nullptr);if(!std::isfinite(contact_energy)) return INF;e+=contact_energy;}
         penalty(x,&e,nullptr);return std::isfinite(e)?e:INF;
     }
     void gradient(const Vec& x, Vec& g) {
-        // Every triangle term is overwritten; only the vertex accumulation
-        // needs resetting. Scratch storage belongs to this solve alone.
-        Vec& gu=gradient_terms;gu.resize(4*p.nt);g.assign(2*p.n,0);
-        for(I t=0;t<p.nt;++t) {
-            const double* j=&jacobian[4*t];const double* inv=&p.inverse[4*t];
-            double det=j[0]*j[3]-j[1]*j[2],norm=j[0]*j[0]+j[1]*j[1]+j[2]*j[2]+j[3]*j[3];
-            double squared=det*det+1e-16,denominator=(p.prevent_flips || reciprocal)?det:std::sqrt(squared);
-            double derivative=(p.prevent_flips || reciprocal)?1:det/denominator;
-            double root=std::sqrt(std::max(norm+2*det,1e-20)),a,b;
-            if(reciprocal) {a=(1-p.angle_length)*2/denominator+p.angle_length*(1+1/squared);
-                b=-(1-p.angle_length)*norm*derivative/(denominator*denominator)-p.angle_length*norm*det/(squared*squared);}
-            else {double rotation=(norm+2*det>1e-20)?2*p.angle_length/root:0;
-                a=(1-p.angle_length)*2/denominator+2*p.angle_length-rotation;
-                b=-(1-p.angle_length)*norm*derivative/(denominator*denominator)-rotation;}
-            double gj[]={a*j[0]+b*j[3],a*j[1]-b*j[2],a*j[2]-b*j[1],a*j[3]+b*j[0]};
-            for(int axis=0;axis<2;++axis) {
-                gu[4*t+2*axis]=(gj[2*axis]*inv[0]+gj[2*axis+1]*inv[1])*p.weights[t];
-                gu[4*t+2*axis+1]=(gj[2*axis]*inv[2]+gj[2*axis+1]*inv[3])*p.weights[t];
+        const double* __restrict jac = jacobian.data();
+        const double* __restrict inv_all = p.inverse;
+        const double* __restrict weights = p.weights;
+        const I* __restrict tri = p.tri;
+        const double w_ang = 1.0 - p.angle_length, w_len = p.angle_length;
+        const bool rec = reciprocal;
+        const bool check_flip = (p.prevent_flips || rec);
+        g.assign(2*p.n, 0.0);
+        double* __restrict gp = g.data();
+        for(I t = 0; t < p.nt; ++t) {
+            const double* j = jac + 4*t;
+            const double* inv = inv_all + 4*t;
+            const double j0=j[0], j1=j[1], j2=j[2], j3=j[3];
+            const double det=j0*j3-j1*j2, norm=j0*j0+j1*j1+j2*j2+j3*j3;
+            const double squared=det*det+1e-16;
+            const double denominator=check_flip?det:std::sqrt(squared);
+            const double inv_den = 1.0/denominator;
+            const double inv_den2 = inv_den*inv_den;
+            const double derivative=check_flip?1.0:(det*inv_den);
+            double a, b;
+            if(rec) {
+                const double inv_sq = 1.0/squared;
+                a = w_ang*2.0*inv_den + w_len*(1.0 + inv_sq);
+                b = -w_ang*norm*derivative*inv_den2 - w_len*norm*det*(inv_sq*inv_sq);
+            } else {
+                const double n2d = norm + 2.0*det;
+                const double rotation = (n2d > 1e-20) ? (2.0*w_len/std::sqrt(n2d)) : 0.0;
+                a = w_ang*2.0*inv_den + 2.0*w_len - rotation;
+                b = -w_ang*norm*derivative*inv_den2 - rotation;
             }
-        }
-        for(int corner=0;corner<3;++corner) for(I t=0;t<p.nt;++t) for(int axis=0;axis<2;++axis) {
-            double a=gu[4*t+2*axis],b=gu[4*t+2*axis+1];
-            g[2*p.tri[3*t+corner]+axis]+=(corner==0?-a-b:corner==1?a:b);
+            const double g0=a*j0+b*j3, g1=a*j1-b*j2, g2=a*j2-b*j1, g3=a*j3+b*j0;
+            const double wt = weights[t];
+            const double a0=(g0*inv[0]+g1*inv[1])*wt, b0=(g0*inv[2]+g1*inv[3])*wt;
+            const double a1=(g2*inv[0]+g3*inv[1])*wt, b1=(g2*inv[2]+g3*inv[3])*wt;
+            const I va = tri[3*t], vb = tri[3*t+1], vc = tri[3*t+2];
+            gp[2*va]   -= (a0 + b0); gp[2*va+1] -= (a1 + b1);
+            gp[2*vb]   += a0;        gp[2*vb+1] += a1;
+            gp[2*vc]   += b0;        gp[2*vc+1] += b1;
         }
         if(p.prevent_overlap==2) contact(x,&g);
         if(!soft) {

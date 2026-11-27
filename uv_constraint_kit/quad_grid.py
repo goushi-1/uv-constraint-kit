@@ -11,6 +11,7 @@ from collections import defaultdict, deque
 import heapq
 import math
 import struct
+import numpy as np
 
 from . import core
 from .const import C_HORIZONTAL, C_VERTICAL
@@ -58,7 +59,7 @@ def _coordinates(intervals, minimum, maximum, shape, average, seed_length, limit
 
 
 def solve(bm, uvl, face_ids, seed, shape='PER_FACE', average_shape=True,
-          min_limit=0.002, *, require_complete=True, apply=True, topo=None):
+          min_limit=0.002, *, require_complete=True, apply=True, topo=None, _uv_coords=None):
     """Lay out one complete UV chart; unsupported input raises without writes.
 
     EVEN uses unit grid spacing. FACE uses the seed's two geometric edge-pair
@@ -87,17 +88,23 @@ def solve(bm, uvl, face_ids, seed, shape='PER_FACE', average_shape=True,
 
     if topo is None:
         topo = core.UVTopology(bm, uvl)
+    uv_arr = _uv_coords if _uv_coords is not None else np.asarray(core.mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64)
+    loop_pos = topo.loop_pos
+    loop_to_vg = topo.loop_to_vgroup
     rows = {}
     edge_rows = defaultdict(list)
     original = []
     winding = None
     for face in faces:
         corners = tuple(face.loops)
-        group_ids = tuple(int(topo.loop_to_vgroup[topo.loop_pos[loop]])
-                          for loop in corners)
+        lpos = tuple(loop_pos[loop] for loop in corners)
+        group_ids = tuple(int(loop_to_vg[p]) for p in lpos)
         if len(set(group_ids)) != 4:
             raise ValueError('Quad has repeated UV vertices')
-        points = [tuple(float(v) for v in loop[uvl].uv) for loop in corners]
+        points = ((float(uv_arr[lpos[0], 0]), float(uv_arr[lpos[0], 1])),
+                  (float(uv_arr[lpos[1], 0]), float(uv_arr[lpos[1], 1])),
+                  (float(uv_arr[lpos[2], 0]), float(uv_arr[lpos[2], 1])),
+                  (float(uv_arr[lpos[3], 0]), float(uv_arr[lpos[3], 1])))
         if not all(math.isfinite(v) for point in points for v in point):
             raise ValueError('Grid quadrification requires finite input UVs')
         signed = _area(points)
@@ -238,7 +245,7 @@ def solve(bm, uvl, face_ids, seed, shape='PER_FACE', average_shape=True,
     return report
 
 
-def quad_flow_runs(bm, uvl, face_ids, seed, *, topo=None, exclude_poles=False, existing_runs=()):
+def quad_flow_runs(bm, uvl, face_ids, seed, *, topo=None, exclude_poles=False, existing_runs=(), _cache=None, _uv_coords=None):
     """Extract maximal acyclic conflict-free H/V quad-flow runs over an island.
 
     Works on pure-quad and mixed-polygon UV islands even when interior poles or
@@ -249,140 +256,172 @@ def quad_flow_runs(bm, uvl, face_ids, seed, *, topo=None, exclude_poles=False, e
     if uvl is None:
         raise ValueError('Grid quadrification requires a UV map')
     core.prepare_bm(bm)
-    wanted = {int(i) for i in face_ids}
-    quads = [fi for fi in sorted(wanted) if 0 <= fi < len(bm.faces) and len(bm.faces[fi].loops) == 4]
-    if not quads:
-        raise ValueError('Island has no visible quad face')
     if topo is None:
         topo = core.UVTopology(bm, uvl)
 
-    rows = {}
-    edge_uses = defaultdict(list)
-    v_faces = defaultdict(set)
-    windings = []
-    for fi in quads:
-        face = bm.faces[fi]
-        corners = tuple(face.loops)
-        lpos = tuple(topo.loop_pos[lp] for lp in corners)
-        gids = tuple(int(topo.loop_to_vgroup[p]) for p in lpos)
-        if len(set(gids)) != 4:
-            continue
-        pts = [tuple(float(c) for c in lp[uvl].uv) for lp in corners]
-        if not all(math.isfinite(c) for pt in pts for c in pt):
-            continue
-        signed = _area(pts)
-        if not math.isfinite(signed) or abs(signed) <= 1e-14:
-            continue
-        sign = 1 if signed > 0.0 else -1
-        windings.append(sign)
-        rows[fi] = (corners, lpos, gids, pts, sign)
-        for c, lp in enumerate(corners):
-            if len(lp.edge.link_faces) > 2:
+    if _cache is not None and 'face_c0' in _cache:
+        rows = _cache['rows']
+        edge_uses = _cache['edge_uses']
+        valid_quads = _cache['valid_quads']
+        poles = _cache['poles']
+        winding = _cache['winding']
+        face_c0 = _cache['face_c0']
+        cut_quads = _cache['cut_quads']
+        existing_h_pairs = _cache['existing_h_pairs']
+        existing_v_pairs = _cache['existing_v_pairs']
+        def edge_dir(c0, c):
+            return ((c - c0) % 4) if winding > 0 else ((-(c - c0)) % 4)
+    else:
+        wanted = {int(i) for i in face_ids}
+        quads = [fi for fi in sorted(wanted) if 0 <= fi < len(bm.faces) and len(bm.faces[fi].loops) == 4]
+        if not quads:
+            raise ValueError('Island has no visible quad face')
+        uv_arr = _uv_coords if _uv_coords is not None else np.asarray(core.mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64)
+        rows = {}
+        edge_uses = defaultdict(list)
+        v_faces = defaultdict(set)
+        windings = []
+        loop_pos = topo.loop_pos
+        loop_to_vg = topo.loop_to_vgroup
+        for fi in quads:
+            face = bm.faces[fi]
+            corners = tuple(face.loops)
+            lpos = tuple(loop_pos[lp] for lp in corners)
+            gids = tuple(int(loop_to_vg[p]) for p in lpos)
+            if len(set(gids)) != 4:
                 continue
-            a, b = gids[c], gids[(c + 1) % 4]
-            v_faces[a].add(fi)
-            key = (lp.edge.index, min(a, b), max(a, b))
-            edge_uses[key].append((fi, c, a, b, lpos[c]))
-
-    if not rows:
-        raise ValueError('Island has no valid quad faces for quadrification')
-    winding = 1 if sum(windings) >= 0 else -1
-    valid_quads = {fi for fi, r in rows.items() if r[4] == winding}
-    if not valid_quads:
-        raise ValueError('Island has no consistently oriented quad faces')
-
-    # Build internal dual adjacency and detect boundary vertices & interior poles.
-    boundary_verts = set()
-    neighbors = defaultdict(list)
-    for uses in edge_uses.values():
-        uses = [u for u in uses if u[0] in valid_quads]
-        if len(uses) == 1:
-            boundary_verts.add(uses[0][2])
-            boundary_verts.add(uses[0][3])
-        elif len(uses) == 2:
-            u0, u1 = uses
-            if u0[2] == u1[3] and u0[3] == u1[2]:
-                neighbors[u0[0]].append((u1[0], u0[1], u1[1], u0[2], u0[3]))
-                neighbors[u1[0]].append((u0[0], u1[1], u0[1], u1[2], u1[3]))
-    # Vertices touching non-quads in mixed islands also behave as non-regular boundaries.
-    for fi in wanted:
-        if fi not in valid_quads:
-            for lp in bm.faces[fi].loops:
-                boundary_verts.add(int(topo.loop_to_vgroup[topo.loop_pos[lp]]))
-
-    poles = {g for g, fs in v_faces.items() if g not in boundary_verts and len(fs) != 4}
-
-    def edge_dir(c0, c):
-        return ((c - c0) % 4) if winding > 0 else ((-(c - c0)) % 4)
-
-    def c0_from_edge_dir(c, d):
-        return ((c - d) % 4) if winding > 0 else ((c + d) % 4)
-
-    def frame_uv_alignment(fi, c0):
-        pts = rows[fi][3]
-        ux = uy = vx = vy = 0.0
-        for c in range(4):
-            a, b = pts[c], pts[(c + 1) % 4]
-            dx, dy = b[0] - a[0], b[1] - a[1]
-            d = edge_dir(c0, c)
-            if d == 0:
-                ux += dx
-                uy += dy
-            elif d == 2:
-                ux -= dx
-                uy -= dy
-            elif d == 1:
-                vx += dx
-                vy += dy
-            else:
-                vx -= dx
-                vy -= dy
-        un = math.hypot(ux, uy)
-        vn = math.hypot(vx, vy)
-        if un <= 1e-12 or vn <= 1e-12:
-            return 0.0
-        return 0.5 * (ux / un + vy / vn)
-
-    # Priority-BFS propagate canonical (H, V) frame across each quad sheet.
-    face_c0 = {}
-    start_order = ([int(seed)] if int(seed) in valid_quads else []) + sorted(valid_quads)
-    for start in start_order:
-        if start in face_c0:
-            continue
-        best_c0 = max(range(4), key=lambda c0: frame_uv_alignment(start, c0))
-        face_c0[start] = best_c0
-        pq = []
-        for nbr, c_cur, c_nbr, ga, gb in neighbors[start]:
-            d_cur = edge_dir(best_c0, c_cur)
-            prop_c0 = c0_from_edge_dir(c_nbr, (d_cur + 2) % 4)
-            pole_pen = (1 if ga in poles else 0) + (1 if gb in poles else 0)
-            heapq.heappush(pq, (pole_pen, -frame_uv_alignment(nbr, prop_c0), nbr, prop_c0))
-        while pq:
-            _pp, _neg_al, fi, prop_c0 = heapq.heappop(pq)
-            if fi in face_c0:
+            pts = ((float(uv_arr[lpos[0], 0]), float(uv_arr[lpos[0], 1])),
+                   (float(uv_arr[lpos[1], 0]), float(uv_arr[lpos[1], 1])),
+                   (float(uv_arr[lpos[2], 0]), float(uv_arr[lpos[2], 1])),
+                   (float(uv_arr[lpos[3], 0]), float(uv_arr[lpos[3], 1])))
+            if not all(math.isfinite(c) for pt in pts for c in pt):
                 continue
-            face_c0[fi] = prop_c0
-            for nbr, c_cur, c_nbr, ga, gb in neighbors[fi]:
-                if nbr in face_c0:
+            signed = _area(pts)
+            if not math.isfinite(signed) or abs(signed) <= 1e-14:
+                continue
+            sign = 1 if signed > 0.0 else -1
+            windings.append(sign)
+            rows[fi] = (corners, lpos, gids, pts, sign)
+            for c, lp in enumerate(corners):
+                if len(lp.edge.link_faces) > 2:
                     continue
-                d_cur = edge_dir(prop_c0, c_cur)
-                nc0 = c0_from_edge_dir(c_nbr, (d_cur + 2) % 4)
+                a, b = gids[c], gids[(c + 1) % 4]
+                v_faces[a].add(fi)
+                key = (lp.edge.index, min(a, b), max(a, b))
+                edge_uses[key].append((fi, c, a, b, lpos[c]))
+
+        if not rows:
+            raise ValueError('Island has no valid quad faces for quadrification')
+        winding = 1 if sum(windings) >= 0 else -1
+        valid_quads = {fi for fi, r in rows.items() if r[4] == winding}
+        if not valid_quads:
+            raise ValueError('Island has no consistently oriented quad faces')
+
+        # Build internal dual adjacency and detect boundary vertices & interior poles.
+        boundary_verts = set()
+        neighbors = defaultdict(list)
+        for uses in edge_uses.values():
+            uses = [u for u in uses if u[0] in valid_quads]
+            if len(uses) == 1:
+                boundary_verts.add(uses[0][2])
+                boundary_verts.add(uses[0][3])
+            elif len(uses) == 2:
+                u0, u1 = uses
+                if u0[2] == u1[3] and u0[3] == u1[2]:
+                    neighbors[u0[0]].append((u1[0], u0[1], u1[1], u0[2], u0[3]))
+                    neighbors[u1[0]].append((u0[0], u1[1], u0[1], u1[2], u1[3]))
+        for fi in wanted:
+            if fi not in valid_quads:
+                for lp in bm.faces[fi].loops:
+                    boundary_verts.add(int(loop_to_vg[loop_pos[lp]]))
+
+        poles = {g for g, fs in v_faces.items() if g not in boundary_verts and len(fs) != 4}
+
+        def edge_dir(c0, c):
+            return ((c - c0) % 4) if winding > 0 else ((-(c - c0)) % 4)
+
+        def c0_from_edge_dir(c, d):
+            return ((c - d) % 4) if winding > 0 else ((c + d) % 4)
+
+        def frame_uv_alignment(fi, c0):
+            pts = rows[fi][3]
+            ux = uy = vx = vy = 0.0
+            for c in range(4):
+                a, b = pts[c], pts[(c + 1) % 4]
+                dx, dy = b[0] - a[0], b[1] - a[1]
+                d = edge_dir(c0, c)
+                if d == 0:
+                    ux += dx; uy += dy
+                elif d == 2:
+                    ux -= dx; uy -= dy
+                elif d == 1:
+                    vx += dx; vy += dy
+                else:
+                    vx -= dx; vy -= dy
+            un = math.hypot(ux, uy)
+            vn = math.hypot(vx, vy)
+            if un <= 1e-12 or vn <= 1e-12:
+                return 0.0
+            return 0.5 * (ux / un + vy / vn)
+
+        face_c0 = {}
+        start_order = ([int(seed)] if int(seed) in valid_quads else []) + sorted(valid_quads)
+        for start in start_order:
+            if start in face_c0:
+                continue
+            best_c0 = max(range(4), key=lambda c0: frame_uv_alignment(start, c0))
+            face_c0[start] = best_c0
+            pq = []
+            for nbr, c_cur, c_nbr, ga, gb in neighbors[start]:
+                d_cur = edge_dir(best_c0, c_cur)
+                prop_c0 = c0_from_edge_dir(c_nbr, (d_cur + 2) % 4)
                 pole_pen = (1 if ga in poles else 0) + (1 if gb in poles else 0)
-                heapq.heappush(pq, (pole_pen, -frame_uv_alignment(nbr, nc0), nbr, nc0))
+                heapq.heappush(pq, (pole_pen, -frame_uv_alignment(nbr, prop_c0), nbr, prop_c0))
+            while pq:
+                _pp, _neg_al, fi, prop_c0 = heapq.heappop(pq)
+                if fi in face_c0:
+                    continue
+                face_c0[fi] = prop_c0
+                for nbr, c_cur, c_nbr, ga, gb in neighbors[fi]:
+                    if nbr in face_c0:
+                        continue
+                    d_cur = edge_dir(prop_c0, c_cur)
+                    nc0 = c0_from_edge_dir(c_nbr, (d_cur + 2) % 4)
+                    pole_pen = (1 if ga in poles else 0) + (1 if gb in poles else 0)
+                    heapq.heappush(pq, (pole_pen, -frame_uv_alignment(nbr, nc0), nbr, nc0))
 
-    # Map existing user H/V constraints for top-priority preservation.
-    existing_h_pairs = set()
-    existing_v_pairs = set()
-    for kind, pos_list in existing_runs:
-        if kind not in (C_HORIZONTAL, C_VERTICAL):
-            continue
-        target_set = existing_h_pairs if kind == C_HORIZONTAL else existing_v_pairs
-        for p in pos_list:
-            ga, gb = topo.loop_edge_vgroups(p)
-            target_set.add((min(int(ga), int(gb)), max(int(ga), int(gb))))
+        existing_h_pairs = set()
+        existing_v_pairs = set()
+        for kind, pos_list in existing_runs:
+            if kind not in (C_HORIZONTAL, C_VERTICAL):
+                continue
+            target_set = existing_h_pairs if kind == C_HORIZONTAL else existing_v_pairs
+            for p in pos_list:
+                ga, gb = topo.loop_edge_vgroups(p)
+                target_set.add((min(int(ga), int(gb)), max(int(ga), int(gb))))
 
-    # Collect agreeing edges and detect holonomy-cut quads.
-    cut_quads = set()
+        cut_quads = set()
+        for uses in edge_uses.values():
+            uses = [u for u in uses if u[0] in face_c0]
+            if len(uses) == 2:
+                u0, u1 = uses
+                d0 = edge_dir(face_c0[u0[0]], u0[1])
+                d1 = edge_dir(face_c0[u1[0]], u1[1])
+                if (d0 + 2) % 4 != d1:
+                    cut_quads.add(u0[0])
+                    cut_quads.add(u1[0])
+
+        if _cache is not None:
+            _cache.update(rows=rows, edge_uses=edge_uses, valid_quads=valid_quads,
+                          poles=poles, winding=winding, face_c0=face_c0,
+                          cut_quads=cut_quads, existing_h_pairs=existing_h_pairs,
+                          existing_v_pairs=existing_v_pairs)
+
+    if not exclude_poles and _cache is not None and _cache.get('skip_heavy_poles'):
+        if len(poles) >= 16 and len(cut_quads) >= 32:
+            return None, {'quads': len(valid_quads), 'poles': len(poles),
+                          'cut_quads': len(cut_quads), 'exclude_poles': False}
+
     cand_h = []
     cand_v = []
     for uses in edge_uses.values():
@@ -394,8 +433,6 @@ def quad_flow_runs(bm, uvl, face_ids, seed, *, topo=None, exclude_poles=False, e
             d0 = edge_dir(face_c0[u0[0]], u0[1])
             d1 = edge_dir(face_c0[u1[0]], u1[1])
             if (d0 + 2) % 4 != d1:
-                cut_quads.add(u0[0])
-                cut_quads.add(u1[0])
                 continue
         fi, c, ga, gb, lpos = uses[0]
         epair = (min(ga, gb), max(ga, gb))

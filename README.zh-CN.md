@@ -17,18 +17,19 @@
 [安装包身份](release_checks.json)。
 [查看已知问题](docs/KNOWN_ISSUES.md)。
 符合条件的大型求解会自动使用 GPU；小网格和部分特殊求解仍使用 CPU。GPU 需要
-NVIDIA 计算能力 8.9+ 显卡及支持 CUDA 12.4+ 的驱动。预构建扩展不需要另装 CUDA
+NVIDIA 计算能力 **8.6+** 显卡（覆盖 RTX 30/40/50 系，本机在 RTX 40 系实测验证）及支持 CUDA 12.4+ 的驱动。预构建扩展不需要另装 CUDA
 Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 已发布的版本见[历史发行版](https://github.com/goushi-1/uv-constraint-kit/releases)。
 
 ## 1.9.0 的变化
 
-- **整岛四边流 DAG 四边形化（`Quadrify`）**：规则纯四边形岛保持 `quad_grid.py` 精确整数网格路径；针对含内部极点与凹口的整块纯四边形岛，新增整岛无环四边流（Quad-Flow DAG）求解路径（解决 `"Different UV vertices occupy the same grid point"` 报错，严格保持固定点、用户已有约束、岛屿面积与零翻转/零重叠）；在混合多边形岛上仍保留局部无极点四边条带拉直路径。
-- **单岛自重叠专用的「防止重叠」求解**：将优化、圆形化、矩形化、四边形化与边均匀分布中的「防止重叠」统一收敛为**仅防止单岛内部自重叠**（不拦截也不因擦碰邻岛而偏移独立岛屿，便于后续统一打包）；优先在严格 0 翻转 / 0 岛内自交校验下尝试纯净精确子空间求解，回退至软接触屏障与 `SoftMetric` 预条件器时从温和起点（`st=1.0`）起步并在收敛后执行精确子空间抛光（避免阶梯状边界 180° 折返与角部拉伸突刺）。
-- **CPU / GPU / Reader / Python 全链路大幅提速**：重新编译 `uvck_engine`（融合 `build_j`/`energy` 与 `RecentTriangles` 早退、单趟精确 `uvck_find_self_overlap_pair`、原生 `uvck_filter_acyclic` 四边流 DAG 收缩、懒构大盒空间网格、融合 L-BFGS 与 `nt >= 1024` 解析步长、零重哈希多线程重叠检测、解析 CCD 边界步长、`n <= 8192` `SoftMetric`）、`uvck_gpu` 宿主层（跨阶段缓冲缓存与 64 位 FNV-1a 常量复用）及稳定 ABI `uvck_reader`（批量 C++ `write_uv`/`write_uv_indexed`/`read_pins`/`write_pins`/`read_uv_select`/`write_uv_select`/`set_uv_select_all`/`constrained_loops`），配合 `UVTopology` 跨层单次复用及 `recovery`/`safety`/`untangle`/`Quadrify` 向量化热路径。
-- **默认折叠的「求解预设」抽屉**：在 UV 编辑器与 3D 视图侧边栏新增默认折叠的「求解预设」开关组（`防止重叠`、`固定边界条件`、`使用密度贴图`），自动作为标记与优化的默认参数且可由 F9 随时覆盖，不改变既有默认行为与外部饼菜单算子 ID。
-- **边均匀分布（`uv.uvck_distribute_edges`）**：一次性轻量工具，支持沿选中 UV 边链按**等距分布**或**按模型边长**比例重新分布顶点，随后安全松弛岛屿其余部分；不新增持久约束类型与覆盖着色，保持固定点、既有约束与岛屿面积。
-- **Blender 5.3.0 实测通过**：49/49 成员与 `blender --command extension build` 逐字节一致；9/9 宿主测试全过（含 `test_v190_host.py` 无头 UI/图标/汉化、含极点整岛 Quadrify、单岛自重叠专用「防止重叠」与阶梯边界防折返、边均匀分布）；31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、零重叠/零交叉/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`9.2259s` 总中位耗时，较 `1.7.62` 降 `77.43%` / 提速 `4.43x`，较 `1.7.65` 降 `69.08%`；`coastal mark` `3.1728s`、`rocks mark` `3.0168s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
+- **全常驻混合精度 GPU 求解器（`compute_86`）**：使用 NVRTC 12.4 全新编译面向 `compute_86`（SM 8.6+，覆盖 RTX 30/40/50 系，本机 RTX 40 系实测）的 `gpu_metric.cu` PTX，在显存内完成 FP32 主冲刺 + 校验后 FP64 末段精确抛光（零原子确定性规约、零同步标量槽，同设备位一致确定性 `determinism_ok=true`，零翻转/零自重叠，约束残差 `<= 0.05°`）。
+- **整岛四边流 DAG 四边形化（`Quadrify`）**：规则纯四边形岛保持 `quad_grid.py` 精确整数网格路径；针对含内部极点与凹口的整块纯四边形岛，新增整岛无环四边流（Quad-Flow DAG）求解路径（解决 `"Different UV vertices occupy the same grid point"` 报错，严格保持固定点、用户已有约束、岛屿面积与零翻转/零重叠），并配合 `metric.py` 约束打包缓存与 `quad_grid.py` 批量 UV 读取提速；混合多边形岛仍保留局部无极点四边条带拉直路径。
+- **带孔与凹边界真实模型的圆形化 / 矩形化强化**：无约束内孔不再强制钉死在原位，改用虚拟孔帽 Tutte 嵌入（自动开启岛内防自重叠保护）随外边界自由松弛；支持自适应等比缩放精确保持 `1e-5` 面积（仅在手工固定点导致无法严格等比时回退至有界容差）；矩形化新增防共线边界耳/弦 DP 角点选择大幅提升复杂有机网格通过率；补齐 3D 视口同步选择（`use_uv_select_sync=True` 且 `uv_select_sync_valid=False`）回退。
+- **单岛自重叠专用的「防止重叠」求解**：将优化、圆形化、矩形化、四边形化与边均匀分布中的「防止重叠」统一收敛为**仅防止单岛内部自重叠**（不拦截也不因擦碰邻岛而偏移独立岛屿，便于后续统一打包）；优先在严格 0 翻转 / 0 岛内自交校验下尝试纯净精确子空间求解，回退至软接触屏障与 `SoftMetric` 预条件器时从温和起点（`st=1.0`）起步并在收敛后执行精确子空间抛光。
+- **CPU / Reader / Python 性能与窄面板排版优化**：全新编译 `uvck_engine`（单趟融合梯度消除 `gu[4*nt]` 缓冲流量、倒数分支移除冗余 `sqrt`、能量/梯度复用接触对缓存、`RecentTriangles`、`uvck_find_self_overlap_pair`、`uvck_filter_acyclic`、解析 CCD、`n <= 8192` `SoftMetric`）与稳定 ABI `uvck_reader`（`PyObject_GetBuffer` 原生 `float[2]`/`double[2]` 快速坐标读取 + 批量读写 + `read_uv_select` 纯 Python 回退），并将侧边栏底部的「显示约束边颜色」与「线宽」调整为双行紧凑布局避免窄面板英文截断。
+- **默认折叠「求解预设」抽屉与边均匀分布（`uv.uvck_distribute_edges`）**：侧边栏新增默认折叠「求解预设」（`防止重叠`、`固定边界条件`、`使用密度贴图`）而不改既有默认值与外部饼菜单算子 ID；新增一次性「边均匀分布」支持**等距分布**与**按模型边长**比例重分布并安全松弛其余面。
+- **Blender 5.3.0 实测通过**：49/49 成员与 `blender --command extension build` 逐字节一致；9/9 宿主测试全过（`test_v190_host.py` 扩展至 11 项用例，覆盖 UI/图标/汉化、含极点整岛 Quadrify、单岛自重叠与阶梯防折返、边均匀分布、带孔岛自由松弛、防共线矩形化、3D 同步选择与钉锁面积回退）；31 用例（62 操作）P2 门禁全过（`hard_failures=0`、`soft_failures=0`、62/62 零重叠/零翻转、`27/31` 精确零残差）；8 轮 CPU-0 绑核 ABBA+BAAB 确定性通过（`7.3209s` 总中位耗时，较 `1.7.62` 的 `36.4286s` 降 `79.90%` / 提速 `4.98x`，较 `1.7.65` 的 `29.8393s` 降 `75.47%`；`coastal mark` `2.3069s`、`coastal clear` `0.6371s`、`rocks mark` `2.5262s`、`rocks clear` `0.6060s`、`multi mark` `0.4167s`）；并完成 `1.7.66 -> 1.9.0` 隔离升级/F9/CPU+GPU 验收。
 
 ## 从已有 UV 开始
 
@@ -136,7 +137,17 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 
 ![四边形网格整理前后对照](docs/images/quadrify.svg)
 
-*合成示例：将拓扑兼容的四边形岛排列为网格。*
+*合成示例：将包含内部极点且扭曲旋转的纯四边形岛通过整岛四边流 DAG 整理为规整网格。*
+
+### 边均匀分布
+
+选中一条或多条 UV 边链，使用「边均匀分布」沿链将顶点按**等距分布**（Even）或
+**按模型边长**（Geometry）比例重新排布，并自动安全松弛岛屿其余部分。该工具为
+一次性间距整理，不新增持久约束叠加线，同时保持固定点、既有约束与岛屿面积。
+
+![边均匀分布前后对照](docs/images/distribute-edges.svg)
+
+*合成示例：将顶部选中边链上聚拢不均的顶点等距重排并松弛内部网格。*
 
 ### 对称与实时联动
 
@@ -167,9 +178,9 @@ Toolkit。其它硬件或不支持的 GPU 环境会使用 CPU 路径。
 
 ## 从源码构建
 
-Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.9.0 重新编译了 CPU 引擎（`engine.cpp`）、CUDA GPU 宿主库（`engine_gpu.cpp`、`gpu_driver.hpp`）、稳定 ABI 读取器（`mesh_reader.cpp`）与 `numeric_stage`，沿用经源校验未改动的 `1.7.66` CUDA PTX（`gpu_metric.cu`），并继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
+Python 负责 Blender 界面、选区、撤回和叠加层，C++17 引擎负责数值计算。1.9.0 全新编译了全部原生组件：CPU 引擎（`engine.cpp`）、CUDA GPU 宿主库与 `compute_86` PTX（`engine_gpu.cpp`、`gpu_driver.hpp`、`gpu_metric.cu`、`build_gpu.py`）、稳定 ABI 读取器（`mesh_reader.cpp`）与 `numeric_stage`（`numeric_stage.cpp`），继续支持 `scripts/build_native.py --numeric` 与 `scripts/package.py --require-numeric`。原生构建面向
 **Windows x64 / MSVC**；宿主检查使用 Blender 5.3.0。从源码构建 CUDA 引擎需要
-CUDA Toolkit / NVRTC 12.4；预构建包只需要兼容 NVIDIA 驱动。读取器运行时使用
+CUDA Toolkit / NVRTC 12.4；预构建包只需要支持 SM 8.6+ / CUDA 12.4+ 的 NVIDIA 驱动。读取器运行时使用
 Blender 自带 Python；发行包不包含 Python 或 CUDA 运行时文件。
 以下命令是独立的完整重建示例；任何重新编译的制品均需重新验收并记录身份。
 
@@ -209,7 +220,7 @@ blender --background --factory-startup --disable-autoexec --python-exit-code 1 -
 
 ## 版本区分
 
-- 1.9.0 为当前正式版：新增整岛四边流 DAG `Quadrify`、单岛自重叠专用「防止重叠」求解与精确子空间抛光、重建 CPU/GPU/Reader/Python 全链路提速（较 `1.7.62` 降 `77.43%` / `4.43x`）、默认折叠「求解预设」抽屉与 `uv.uvck_distribute_edges`，完成 9/9 宿主测试、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB 与隔离 Blender 5.3.0 升级验收。
+- 1.9.0 为当前正式版：新增全常驻混合精度 GPU 求解（`compute_86` SM 8.6+ PTX，较 `1.7.62` 降 `79.90%` / `4.98x`）、整岛四边流 DAG `Quadrify`、带孔/凹边界圆形化与矩形化强化（自由内孔、防共线角点、3D 同步选择回退）、单岛自重叠专用「防止重叠」求解、重建全部 CPU/GPU/Reader/numeric 二进制、默认折叠「求解预设」抽屉与 `uv.uvck_distribute_edges`，完成 9/9 宿主测试（`test_v190_host.py` 11 项）、P2 62 操作（0 硬/软失败）、8 轮 ABBA+BAAB 与隔离 Blender 5.3.0 升级验收。
 - 1.7.66 为上一里程碑（P3-E/P3-A/P3-B 提速与 `build_native.py --numeric`）。
 - 1.7.65 为上一公开标签发行版，其记录见 [v1.7.65 标签](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json)。
 - 更早结果分别记录在[验收记录](docs/VALIDATION.md)。

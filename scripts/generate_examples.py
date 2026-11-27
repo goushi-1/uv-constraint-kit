@@ -19,7 +19,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import uv_constraint_kit as addon
-from uv_constraint_kit import core, ops, circle, rectangle, quadrify
+from uv_constraint_kit import core, ops, circle, rectangle, quadrify, distribute
 from uv_constraint_kit import symmetry, live_symmetry, shape_constraints
 
 if not bpy.app.background or '--factory-startup' not in sys.argv or bpy.data.filepath:
@@ -277,15 +277,89 @@ def shape(kind):
 
 
 def quad():
-    obj, _, _ = grid(rotated=True)
+    # Build a warped rotated 8x6 pure-quad chart with an interior pole insert
+    # (one quad cell subdivided into 5 quads -> four valence-3 and four valence-5 poles)
+    # so the diagram demonstrates 1.9.0 whole-island Quad-Flow DAG quadrification.
+    nx, ny = 8, 6
+    vid = {}
+    vertices, uv = [], []
+
+    def add_v(x, y):
+        u = .16 + .68*x + .045*math.sin(math.pi*y)
+        v = .20 + .52*y + .085*math.sin(math.pi*x) + .035*x
+        a = .34
+        ur = .5 + math.cos(a)*(u-.5) - math.sin(a)*(v-.5)
+        vr = .5 + math.sin(a)*(u-.5) + math.cos(a)*(v-.5)
+        idx = len(vertices)
+        vertices.append((x, y, 0.0))
+        uv.append((ur, vr))
+        return idx
+
+    for j in range(ny + 1):
+        for i in range(nx + 1):
+            vid[(i, j)] = add_v(i / nx, j / ny)
+    x0, x1 = 3.0 / nx, 4.0 / nx
+    y0, y1 = 2.0 / ny, 3.0 / ny
+    q0 = add_v(x0 + 0.28*(x1-x0), y0 + 0.28*(y1-y0))
+    q1 = add_v(x0 + 0.72*(x1-x0), y0 + 0.28*(y1-y0))
+    q2 = add_v(x0 + 0.72*(x1-x0), y0 + 0.72*(y1-y0))
+    q3 = add_v(x0 + 0.28*(x1-x0), y0 + 0.72*(y1-y0))
+    faces = []
+    for j in range(ny):
+        for i in range(nx):
+            if (i, j) == (3, 2):
+                continue
+            faces.append((vid[(i, j)], vid[(i+1, j)], vid[(i+1, j+1)], vid[(i, j+1)]))
+    faces.extend([
+        (q0, q1, q2, q3),
+        (vid[(3, 2)], vid[(4, 2)], q1, q0),
+        (vid[(4, 2)], vid[(4, 3)], q2, q1),
+        (vid[(4, 3)], vid[(3, 3)], q3, q2),
+        (vid[(3, 3)], vid[(3, 2)], q0, q3),
+    ])
+    obj = create(vertices, faces, uv)
     before = capture(obj)
-    result = quadrify.quadrify(bpy.context, obj, set(range(len(topology(obj).bm.faces))), shape='EVEN')
+    all_faces = set(range(len(topology(obj).bm.faces)))
+    result = quadrify.quadrify(bpy.context, obj, all_faces, shape='PER_FACE',
+                               average_shape=True, prevent_overlap=True)
     assert result['changed'] == 1 and not result['skipped'], result
+    assert result['islands'][0]['algorithm'] == 'QUAD_FLOW', result
     after = capture(obj)
-    return diagram('quadrify.svg', 'Quadrify a regular quad chart',
-        'Rebuild a supported quad chart as an evenly spaced grid.',
-        [('Before · warped quad chart', before), ('After · EVEN spacing', after)],
-        'Uses mesh topology. Requires an integer-grid quad chart; arbitrary topology is not supported.')
+    return diagram('quadrify.svg', 'Quadrify regular and poled quad islands',
+        'Regular quad charts use exact integer grids; poled or concave quad islands use whole-island Quad-Flow DAG.',
+        [('Before · warped quad island with poles', before), ('After · whole-island Quad-Flow DAG', after)],
+        'Preserves pins, existing constraints, island area, and zero flips/overlaps without adding UV seams.')
+
+
+def distribute_edges_example():
+    nx, ny = 10, 6
+    vertices, uv = [], []
+    # Bunch the top row's UV vertices tightly toward the left/right ends so redistribution is unmistakable.
+    bunched = [0.0, 0.04, 0.09, 0.16, 0.28, 0.50, 0.72, 0.84, 0.91, 0.96, 1.0]
+    for j in range(ny + 1):
+        for i in range(nx + 1):
+            x, y = i / nx, j / ny
+            vertices.append((x, y, 0.0))
+            bx = bunched[i]
+            blend = y ** 1.4
+            u = 0.12 + 0.76 * (x * (1.0 - blend) + bx * blend)
+            v = 0.18 + 0.62 * y + 0.05 * math.sin(math.pi * x)
+            uv.append((u, v))
+    faces = [(j*(nx+1)+i, j*(nx+1)+i+1, (j+1)*(nx+1)+i+1, (j+1)*(nx+1)+i)
+             for j in range(ny) for i in range(nx)]
+    obj = create(vertices, faces, uv)
+    chosen = edge_positions(obj, lambda a, b: a // (nx + 1) == ny and b // (nx + 1) == ny)
+    select(obj, chosen)
+    before = capture(obj, chosen)
+    all_faces = set(range(len(topology(obj).bm.faces)))
+    result = distribute.distribute_edges(bpy.context, obj, all_faces, mode='EVEN',
+                                         respect_pins=True, prevent_overlap=True)
+    assert result['changed'] == 1 and not result['skipped'], result
+    after = capture(obj, chosen)
+    return diagram('distribute-edges.svg', 'Distribute edges along a UV chain',
+        'Evenly (or geometrically) redistribute vertices along selected UV edge chains and relax the island.',
+        [('Before · uneven spacing along top chain', before), ('After · Even distribution + relaxed interior', after)],
+        'One-shot spacing tool (Even or Geometry ratio). No persistent constraint overlay is added; preserves area.')
 
 
 def symmetric():
@@ -343,7 +417,7 @@ OUTPUT.mkdir(parents=True, exist_ok=True)
 addon.register()
 try:
     results = constraints() + [optimize(), unconstrain(), shape('circularize'),
-        shape('rectangularize'), quad(), symmetric()]
+        shape('rectangularize'), quad(), distribute_edges_example(), symmetric()]
 finally:
     addon.unregister()
 print(json.dumps(dict(passed=True, figures=results, blender=bpy.app.version_string,

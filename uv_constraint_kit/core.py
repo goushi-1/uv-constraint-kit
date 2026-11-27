@@ -3459,8 +3459,9 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                 if guarded[2].get('wrote_any'):
                     restore(warm_values, _skip_same_uv=True)
                 return False
-            coordinates, health, triangles = capture_health(topo)
-            ok = valid(topo, health, coordinates, triangles)
+            trial_uv = read_loop_tuples()
+            coordinates, health, triangles = capture_health(topo, trial_uv)
+            ok = valid(topo, health, coordinates, triangles, trial_uv)
             if ok and (contact_faces or override_overlap is False):
                 overlap = probe.check_overlaps(topo, include_existing=True, coordinates=coordinates)
                 health.update(overlap)
@@ -3469,7 +3470,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                         (allow_polish and not health['constraints_limited']
                          and health['max_deviation'] <= max(best_deviation, 0.05)))
             if ok and improved:
-                best_values = read_loop_tuples()
+                best_values = trial_uv
                 best_deviation = health['max_deviation']
                 warm_values = best_values
                 warm_deviation = best_deviation
@@ -3505,8 +3506,9 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     _topo=topo, _constraint_strength=strength,_quality_before=quality_before,
                     _quality_after=False, _geometry_cache=prepared_geometry,
                     _update_mesh=False, _has_pins=has_any_pins, **dict(settings, _contact_faces=contact_faces))
-            coordinates, health, triangles = capture_health(topo)
-            ok = valid(topo, health, coordinates, triangles)
+            trial_uv = read_loop_tuples()
+            coordinates, health, triangles = capture_health(topo, trial_uv)
+            ok = valid(topo, health, coordinates, triangles, trial_uv)
             accepted = ok and health['max_deviation'] < best_deviation
             if accepted and contact_faces and (not health['constraints_limited'] or (medium_probe and stage == 0)):
                 # The distance barrier is best-effort, not continuous
@@ -3517,7 +3519,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             if medium_probe and stage == 0:
                 probe_accepted = accepted
             if accepted:
-                best_values = read_loop_tuples()
+                best_values = trial_uv
                 best_deviation = health['max_deviation']
                 warm_values = best_values
                 warm_deviation = best_deviation
@@ -3540,8 +3542,8 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     break
             elif (fast_subspace and health.get('rejection_reason') == 'constraint_residual'
                   and health['max_deviation'] < warm_deviation - 1e-5
-                  and valid(topo, health, coordinates, triangles, _ignore_residual=True)):
-                warm_values = read_loop_tuples()
+                  and valid(topo, health, coordinates, triangles, trial_uv, _ignore_residual=True)):
+                warm_values = trial_uv
                 warm_deviation = health['max_deviation']
                 if try_exact_subspace():
                     break

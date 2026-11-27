@@ -102,18 +102,25 @@ def _build_partial_strip(topo, island, shape, average_shape, min_limit, strip_fa
 
 def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_shape,
                                   respect_pins, prevent_overlap, orig_area, orig_center,
-                                  before_quality):
+                                  before_quality, *, _topo=None, _base_uv=None):
     """Whole-island Quad-Flow DAG Quadrify for concave or poled quad islands.
 
     Uses temporary acyclic H/V quad-flow runs through the native metric solver
     without altering the mesh's stored constraint marks, preserving flips/overlaps,
     pins, existing constraints, and exact island area.
     """
-    bm = bmesh.from_edit_mesh(obj.data)
-    core.prepare_bm(bm)
-    uvl = core.uv_layer(bm)
-    topo = core.UVTopology(bm, uvl)
-    base_uv = np.asarray(core.mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64)
+    owns_topo = _topo is None
+    if owns_topo:
+        bm = bmesh.from_edit_mesh(obj.data)
+        core.prepare_bm(bm)
+        uvl = core.uv_layer(bm)
+        topo = core.UVTopology(bm, uvl)
+    else:
+        topo = _topo
+        bm = topo.bm
+        uvl = topo.uvl
+    base_uv = (_base_uv if _base_uv is not None
+               else np.asarray(core.mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64))
     existing_pos = core.constrained_loops(bm, only_faces=island)
     existing_runs = core.constraint_runs(bm, topo, existing_pos)
     held = core._island_pins(topo, island) if respect_pins else {}
@@ -126,7 +133,8 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
     # reference quad edges while keeping island orientation.
     geometry = metric._prepare_geometry(core, topo, island)
     if geometry is None:
-        del topo, uvl, bm
+        if owns_topo:
+            del topo, uvl, bm
         raise ValueError('Island has no valid triangles for quad-flow quadrification')
     if shape == 'EVEN':
         # Normalize each triangle's 2D reference frame to unit area / isotropic shape
@@ -142,26 +150,34 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
         core.mesh_reader.write_uv(topo.loops, uvl, base_uv)
 
     last_reason = 'Quad-flow quadrification did not converge safely'
+    flow_cache = {'skip_heavy_poles': True}
+    base_probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=False, coordinates=base_uv)
+    ref_edges = base_probe._ref_array[:, 1:] - base_probe._ref_array[:, :1]
+    ref_cross = ref_edges[:, 0, 0] * ref_edges[:, 1, 1] - ref_edges[:, 0, 1] * ref_edges[:, 1, 0]
+    oriented = np.abs(ref_cross) > 2e-14
+    ref_sign = np.sign(ref_cross[oriented])
+    from . import native_engine
+    use_contact = bool(not held and native_engine.supports_contact(len(geometry['tri'])))
+    uv_dirty = False
     for exclude_poles in (False, True):
-        restore_base()
+        if uv_dirty:
+            restore_base()
+            uv_dirty = False
         try:
             q_runs, q_stats = quad_grid.quad_flow_runs(
                 bm, uvl, island, seed, topo=topo,
                 exclude_poles=exclude_poles, existing_runs=existing_runs,
+                _cache=flow_cache, _uv_coords=base_uv,
             )
         except ValueError as exc:
             last_reason = str(exc)
             continue
+        if q_runs is None:
+            continue
 
         # Combine temporary quad-flow H/V runs with any existing aligned runs.
         runs = list(q_runs) + [(k, ps) for k, ps in existing_runs if k == C_ALIGNED]
-        probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=False, coordinates=base_uv)
-        ref_edges = probe._ref_array[:, 1:] - probe._ref_array[:, :1]
-        ref_cross = ref_edges[:, 0, 0] * ref_edges[:, 1, 1] - ref_edges[:, 0, 1] * ref_edges[:, 1, 0]
-        oriented = np.abs(ref_cross) > 2e-14
-        ref_sign = np.sign(ref_cross[oriented])
-        from . import native_engine
-        use_contact = bool(not held and native_engine.supports_contact(len(geometry['tri'])))
+        probe = base_probe
 
         # Fast exact-subspace attempt first, then soft penalty ramp + exact subspace snap.
         best_uv = None
@@ -250,6 +266,7 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
             return (p90, p50, dev) < (best_p90, best_p50, best_dev)
 
         # Stage 0: direct exact subspace solve
+        uv_dirty = True
         n0, _ = metric.solve(
             core, topo, island, held, runs, 1, angle_length=1.0,
             use_density_map=False, auto=True, prevent_flips=True,
@@ -259,7 +276,8 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
             fit_after_solve()
             cand, dev, p50, p90, ex_dev = eval_candidate()
             if cand is not None and dev <= 0.05:
-                del topo, uvl, bm
+                if owns_topo:
+                    del topo, uvl, bm
                 return q_stats
 
         # Stage 1..4: soft penalty continuation + hard-barrier fallback + exact snap
@@ -290,8 +308,8 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
                 fit_after_solve()
                 cand, dev, p50, p90, ex_dev = eval_candidate(require_existing_exact=False)
                 if cand is not None:
-                    if bi == 1 and prefer_contact and not cb:
-                        prefer_contact = False
+                    if bi == 1:
+                        prefer_contact = cb
                     break
             if cand is not None:
                 if (p90, p50, dev) < (warm_p90, warm_p50, warm_dev):
@@ -452,27 +470,49 @@ def _signed_area(points):
                for a, b in zip(points, points[1:] + points[:1])) * 0.5
 
 
-def _pose(bm, uvl, faces):
+def _pose(bm, uvl, faces, topo=None, uv_arr=None):
     area = 0.0
     cx = cy = 0.0
-    for face in bm.faces:
-        if face.index not in faces:
-            continue
-        points = [(float(loop[uvl].uv.x), float(loop[uvl].uv.y))
-                  for loop in face.loops]
-        twice = sum(a[0]*b[1] - b[0]*a[1]
-                    for a, b in zip(points, points[1:] + points[:1]))
-        signed = twice * 0.5
-        if abs(signed) <= 1e-14:
-            continue
-        px = sum((a[0]+b[0])*(a[0]*b[1]-b[0]*a[1])
-                 for a, b in zip(points, points[1:] + points[:1])) / (6*signed)
-        py = sum((a[1]+b[1])*(a[0]*b[1]-b[0]*a[1])
-                 for a, b in zip(points, points[1:] + points[:1])) / (6*signed)
-        weight = abs(signed)
-        area += weight
-        cx += px * weight
-        cy += py * weight
+    if topo is not None and uv_arr is not None:
+        loop_pos = topo.loop_pos
+        for fi in faces:
+            face = bm.faces[fi]
+            pts = [uv_arr[loop_pos[loop]] for loop in face.loops]
+            n = len(pts)
+            twice = 0.0
+            px = py = 0.0
+            for i in range(n):
+                a, b = pts[i], pts[(i + 1) % n]
+                c = float(a[0]*b[1] - b[0]*a[1])
+                twice += c
+                px += float(a[0] + b[0]) * c
+                py += float(a[1] + b[1]) * c
+            signed = twice * 0.5
+            if abs(signed) <= 1e-14:
+                continue
+            weight = abs(signed)
+            inv_6s = 1.0 / (6.0 * signed)
+            area += weight
+            cx += (px * inv_6s) * weight
+            cy += (py * inv_6s) * weight
+    else:
+        for fi in faces:
+            face = bm.faces[fi]
+            points = [(float(loop[uvl].uv.x), float(loop[uvl].uv.y))
+                      for loop in face.loops]
+            twice = sum(a[0]*b[1] - b[0]*a[1]
+                        for a, b in zip(points, points[1:] + points[:1]))
+            signed = twice * 0.5
+            if abs(signed) <= 1e-14:
+                continue
+            px = sum((a[0]+b[0])*(a[0]*b[1]-b[0]*a[1])
+                     for a, b in zip(points, points[1:] + points[:1])) / (6*signed)
+            py = sum((a[1]+b[1])*(a[0]*b[1]-b[0]*a[1])
+                     for a, b in zip(points, points[1:] + points[:1])) / (6*signed)
+            weight = abs(signed)
+            area += weight
+            cx += px * weight
+            cy += py * weight
     if area <= 1e-14:
         raise ValueError('UV island has zero area')
     return area, (cx/area, cy/area)
@@ -483,20 +523,26 @@ def _internal_uv_connections(bm, uvl, faces):
     wanted = set(faces)
     connections = set()
     match = core.UVTopology._edge_uv_matches
-    for edge in bm.edges:
-        ll = edge.link_loops
-        if len(ll) != 2:
-            continue
-        l0, l1 = ll[0], ll[1]
-        f0, f1 = l0.face.index, l1.face.index
-        if f0 == f1 or f0 not in wanted or f1 not in wanted:
-            continue
-        if match(l0, l1, uvl):
-            v0, v1 = edge.verts[0].index, edge.verts[1].index
-            connections.add((edge.index,
-                             f0 if f0 < f1 else f1,
-                             f1 if f0 < f1 else f0,
-                             (v0, v1) if v0 < v1 else (v1, v0)))
+    seen_edges = set()
+    for fi in wanted:
+        for edge in bm.faces[fi].edges:
+            eid = edge.index
+            if eid in seen_edges:
+                continue
+            seen_edges.add(eid)
+            ll = edge.link_loops
+            if len(ll) != 2:
+                continue
+            l0, l1 = ll[0], ll[1]
+            f0, f1 = l0.face.index, l1.face.index
+            if f0 == f1 or f0 not in wanted or f1 not in wanted:
+                continue
+            if match(l0, l1, uvl):
+                v0, v1 = edge.verts[0].index, edge.verts[1].index
+                connections.add((eid,
+                                 f0 if f0 < f1 else f1,
+                                 f1 if f0 < f1 else f0,
+                                 (v0, v1) if v0 < v1 else (v1, v0)))
     return connections
 
 
@@ -505,18 +551,20 @@ def _connection_rows(connections):
             for edge, face_a, face_b, vertices in sorted(connections)]
 
 
-def _snapshot(bm, uvl):
-    loops = core.loops_in_order(bm)
+def _snapshot(bm, uvl, topo=None):
+    loops = topo.loops if topo is not None else core.loops_in_order(bm)
     layer = core.constraint_layer(bm)
+    uv_arr = np.asarray(core.mesh_reader.read_uv(loops, uvl), dtype=np.float64)
+    pins = core.mesh_reader.read_pins(loops, uvl)
+    uv_sel = core.mesh_reader.read_uv_select(loops)
     return {
-        'uv': [(float(loop[uvl].uv.x), float(loop[uvl].uv.y)) for loop in loops],
-        'pins': [bool(loop[uvl].pin_uv) for loop in loops],
+        'uv': uv_arr,
+        'pins': pins,
         'constraints': ([int(loop[layer]) for loop in loops] if layer else None),
         'vert_select': [bool(v.select) for v in bm.verts],
         'edge_select': [bool(e.select) for e in bm.edges],
         'face_select': [bool(f.select) for f in bm.faces],
-        'uv_vert_select': [bool(loop.uv_select_vert) for loop in loops],
-        'uv_edge_select': [bool(loop.uv_select_edge) for loop in loops],
+        'uv_select': uv_sel,
         'uv_face_select': [bool(f.uv_select) for f in bm.faces],
         'edge_seams': [bool(e.seam) for e in bm.edges],
         'active_face': (bm.faces.active.index if bm.faces.active is not None else None),
@@ -526,12 +574,12 @@ def _snapshot(bm, uvl):
     }
 
 
-def _restore_uv(bm, uvl, values):
-    for loop, uv in zip(core.loops_in_order(bm), values):
-        loop[uvl].uv = uv
+def _restore_uv(bm, uvl, values, loops=None):
+    lp = loops if loops is not None else core.loops_in_order(bm)
+    core.mesh_reader.write_uv(lp, uvl, np.asarray(values, dtype=np.float64))
 
 
-def _restore_marks(bm, uvl, state):
+def _restore_marks(bm, uvl, state, loops=None):
     bm.verts.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     bm.faces.ensure_lookup_table()
@@ -545,10 +593,8 @@ def _restore_marks(bm, uvl, state):
         element.select = value
     for face, value in zip(bm.faces, state['uv_face_select']):
         face.uv_select = value
-    loops = core.loops_in_order(bm)
-    for loop, vert, edge in zip(loops, state['uv_vert_select'], state['uv_edge_select']):
-        loop.uv_select_vert = vert
-        loop.uv_select_edge = edge
+    lp = loops if loops is not None else core.loops_in_order(bm)
+    core.mesh_reader.write_uv_select(lp, state['uv_select'])
     for edge, value in zip(bm.edges, state['edge_seams']):
         edge.seam = value
     active = state['active_face']
@@ -604,25 +650,33 @@ def _fast_island_quality(topo, island, _check_other_islands=False, probe=None):
 
 def _island(context, obj, island, shape, average_shape, skip_non_quads,
             respect_pins, prevent_overlap, preserve_uv_connections,
-            selected_faces=None):
-    bm = bmesh.from_edit_mesh(obj.data)
-    core.prepare_bm(bm)
-    uvl = core.uv_layer(bm)
-    state = _snapshot(bm, uvl)
-    topo = core.UVTopology(bm, uvl)
+            selected_faces=None, *, _topo=None):
+    if _topo is not None:
+        topo = _topo
+        bm = topo.bm
+        uvl = topo.uvl
+    else:
+        bm = bmesh.from_edit_mesh(obj.data)
+        core.prepare_bm(bm)
+        uvl = core.uv_layer(bm)
+        topo = core.UVTopology(bm, uvl)
+    state = _snapshot(bm, uvl, topo=topo)
     seed = _seed(bm, uvl, island)
     if seed is None:
         return dict(faces=sorted(island), skipped=True, reason='Island has no visible quad face')
-    non_quads = sum(len(f.verts) != 4 for f in bm.faces if f.index in island)
+    non_quads = sum(len(bm.faces[fi].verts) != 4 for fi in island)
     if skip_non_quads and non_quads:
         return dict(faces=sorted(island), skipped=True, reason='Island contains non-quad faces')
-    area, center = _pose(bm, uvl, island)
-    island_probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=False)
+    area, center = _pose(bm, uvl, island, topo=topo, uv_arr=state['uv'])
+    island_probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=False,
+                                          coordinates=state['uv'])
     before_quality = _fast_island_quality(topo, island, False, probe=island_probe)
     connections = _internal_uv_connections(bm, uvl, island)
-    pin_groups = [(positions, state['uv'][next(p for p in positions if state['pins'][p])])
-                  for positions in topo.vgroup_loops.values()
-                  if any(state['pins'][p] and topo.loops[p].face.index in island for p in positions)]
+    has_pins = (b'\x01' in state['pins']) if isinstance(state['pins'], (bytes, bytearray)) else any(state['pins'])
+    pin_groups = ([(positions, tuple(float(v) for v in state['uv'][next(p for p in positions if state['pins'][p])]))
+                   for positions in topo.vgroup_loops.values()
+                   if any(state['pins'][p] and topo.loops[p].face.index in island for p in positions)]
+                  if has_pins else [])
     started = time.perf_counter()
     algorithm = 'INTEGER_GRID'
     strip_faces = []
@@ -630,15 +684,15 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
         image = getattr(getattr(context, 'space_data', None), 'image', None)
         min_limit = 1.0/image.size[0] if image and image.size[0] else 0.002
         try:
-            quad_grid.solve(bm, uvl, island, seed, shape, average_shape, min_limit, topo=topo)
+            quad_grid.solve(bm, uvl, island, seed, shape, average_shape, min_limit, topo=topo, _uv_coords=state['uv'])
             _fit_pose(bm, uvl, island, area, center)
         except ValueError as grid_error:
             strip = {fi for fi in (selected_faces or ())
                      if fi in island and not bm.faces[fi].hide}
             prefer_strip = bool(non_quads and strip and strip < island and
                                 all(len(bm.faces[fi].loops) == 4 for fi in strip))
-            del topo, uvl, bm
             if prefer_strip:
+                del topo, uvl, bm
                 builder = (lambda t_topo, t_island, _spacing, _aspect:
                            _build_partial_strip(t_topo, t_island, shape, average_shape,
                                                 min_limit, strip))
@@ -664,14 +718,12 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
                     _solve_whole_island_quad_flow(
                         context, obj, island, seed, shape, average_shape,
                         respect_pins, prevent_overlap, area, center, before_quality,
+                        _topo=topo, _base_uv=state['uv'],
                     )
-                    bm = bmesh.from_edit_mesh(obj.data)
-                    core.prepare_bm(bm)
-                    uvl = core.uv_layer(bm)
-                    topo = core.UVTopology(bm, uvl)
                     algorithm = 'QUAD_FLOW'
                 except ValueError:
-                    if strip and strip < island and all(len(bmesh.from_edit_mesh(obj.data).faces[fi].loops) == 4 for fi in strip):
+                    if strip and strip < island and all(len(bm.faces[fi].loops) == 4 for fi in strip):
+                        del topo, uvl, bm
                         builder = (lambda t_topo, t_island, _spacing, _aspect:
                                    _build_partial_strip(t_topo, t_island, shape, average_shape,
                                                         min_limit, strip))
@@ -693,20 +745,38 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
                     else:
                         raise
 
-        loops = core.loops_in_order(bm)
-        if respect_pins:
+        loops = topo.loops
+        after_uv = np.asarray(core.mesh_reader.read_uv(loops, uvl), dtype=np.float64)
+        if respect_pins and pin_groups:
             for positions, anchor in pin_groups:
-                if any(math.dist(tuple(loops[p][uvl].uv), anchor) > 1e-7 for p in positions):
+                if any(math.hypot(float(after_uv[p, 0]) - anchor[0], float(after_uv[p, 1]) - anchor[1]) > 1e-7
+                       for p in positions):
                     raise ValueError('Pinned UV conflicts with quadrification')
                 for p in positions:
                     loops[p][uvl].uv = anchor
+                    after_uv[p] = anchor
         current_connections = _internal_uv_connections(bm, uvl, island)
         cuts = connections-current_connections
         if preserve_uv_connections and cuts:
             raise ValueError('Quadrification would split existing UV connections')
-        after_topo = core.UVTopology(bm, uvl)
-        quality = _fast_island_quality(after_topo, island, False)
-        novel_ov = (island_probe.check_overlaps(after_topo, include_existing=False)
+        topo.refresh_uv()
+        after_probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=False,
+                                             coordinates=after_uv)
+        after_m = after_probe.measure(topo, coordinates=after_probe._triangle_view(after_probe._ref_array),
+                                      loop_coordinates=after_uv, _triangles=after_probe._ref_array)
+        after_ov = after_probe.check_overlaps(topo, include_existing=True, coordinates=after_probe._ref_array)
+        self_ov = int(after_ov.get('self_overlaps', 0))
+        quality = dict(
+            flips=int(after_m['flips']),
+            overlaps=self_ov,
+            self_overlaps=self_ov,
+            island_overlaps=0,
+            degenerate=int(after_m['degenerate']),
+            zero_edges=int(after_m['zero_edges']),
+            max_deviation=float(after_m['max_deviation']),
+            finite=bool(after_m['finite']),
+        )
+        novel_ov = (island_probe.check_overlaps(topo, include_existing=False, coordinates=after_probe._ref_array)
                     if prevent_overlap else {})
         if (not quality['finite'] or quality['degenerate'] > before_quality['degenerate'] or
                 quality['flips'] > before_quality['flips'] or quality['zero_edges'] or
@@ -715,15 +785,17 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
             raise ValueError('Quadrification failed the UV safety check')
         if quality['max_deviation'] > 0.05:
             raise ValueError('Quadrification violates a marked constraint')
-        after_area, after_center = _pose(bm, uvl, island)
+        after_area, after_center = _pose(bm, uvl, island, topo=topo, uv_arr=after_uv)
         area_error = abs(after_area/area-1.0)
         center_error = math.dist(after_center, center)
         if area_error > 1e-5 or (algorithm == 'INTEGER_GRID' and center_error > 1e-7):
             raise ValueError('Area or centroid restoration failed')
-        changed = any(math.dist(tuple(lp[uvl].uv), state['uv'][p]) > 1e-7
-                      for p, lp in enumerate(loops) if lp.face.index in island)
+        isl_pos = island_probe.target_positions
+        changed = (bool(np.any(np.hypot(after_uv[isl_pos, 0] - state['uv'][isl_pos, 0],
+                                        after_uv[isl_pos, 1] - state['uv'][isl_pos, 1]) > 1e-7))
+                   if isl_pos else False)
         if not changed:
-            _restore_uv(bm, uvl, state['uv'])
+            _restore_uv(bm, uvl, state['uv'], loops=loops)
             quality = before_quality
             cuts = set()
             current_connections = connections
@@ -793,11 +865,17 @@ def quadrify(context, obj, faces, mode=None, respect_pins=True,
     from . import live_symmetry
     requested = live_symmetry.source_faces(obj, requested)
     groups = [set(group) for group in core.face_islands(topo, requested).values()]
-    del topo, uvl, bm
-    for island in groups:
+    first_topo = topo if len(groups) == 1 else None
+    if first_topo is None:
+        del topo, uvl, bm
+    for gi, island in enumerate(groups):
         row = _island(context, obj, island, shape, average_shape, skip_non_quads,
                       respect_pins, prevent_overlap, preserve_uv_connections,
-                      selected_faces=explicit & island)
+                      selected_faces=explicit & island,
+                      _topo=first_topo if gi == 0 else None)
+        if gi == 0 and first_topo is not None:
+            first_topo = None
+            del topo, uvl, bm
         result['islands'].append(row)
         if row.get('skipped'):
             result['skipped'].append(row['reason'])

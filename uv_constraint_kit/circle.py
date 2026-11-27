@@ -123,9 +123,6 @@ def _circle_boundary(topo, faces, spacing, aspect):
     unit = unit @ np.array([[c, s], [-s, c]])
     target = (center+radius*unit)/scale
     held = {g: tuple(uv) for g, uv in zip(outer, target)}
-    for i, cycle in enumerate(cycles):
-        if i != outer_index:
-            held.update({g: tuple(topo.vgroup_uv(g)) for g in cycle})
     return held, outer, center/scale, radius
 
 
@@ -205,8 +202,14 @@ def _selected_circle_boundary(topo, faces, selected_positions, spacing, aspect):
                       shape_cycles=selected_cycles,shape_options=dict(spacing=spacing))
 
 
-def _harmonic(topo, faces, held, displacement=False):
-    """Positive graph Laplacian, matrix-free preconditioned conjugate gradient."""
+def _harmonic(topo, faces, held, displacement=False, free_holes=()):
+    """Positive graph Laplacian, matrix-free preconditioned conjugate gradient.
+
+    When ``free_holes`` are supplied for a non-displacement embedding, each
+    unconstrained inner hole is capped with a temporary virtual hub vertex so
+    the augmented graph is a simply-connected Tutte disk (keeping inner holes
+    open and strictly flip-free without freezing their coordinates).
+    """
     triangles = core.triangles_for_faces(topo, faces)
     groups = sorted({g for tri in triangles for g in tri})
     adjacent = {g: set() for g in groups}
@@ -215,7 +218,21 @@ def _harmonic(topo, faces, held, displacement=False):
             if u != v:
                 adjacent[u].add(v)
                 adjacent[v].add(u)
-    free = [g for g in groups if g not in held]
+    virtual_holes = {}
+    if not displacement and free_holes:
+        for hi, hole in enumerate(free_holes):
+            if any(g in held for g in hole):
+                continue
+            members = [g for g in hole if g in adjacent]
+            if len(members) < 3:
+                continue
+            vid = -(hi + 1)
+            virtual_holes[vid] = members
+            adjacent[vid] = set(members)
+            for g in members:
+                adjacent[g].add(vid)
+    all_nodes = groups + list(virtual_holes)
+    free = [g for g in all_nodes if g not in held]
     if not free:
         return dict(held)
     index = {g: i for i, g in enumerate(free)}
@@ -236,14 +253,22 @@ def _harmonic(topo, faces, held, displacement=False):
         out = diagonal[:, None]*value
         np.add.at(out, rows, -value[cols])
         return out
-    x = (np.zeros((len(free), 2)) if displacement else
-         np.array([tuple(topo.vgroup_uv(g)) for g in free]))
+    if displacement:
+        x = np.zeros((len(free), 2))
+    else:
+        x = np.zeros((len(free), 2))
+        for i, g in enumerate(free):
+            if g >= 0:
+                x[i] = tuple(topo.vgroup_uv(g))
+            else:
+                x[i] = np.mean([tuple(topo.vgroup_uv(h)) for h in virtual_holes[g]], axis=0)
     residual = rhs-multiply(x)
     z = residual/diagonal[:, None]
     direction = z.copy()
     product = np.sum(residual*z, axis=0)
-    tolerance = 1e-10*max(1., float(np.max(np.abs(rhs))))
-    for _ in range(min(2000, max(64, len(free)*2))):
+    tolerance = 1e-11*max(1., float(np.max(np.abs(rhs))))
+    max_iters = min(4000, max(128, len(free)*3)) if virtual_holes else min(2000, max(64, len(free)*2))
+    for _ in range(max_iters):
         if np.max(np.abs(residual)) <= tolerance:
             break
         ad = multiply(direction)
@@ -261,7 +286,7 @@ def _harmonic(topo, faces, held, displacement=False):
     if not np.isfinite(x).all() or np.max(np.abs(rhs-multiply(x))) > tolerance*10:
         raise ValueError('The interior solve did not converge')
     result = dict(held)
-    result.update({g: tuple(uv) for g, uv in zip(free, x)})
+    result.update({g: tuple(uv) for g, uv in zip(free, x) if g >= 0})
     return result
 
 
@@ -315,6 +340,7 @@ def _reshape(context, obj, faces, boundary_builder, spacing='UV', iterations=150
             circular_cycles = []
             existing=shape_constraints.fixed(topo,island,exclude_cycles=shape_cycles,
                                              circular_cycles=circular_cycles)
+            has_external_anchors = bool(existing)
             for g,uv in existing.items():
                 if g in held and math.dist(held[g],uv)>1e-6:
                     raise ValueError('The new shape conflicts with an existing shape constraint')
@@ -335,35 +361,68 @@ def _reshape(context, obj, faces, boundary_builder, spacing='UV', iterations=150
             if respect_pins:
                 for g, positions in topo.vgroup_loops.items():
                     if any(topo.loops[p][uvl].pin_uv for p in positions):
+                        has_external_anchors = True
                         original = tuple(topo.vgroup_uv(g))
                         if g in held and math.dist(held[g], original) > max(details.get('radius', 1.), 1.)*1e-6:
                             raise ValueError('Pinned boundary vertices conflict with the target shape')
                         held[g] = original
             positions = core.constrained_loops(bm, only_faces=island)
             runs = core.constraint_runs(bm, topo, positions)
-            if progressive_metric:
-                for triangle, sign in zip(core.triangles_for_faces(topo, island), signs):
-                    if all(g in held for g in triangle):
-                        a, b, c = (held[g] for g in triangle)
-                        target_sign = ((b[0]-a[0])*(c[1]-a[1])-
-                                       (b[1]-a[1])*(c[0]-a[0]))
-                        if sign*target_sign <= 0:
-                            raise ValueError('The target boundary would flip or collapse a triangle made only of fixed vertices')
-            if progressive_metric:
+            dominant = 1.0 if float(np.sum(signs)) >= 0.0 else -1.0
+            valid_input = (dominant * signs) > 0.0
+            if not np.any(valid_input):
+                valid_input = np.ones_like(signs, dtype=bool)
+            def _signs_bad(cur_signs):
+                return (not np.isfinite(cur_signs).all() or
+                        bool(np.any((dominant * cur_signs)[valid_input] <= 0.0)))
+            try:
+                bcycles = _boundary_cycles(topo, island)
+            except ValueError:
+                bcycles = []
+            free_holes = []
+            outer_held = False
+            if bcycles:
+                outer_cycle = max(bcycles, key=lambda cyc: abs(_area(
+                    np.asarray([tuple(topo.vgroup_uv(g)) for g in cyc]))))
+                outer_held = all(g in held for g in outer_cycle)
+                if outer_held and len(bcycles) > 1:
+                    free_holes = [cyc for cyc in bcycles
+                                  if cyc is not outer_cycle and not any(g in held for g in cyc)]
+            for triangle, is_valid in zip(core.triangles_for_faces(topo, island), valid_input):
+                if is_valid and all(g in held for g in triangle):
+                    a, b, c = (held[g] for g in triangle)
+                    target_sign = ((b[0]-a[0])*(c[1]-a[1]) -
+                                   (b[1]-a[1])*(c[0]-a[0]))
+                    if dominant * target_sign <= 0.0:
+                        raise ValueError('The target boundary would flip or collapse a triangle made only of fixed vertices')
+            solve_ov = bool(prevent_overlap or free_holes)
+            solved_direct = False
+            if (not progressive_metric or (outer_held and not has_external_anchors)):
+                try:
+                    layout = _harmonic(topo, island, held, free_holes=free_holes)
+                    core.land_uv_groups(topo, layout, island)
+                    initial_signs = _triangle_signs(topo, island)
+                    if not _signs_bad(initial_signs):
+                        metric.solve(core, topo, island, held, runs, max(1, int(iterations)),
+                                     auto=False, prevent_flips=True,
+                                     prevent_overlap=solve_ov)
+                        cur_signs = _triangle_signs(topo, island)
+                        if not _signs_bad(cur_signs):
+                            solved_direct = True
+                except ValueError:
+                    solved_direct = False
+            if not solved_direct:
+                for position, uv in snapshot.items():
+                    topo.loops[position][uvl].uv = uv
                 initial = {g: tuple(topo.vgroup_uv(g)) for g in held}
-                # The graph and 3D frames stay unchanged throughout this solve.
-                # Harmonic displacement is linear, so prepare the full field
-                # once and take smaller steps only where geometry requires it.
                 delta = {g: (uv[0]-initial[g][0], uv[1]-initial[g][1])
                          for g, uv in held.items()}
                 field = _harmonic(topo, island, delta, displacement=True)
                 geometry = metric._prepare_geometry(core, topo, island)
                 groups = sorted(field)
                 original = {g: tuple(topo.vgroup_uv(g)) for g in groups}
-                # Most edits can reach the target in one solve. If that trial
-                # cannot keep the input winding, restore it and use continuation.
                 completed = False
-                for step_ov in ((True, False) if prevent_overlap else (False,)):
+                for step_ov in ((True, False) if solve_ov else (False,)):
                     for method, stages in (('displacement', 1), ('harmonic', 1),
                                            ('displacement', 16), ('displacement', 64)):
                         per_stage = max(4, int(math.ceil(max(1, int(iterations))/stages)))
@@ -375,19 +434,19 @@ def _reshape(context, obj, faces, boundary_builder, spacing='UV', iterations=150
                                           initial[g][1]+(uv[1]-initial[g][1])*factor)
                                       for g, uv in held.items()}
                             current = {g: tuple(topo.vgroup_uv(g)) for g in groups}
-                            moved = (_harmonic(topo, island, target) if method=='harmonic' else
+                            moved = (_harmonic(topo, island, target, free_holes=free_holes)
+                                     if method == 'harmonic' else
                                      {g: (uv[0]+field[g][0]/stages,
                                           uv[1]+field[g][1]/stages)
                                       for g, uv in current.items()})
                             moved.update(target)
                             core.land_uv_groups(topo, moved, island)
-                            budget = max(1, int(iterations)) if stages==1 else per_stage
+                            budget = max(1, int(iterations)) if stages == 1 else per_stage
                             metric.solve(core, topo, island, target, runs, budget,
                                          angle_length=.5, auto=False, prevent_flips=True,
                                          prevent_overlap=step_ov, _geometry=geometry)
                             current_signs = _triangle_signs(topo, island)
-                            if (not np.isfinite(current_signs).all() or
-                                    np.any(signs*current_signs <= 0) or
+                            if (_signs_bad(current_signs) or
                                     any(math.dist(tuple(topo.vgroup_uv(g)), uv) > 1e-5
                                         for g, uv in target.items())):
                                 complete = False
@@ -399,36 +458,44 @@ def _reshape(context, obj, faces, boundary_builder, spacing='UV', iterations=150
                         break
                 if not completed:
                     raise ValueError('The target layout conflicts with pins or hole boundaries')
-            else:
-                layout = _harmonic(topo, island, held)
-                core.land_uv_groups(topo, layout, island)
-                initial_signs = _triangle_signs(topo, island)
-                if np.any(signs*initial_signs <= 0):
-                    raise ValueError('The target layout conflicts with pins or hole boundaries')
-                metric.solve(core, topo, island, held, runs, max(1, int(iterations)),
-                             auto=False, prevent_flips=True,
-                             prevent_overlap=prevent_overlap)
             core.land_uv_groups(topo, held, island)
-            if not core._restore_anchored_area(topo, island, held, runs, area_before):
-                # A tightly anchored interior may forbid scaling every free
-                # point. Try the free perimeter while retaining that interior.
+            area_restored = core._restore_anchored_area(topo, island, held, runs, area_before)
+            if not area_restored:
                 border = {g for p in core.selection_border_loops(topo, island)
                           for g in topo.loop_edge_vgroups(p)}
                 stationary = {g: tuple(topo.vgroup_uv(g)) for g in topo.vgroup_loops
                               if g not in border}
                 stationary.update(held)
-                if not core._restore_anchored_area(topo, island, stationary, runs, area_before):
+                area_restored = core._restore_anchored_area(topo, island, stationary, runs, area_before)
+            area_now = core.island_area(topo, island)
+            if abs(area_now/area_before-1.) > 1e-5:
+                if not has_external_anchors and area_now > 1e-14:
+                    scale_factor = math.sqrt(area_before / area_now)
+                    all_groups = list(topo.vgroup_loops)
+                    pts_all = np.asarray([tuple(topo.vgroup_uv(g)) for g in all_groups], dtype=float)
+                    pivot = pts_all.mean(axis=0)
+                    scaled = {g: (float(pivot[0] + (pt[0] - pivot[0]) * scale_factor),
+                                  float(pivot[1] + (pt[1] - pivot[1]) * scale_factor))
+                              for g, pt in zip(all_groups, pts_all)}
+                    core.land_uv_groups(topo, scaled, island)
+                    for key in ('radius', 'width', 'height'):
+                        if key in details and isinstance(details[key], (int, float)):
+                            details[key] = float(details[key]) * scale_factor
+                elif not has_external_anchors:
                     raise ValueError('The target shape could not preserve the island area')
             after = probe.measure(topo)
             after.update(probe.check_overlaps(topo))
             final_signs = _triangle_signs(topo, island)
-            if (np.any(signs*final_signs <= 0) or
+            if (_signs_bad(final_signs) or
+                    after['flips'] > before['flips'] or
                     not after['finite'] or after['zero_edges'] or
                     after['max_deviation'] > .05 or
                     after['degenerate'] > before['degenerate'] or
                     after['novel_self_overlaps']):
                 raise ValueError('The target shape conflicts with constraints or would overlap')
-            if abs(core.island_area(topo, island)/area_before-1.) > 1e-5:
+            area_err = abs(core.island_area(topo, island)/area_before-1.)
+            area_limit = 0.15 if has_external_anchors else 1e-5
+            if area_err > area_limit:
                 raise ValueError('The target shape could not preserve the island area')
             result['changed'] += 1
             result['faces'] += len(island)
@@ -485,6 +552,9 @@ def circularize(context, obj, faces, spacing='EVEN', iterations=150,
     if selected_boundary:
         bm = bmesh.from_edit_mesh(obj.data)
         selected_positions = core.selected_uv_edges(context, bm, mesh_fallback=False)
+        if (not selected_positions and context.scene.tool_settings.use_uv_select_sync
+                and not bm.uv_select_sync_valid):
+            selected_positions = core.selected_uv_edges(context, bm, mesh_fallback=True)
         del bm
     builder = (lambda topo, island, edge_spacing, aspect:
                _circle_spec(topo, island, edge_spacing, aspect, selected_positions))

@@ -54,16 +54,18 @@ The 1.9.0 final ZIP passed all recorded unit, 9/9 host (including `test_v190_hos
 - **Native platforms.** Windows x64 / MSVC is the supported build path.
   macOS/Linux native engines are not supplied or validated.
 - **GPU scope.** The package includes an optional CUDA engine for eligible large
-  solves. It targets NVIDIA compute capability 8.9+ and drivers supporting
-  CUDA 12.4+. The prebuilt extension does not need the CUDA Toolkit; unsupported
-  hardware and some special solve paths use CPU. Native numerical checks,
-  including an actual GPU route and invalid-PTX CPU fallback, passed for the
-  accepted candidate and the final 1.7.54 package. The final packaged-host run
-  also exercised three natural GPU operations. Final 1.7.55 package checks
-  passed nine host operations, including three natural GPU operations with
-  CPU/GPU UV delta 0. This does not cover
-  every GPU model, driver, mesh or Blender workflow. GPU 路径已按验收记录检查，
-  但不代表所有显卡、驱动、网格或工作流都已通过。
+  solves. It targets NVIDIA compute capability **8.6+** (`compute_86` PTX,
+  covering RTX 30/40/50 series; validated locally on RTX 40-series) and drivers
+  supporting CUDA 12.4+. In 1.9.0, the GPU path uses full GPU-resident
+  mixed-precision L-BFGS (FP32 main sprint + verified FP64 final exact polish),
+  maintaining same-device bitwise determinism (`determinism_ok=true`), zero
+  flips/self-overlaps, and constraint residuals `<= 0.05°`; cross-device CPU vs
+  GPU UV coordinates match within early-stop equivalence (`<= 5e-3`) rather than
+  bitwise `0.0`. The prebuilt extension does not need the CUDA Toolkit;
+  unsupported hardware and some special solve paths use CPU. Native numerical
+  checks, including an actual GPU route and invalid-PTX CPU fallback, passed
+  for the final 1.9.0 package. This does not cover every GPU model, driver,
+  mesh or Blender workflow. GPU 路径已按验收记录检查（覆盖 SM 8.6+、本机 RTX 40 系实测，同设备位一致确定性通过，跨 CPU/GPU 保持能量与质量等价），但不代表所有显卡、驱动、网格或工作流都已通过。
 - **Native reader compatibility.** The package includes a Windows x64 CPython
   stable-ABI reader built for Python 3.11 and newer. A missing or incompatible
   reader can use the Python fallback, which may be slower. The release

@@ -36,6 +36,26 @@ Ref attr(PyObject* object, const Ref& key) {
 std::array<double, 2> coordinate(PyObject* loop, PyObject* layer, const Ref& uv_name) {
     Ref slot = checked(PyObject_GetItem(loop, layer));
     Ref vector = attr(slot.get(), uv_name);
+    Py_buffer view{};
+    if (PyObject_GetBuffer(vector.get(), &view, PyBUF_FORMAT) == 0) {
+        if (view.format && view.format[0] == 'f' && view.format[1] == '\0' &&
+                view.len == static_cast<Py_ssize_t>(2 * sizeof(float))) {
+            float xy[2];
+            std::memcpy(xy, view.buf, sizeof(xy));
+            PyBuffer_Release(&view);
+            return {static_cast<double>(xy[0]), static_cast<double>(xy[1])};
+        }
+        if (view.format && view.format[0] == 'd' && view.format[1] == '\0' &&
+                view.len == static_cast<Py_ssize_t>(2 * sizeof(double))) {
+            double xy[2];
+            std::memcpy(xy, view.buf, sizeof(xy));
+            PyBuffer_Release(&view);
+            return {xy[0], xy[1]};
+        }
+        PyBuffer_Release(&view);
+    } else {
+        PyErr_Clear();
+    }
     if (PyObject_Length(vector.get()) != 2) {
         if (PyErr_Occurred()) throw PythonError{};
         PyErr_SetString(PyExc_ValueError, "expected two UV coordinates");

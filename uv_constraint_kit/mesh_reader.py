@@ -159,11 +159,11 @@ def write_pins(loops, layer, pins):
 
 
 def read_uv_select(loops):
-    """Read uv_select_edge/uv_select_vert flags into a compact bytes mask, or None."""
+    """Read uv_select_edge/uv_select_vert flags into a compact bytes mask."""
     module = _load()
     function = getattr(module, 'read_uv_select', None)
     if function is None:
-        return None
+        return bytes((1 if loop.uv_select_edge else 0) | (2 if loop.uv_select_vert else 0) for loop in loops)
     _main_thread()
     return function(loops)
 

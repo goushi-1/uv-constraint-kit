@@ -25,11 +25,13 @@ args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv
 sys.path.insert(0, str(args.addon_root.resolve().parent))
 import uv_constraint_kit as addon
 from uv_constraint_kit import (
+    circle,
     core,
     distribute,
     ops,
     prefs,
     quadrify,
+    rectangle,
     safety,
     terms_zh,
     ui,
@@ -574,6 +576,145 @@ def test_stepped_border_prevent_overlap_no_foldback():
         del t
 
 
+def test_circularize_and_rectify_holed_island_free_holes():
+    # A 6x6 quad grid with TWO off-center inner holes removed (3 boundary cycles).
+    # Unconstrained inner holes must relax freely with outer reshaping (both ov=False and ov=True),
+    # keeping zero flips, zero self-overlaps, and exact area preservation (<= 1e-5).
+    nx, ny = 7, 7
+    hole_cells = {(1, 1), (4, 4)}
+    verts = [(i / nx, j / ny, 0.0) for j in range(ny + 1) for i in range(nx + 1)]
+    faces = [
+        (j * (nx + 1) + i, j * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i)
+        for j in range(ny) for i in range(nx)
+        if (i, j) not in hole_cells
+    ]
+    def warped_uv(_f, _v, co):
+        return (0.1 + 0.8 * co.x + 0.04 * math.sin(math.pi * co.y),
+                0.1 + 0.8 * co.y + 0.05 * math.sin(math.pi * co.x))
+
+    for op_fn in (
+        lambda obj, fs, ov: circle.circularize(bpy.context, obj, fs, spacing="EVEN", prevent_overlap=ov, selected_only=False),
+        lambda obj, fs, ov: rectangle.rectify(bpy.context, obj, fs, shape="RECTANGLE", spacing="GEOMETRY", prevent_overlap=ov, selected_only=False),
+    ):
+        for ov in (False, True):
+            obj = make_mesh(verts, faces, warped_uv)
+            t = topo_of(obj)
+            all_faces = set(range(len(faces)))
+            area_before = core.island_area(t, all_faces)
+            del t
+            res = op_fn(obj, all_faces, ov)
+            assert res["changed"] == 1 and not res["skipped"], (ov, res)
+            t = topo_of(obj)
+            area_after = core.island_area(t, all_faces)
+            assert abs(area_after / area_before - 1.0) <= 1e-5, (area_before, area_after)
+            probe = safety.AcceptanceProbe(core, t, all_faces, check_other_islands=False)
+            m = probe.measure(t)
+            ov_res = probe.check_overlaps(t, include_existing=True)
+            assert m["flips"] == 0 and m["degenerate"] == 0 and ov_res["self_overlaps"] == 0, (m, ov_res)
+            del t
+
+
+def test_rectify_boundary_ears_corner_selection():
+    # A 4x4 grid with 2 adjacent corner quads kept and 1 notch cut -> has 3+ boundary-ear quads
+    # that would become collinear zero-area triangles under naive OBB corner selection.
+    # Ear-aware DP corner selection must place corners to keep every triangle strictly positive.
+    nx, ny = 5, 5
+    dropped = {(4, 4), (4, 3), (3, 4)}
+    verts = [(i / nx, j / ny, 0.0) for j in range(ny + 1) for i in range(nx + 1)]
+    faces = [
+        (j * (nx + 1) + i, j * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i)
+        for j in range(ny) for i in range(nx)
+        if (i, j) not in dropped
+    ]
+    obj = make_mesh(
+        verts, faces,
+        lambda _f, _v, co: (0.1 + 0.7 * co.x + 0.06 * co.y, 0.1 + 0.7 * co.y - 0.05 * co.x),
+    )
+    all_faces = set(range(len(faces)))
+    res = rectangle.rectify(bpy.context, obj, all_faces, shape="RECTANGLE", spacing="GEOMETRY",
+                            prevent_overlap=True, selected_only=False)
+    assert res["changed"] == 1 and not res["skipped"], res
+    t = topo_of(obj)
+    probe = safety.AcceptanceProbe(core, t, all_faces, check_other_islands=False)
+    m = probe.measure(t)
+    ov_res = probe.check_overlaps(t, include_existing=True)
+    assert m["flips"] == 0 and m["degenerate"] == 0 and ov_res["self_overlaps"] == 0, (m, ov_res)
+    del t
+
+
+def test_shape_3d_sync_select_fallback():
+    # With UV sync enabled and uv_select_sync_valid=False (e.g. loop selected in 3D viewport),
+    # Circularize and Rectify (selected_only=True) must fall back to selected mesh edges.
+    nx, ny = 4, 4
+    verts = [(i / nx, j / ny, 0.0) for j in range(ny + 1) for i in range(nx + 1)]
+    faces = [
+        (j * (nx + 1) + i, j * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i)
+        for j in range(ny) for i in range(nx)
+    ]
+    for op_name in ("circularize", "rectify"):
+        obj = make_mesh(verts, faces, lambda _f, _v, co: (0.15 + 0.65 * co.x, 0.15 + 0.65 * co.y))
+        t = topo_of(obj)
+        all_faces = set(range(len(faces)))
+        bpy.context.scene.tool_settings.use_uv_select_sync = True
+        bpy.context.scene.tool_settings.mesh_select_mode = (False, True, False)
+        for f in t.bm.faces:
+            f.select = False
+        for e in t.bm.edges:
+            e.select = False
+        for v in t.bm.verts:
+            v.select = False
+        for e in t.bm.edges:
+            if len(e.link_faces) == 1:
+                e.select = True
+        for lp in t.loops:
+            lp.uv_select_edge = False
+            lp.uv_select_vert = False
+        t.bm.uv_select_sync_valid = False
+        del t
+        if op_name == "circularize":
+            res = circle.circularize(bpy.context, obj, all_faces, spacing="EVEN", selected_only=True)
+        else:
+            res = rectangle.rectify(bpy.context, obj, all_faces, selected_only=True)
+        assert res["changed"] == 1 and not res["skipped"], (op_name, res)
+
+
+def test_shape_pin_locked_area_fallback():
+    # On a holed island with an inner hole pinned manually, free-area scaling cannot move
+    # the pinned vertices; Circularize must preserve exact pin positions and accept a valid
+    # flip-free, overlap-free shape within bounded area tolerance instead of rejecting.
+    nx, ny = 6, 6
+    verts = [(i / nx, j / ny, 0.0) for j in range(ny + 1) for i in range(nx + 1)]
+    faces = [
+        (j * (nx + 1) + i, j * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i)
+        for j in range(ny) for i in range(nx)
+        if not (2 <= i <= 3 and 2 <= j <= 3)
+    ]
+    obj = make_mesh(verts, faces, lambda _f, _v, co: (0.1 + 0.8 * co.x, 0.1 + 0.8 * co.y))
+    t = topo_of(obj)
+    all_faces = set(range(len(faces)))
+    cycs = circle._boundary_cycles(t, all_faces)
+    outer = max(cycs, key=lambda c: len(c))
+    inner = next(c for c in cycs if c is not outer)
+    pinned_uv = {}
+    for g in inner:
+        pinned_uv[g] = tuple(t.vgroup_uv(g))
+        for p in t.vgroup_loops[g]:
+            t.loops[p][t.uvl].pin_uv = True
+    del t
+    res = circle.circularize(bpy.context, obj, all_faces, spacing="EVEN", respect_pins=True,
+                             prevent_overlap=True, selected_only=False)
+    assert res["changed"] == 1 and not res["skipped"], res
+    t = topo_of(obj)
+    for g, orig in pinned_uv.items():
+        cur = tuple(t.vgroup_uv(g))
+        assert math.dist(cur, orig) < 1e-6, (g, orig, cur)
+    probe = safety.AcceptanceProbe(core, t, all_faces, check_other_islands=False)
+    m = probe.measure(t)
+    ov_res = probe.check_overlaps(t, include_existing=True)
+    assert m["flips"] == 0 and ov_res["self_overlaps"] == 0, (m, ov_res)
+    del t
+
+
 addon.register()
 try:
     if args.require_native:
@@ -586,6 +727,10 @@ try:
         test_whole_island_quad_flow_poled_island,
         test_prevent_overlap_self_only_ignores_neighbor_islands,
         test_stepped_border_prevent_overlap_no_foldback,
+        test_circularize_and_rectify_holed_island_free_holes,
+        test_rectify_boundary_ears_corner_selection,
+        test_shape_3d_sync_select_fallback,
+        test_shape_pin_locked_area_fallback,
     ):
         test()
 finally:
@@ -594,7 +739,7 @@ finally:
 
 print(json.dumps(dict(
     passed=True,
-    cases=7,
+    cases=11,
     blender=bpy.app.version_string,
     native_required=args.require_native,
     scene_saved=False,

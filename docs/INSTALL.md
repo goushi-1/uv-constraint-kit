@@ -18,7 +18,7 @@
 
 The [1.9.0 release](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.9.0) provides [uv_constraint_kit-1.9.0.zip](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.9.0/uv_constraint_kit-1.9.0.zip) (49 members, verified in isolated Blender 5.3.0). Verify [release_checks.json](../release_checks.json) before installation.
 
-Eligible large solves use NVIDIA compute capability 8.9+ / CUDA driver 12.4+; unsupported hardware uses CPU. The prebuilt ZIP does not require the CUDA Toolkit.
+Eligible large solves use NVIDIA compute capability **8.6+** (RTX 30/40/50 series; validated locally on RTX 40-series) / CUDA driver 12.4+; unsupported hardware uses CPU. The prebuilt ZIP does not require the CUDA Toolkit.
 
 For a seam-side selection, disable UV Selection Sync and select the desired
 UV edge copy. Visibility and selection affect the operation's scope.
@@ -43,7 +43,7 @@ The published 1.7.57 package identity is recorded at the [v1.7.57 tag](https://g
 4. 进入带 UV 贴图网格的编辑模式，打开 UV 编辑器 N 面板 → UV Constraint。
 5. 选边并标记约束，执行优化、边均匀分布或四边形化。F9 调整上次操作参数；优化旁的开关控制自动优化，下方默认折叠的「求解预设」抽屉可预设防止重叠、固定边界条件与密度贴图。
 
-[1.9.0 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.9.0)提供[安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.9.0/uv_constraint_kit-1.9.0.zip)（49 个成员，已通过隔离 Blender 5.3.0 验收）；安装前请核对 [release_checks.json](../release_checks.json)。符合条件的大型求解自动使用 NVIDIA 计算能力 8.9+、支持 CUDA 12.4+ 驱动的 GPU；其它硬件使用 CPU。安装预构建包无需 CUDA Toolkit。
+[1.9.0 发行页](https://github.com/goushi-1/uv-constraint-kit/releases/tag/v1.9.0)提供[安装包](https://github.com/goushi-1/uv-constraint-kit/releases/download/v1.9.0/uv_constraint_kit-1.9.0.zip)（49 个成员，已通过隔离 Blender 5.3.0 验收）；安装前请核对 [release_checks.json](../release_checks.json)。符合条件的大型求解自动使用 NVIDIA 计算能力 **8.6+**（RTX 30/40/50 系，本机 RTX 40 系实测）、支持 CUDA 12.4+ 驱动的 GPU；其它硬件使用 CPU。安装预构建包无需 CUDA Toolkit。
 
 只处理接缝一侧时，关闭 UV 选择同步，再选择目标 UV 边。可见性与选区决定作用范围。
 

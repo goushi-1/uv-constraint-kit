@@ -56,10 +56,10 @@ class _ConstraintButtons:
         layout.operator("uv.uvck_distribute_edges", icon="ALIGN_JUSTIFY")
 
         if prefs is not None:
-            row = layout.row(align=True)
-            row.prop(prefs, "show_overlay", text="Show constraint colours",
+            col = layout.column(align=True)
+            col.prop(prefs, "show_overlay", text="Show constraint colours",
                      icon="COLORSET_03_VEC")
-            sub = row.row()
+            sub = col.row(align=True)
             sub.active = prefs.show_overlay
             sub.prop(prefs, "uv_edge_width", text="Line width")
 

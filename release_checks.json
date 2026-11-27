@@ -5,8 +5,8 @@
   "date": "2026-11-27",
   "package": {
     "filename": "uv_constraint_kit-1.9.0.zip",
-    "sha256": "6f4b46bec9c7471349995e117382e031fcbd9755bca1acec827cafa2b3372000",
-    "bytes": 657699,
+    "sha256": "ae0ff5a95e9554704a8422e39c2b2f26dbf8244b678fe94c3b7b6dc97a5ca1bc",
+    "bytes": 735686,
     "members": 49,
     "extension_build_and_package_script_parity": true
   },
@@ -24,24 +24,23 @@
       "status": "passed",
       "components": [
         "CPU",
-        "CUDA GPU",
+        "CUDA GPU (compute_86 PTX + host)",
         "numeric_stage",
         "stable-ABI reader"
       ],
       "rebuilt_components": [
-        "CPU engine (engine.cpp: fused build_j/energy + RecentTriangles early reject, single-pass exact uvck_find_self_overlap_pair, native uvck_filter_acyclic DAG contraction, lazy large-box grid, fused L-BFGS + analytic step for nt >= 1024, zero-rehash affinity-aware threaded overlap checks, analytic CCD border step, SoftMetric preconditioner up to n <= 8192)",
-        "CUDA GPU host (engine_gpu.cpp, gpu_driver.hpp: cached GPU/pinned staging buffers with 64-bit FNV-1a constant upload reuse, zero-init-free gradient copy, analytic CCD border step)",
-        "stable-ABI reader (mesh_reader.cpp rebuilt with Py_LIMITED_API 0x030B0000 api=2: native batch write_uv, write_uv_indexed, read_pins, write_pins, read_uv_select, write_uv_select, set_uv_select_all, constrained_loops, reserved capture/read buffers)",
+        "CPU engine (engine.cpp: fused single-pass gradient with zero gu[4*nt] buffer traffic, dead-sqrt removal on reciprocal path, reusable contact-pair cache between energy/gradient, fused build_j/energy + RecentTriangles early reject, single-pass exact uvck_find_self_overlap_pair, native uvck_filter_acyclic DAG contraction, lazy large-box grid, fused L-BFGS + analytic step for nt >= 1024, zero-rehash affinity-aware threaded overlap checks, analytic CCD border step, SoftMetric preconditioner up to n <= 8192)",
+        "CUDA GPU engine & PTX (gpu_metric.cu, build_gpu.py, engine_gpu.cpp, gpu_driver.hpp: freshly compiled compute_86 PTX via NVRTC 12.4 targeting NVIDIA SM 8.6+ [RTX 30/40/50, validated on RTX 40-series], full GPU-resident mixed-precision L-BFGS [FP32 main sprint + FP64 final exact polish], deterministic zero-atomic reductions, zero-sync L-BFGS scalar slots, cached GPU/pinned buffers with 64-bit FNV-1a reuse, analytic CCD border step)",
+        "stable-ABI reader (mesh_reader.cpp rebuilt with Py_LIMITED_API 0x030B0000 api=2: PyObject_GetBuffer raw float[2]/double[2] coordinate fast path, native batch write_uv, write_uv_indexed, read_pins, write_pins, read_uv_select, write_uv_select, set_uv_select_all, constrained_loops, reserved capture/read buffers)",
         "numeric_stage (numeric_stage.cpp rebuilt via scripts/build_native.py --numeric)"
       ],
-      "reused_source_matched_artifacts": [
-        "CUDA PTX (gpu_metric.cu unchanged from 1.7.66)"
-      ]
+      "reused_source_matched_artifacts": []
     },
     "native_numeric": {
       "status": "passed",
       "cpu": true,
       "actual_gpu": true,
+      "gpu_same_device_bitwise_deterministic": true,
       "bad_ptx_cpu_retry": true
     },
     "packaging_regression": {
@@ -67,7 +66,8 @@
         "test_gui_host",
         "test_modal_host"
       ],
-      "passed_count": 9
+      "passed_count": 9,
+      "v190_host_cases": 11
     },
     "p2_quality_suite": {
       "status": "passed",
@@ -89,14 +89,18 @@
       "determinism_ok": true,
       "hard_failures": 0,
       "soft_failures": 0,
-      "baseline_12op_median_s": 40.8858418,
-      "candidate_12op_median_s": 9.22590355,
-      "time_delta_pct_vs_1_7_62": -77.43496735341768,
-      "time_delta_pct_vs_1_7_65": -69.0814,
-      "eval_delta_pct_vs_1_7_62": -66.87902360515021,
-      "gpu_energy_delta_pct_vs_1_7_62": -85.32231404958678,
-      "coastal_mark_median_s": 3.1727860000000003,
-      "rocks_mark_median_s": 3.01683605
+      "baseline_12op_median_s": 36.42855675,
+      "candidate_12op_median_s": 7.32091265,
+      "time_delta_pct_vs_1_7_62": -79.90336894145553,
+      "time_delta_pct_vs_1_7_65": -75.4655,
+      "eval_delta_pct_vs_1_7_62": -78.33288626609442,
+      "gpu_energy_delta_pct_vs_1_7_62": -72.95867768595042,
+      "coastal_mark_median_s": 2.306946,
+      "coastal_clear_median_s": 0.637068,
+      "rocks_mark_median_s": 2.52615,
+      "rocks_clear_median_s": 0.605977,
+      "multi_mark_median_s": 0.416696,
+      "multi_clear_median_s": 0.240585
     }
   }
 }

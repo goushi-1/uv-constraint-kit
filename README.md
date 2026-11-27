@@ -21,19 +21,20 @@ provides **`uv_constraint_kit-1.9.0.zip`**. Requires **Blender 5.2+**.
 [Known issues](docs/KNOWN_ISSUES.md).
 Eligible large solves use the GPU automatically; small meshes and some special
 solve paths stay on the CPU. GPU use requires an NVIDIA GPU with compute
-capability 8.9+ and a driver supporting CUDA 12.4+. The prebuilt extension does
-not require the CUDA Toolkit. Other hardware and unsupported GPU setups use the
-CPU path. Published builds remain in the
-[release history](https://github.com/goushi-1/uv-constraint-kit/releases).
+capability **8.6+** (RTX 30/40/50 series; validated locally on RTX 40-series) and
+a driver supporting CUDA 12.4+. The prebuilt extension does not require the CUDA
+Toolkit. Other hardware and unsupported GPU setups use the CPU path. Published
+builds remain in the [release history](https://github.com/goushi-1/uv-constraint-kit/releases).
 
 ## What changed in 1.9.0
 
-- **Whole-island Quad-Flow DAG `Quadrify`**: Keeps regular pure-quad islands on the exact `quad_grid.py` integer-grid path and adds a whole-island acyclic Quad-Flow DAG solver for concave and pole-containing pure-quad islands (eliminating `"Different UV vertices occupy the same grid point"` on poled islands while preserving pins, existing user constraints, island area, and zero flips/overlaps). Partial pole-free quad-strip straightening remains available on mixed-polygon islands.
-- **Per-island self-overlap-only `Prevent overlaps` solving**: Scopes `Prevent overlaps` strictly to intra-island self-overlaps across Optimize, Circularize, Rectify, Quadrify, and Distribute Edges (ignoring cross-island overlaps so independent islands stay in place and never fail or shift before downstream UV packing), tries clean exact-subspace projection first under strict `0`-flip / `0`-self-overlap validation, and starts guarded soft-contact continuation gently (`st=1.0`) with post-convergence exact-subspace polish (preventing stepped-border fold-back and corner stretch spikes).
-- **Major CPU/GPU/Reader/Python performance upgrade**: Rebuilt `uvck_engine` (fused `build_j`/`energy` with `RecentTriangles` early reject, single-pass exact `uvck_find_self_overlap_pair`, native `uvck_filter_acyclic` DAG contraction for Quadrify, lazy large-box spatial grid, fused L-BFGS + analytic step for `nt >= 1024`, zero-rehash affinity-aware threaded overlap checks, analytic CCD border step, `SoftMetric` preconditioning up to `n <= 8192`), `uvck_gpu` host (cached GPU/pinned staging buffers with 64-bit FNV-1a constant-upload reuse + analytic CCD border step), and stable-ABI `uvck_reader` (batch C++ `write_uv`/`write_uv_indexed`/`read_pins`/`write_pins`/`read_uv_select`/`write_uv_select`/`set_uv_select_all`/`constrained_loops`), paired with single-pass `UVTopology` reuse and vectorized `recovery`/`safety`/`untangle`/`Quadrify` hot paths.
-- **Collapsible pre-mark Solve Presets drawer**: Added a default-collapsed **Solve presets** drawer in the UV Editor and 3D Viewport sidebar panels with `Prevent overlaps`, `Fix boundary`, and `Use density map` switches wired into marking, optimizing, and F9 defaults without changing existing defaults or Pie Menu operator IDs.
-- **Distribute Edges (`uv.uvck_distribute_edges`)**: One-shot spacing tool supporting **Even** and **Geometry** (3D edge length ratio) redistribution along selected UV edge chains followed by safe island relaxation, preserving pins, existing constraints, and island area without adding persistent constraint types or overlays.
-- **Blender 5.3.0 verification**: 49/49 member parity between `blender --command extension build` and `scripts/package.py --require-gpu --require-reader --require-numeric`. Passed 9/9 host tests (`test_v190_host.py` headless UI/icon/i18n, whole-island poled Quadrify, self-overlap-only `Prevent overlaps` for Optimize & Circularize, stepped-border anti-foldback, and `Distribute Edges`), 31-case (62-op) P2 quality gates (`hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals), 8-run CPU-0 pinned 12-op ABBA+BAAB (`determinism_ok=true`, `9.2259s` total median vs `1.7.62`'s `40.8858s` [`-77.43%`, `4.43x`] and `1.7.65`'s `29.8393s` [`-69.08%`]; `coastal mark` `3.1728s`, `rocks mark` `3.0168s`), and isolated `1.7.66 -> 1.9.0` upgrade/F9/CPU+GPU acceptance.
+- **Full GPU-resident mixed-precision solver (`compute_86`)**: Freshly compiled `gpu_metric.cu` PTX targeting `compute_86` (SM 8.6+, covering RTX 30/40/50; validated on local RTX 40-series) running an FP32 L-BFGS main sprint followed by a verified FP64 final exact polish directly in device memory (deterministic zero-atomic reductions, zero-sync L-BFGS scalar slots, same-device bitwise determinism `determinism_ok=true`, zero flips/self-overlaps, exact constraint residuals `<= 0.05°`).
+- **Whole-island Quad-Flow DAG `Quadrify`**: Keeps regular pure-quad islands on the exact `quad_grid.py` integer-grid path and adds a whole-island acyclic Quad-Flow DAG solver for concave and pole-containing pure-quad islands (eliminating `"Different UV vertices occupy the same grid point"` on poled islands while preserving pins, existing user constraints, island area, and zero flips/overlaps), accelerated by `metric.py` run-pack caching and `quad_grid.py` batch UV reads. Partial pole-free quad-strip straightening remains available on mixed-polygon islands.
+- **Upgraded `Circularize` & `Rectify` on holed and concave real meshes**: Unconstrained inner holes relax freely via virtual-hole-cap Tutte embeddings (with automatic intra-island overlap guard) instead of freezing at original UV coordinates, adaptive similarity scaling preserves exact `1e-5` island area (with bounded fallback when hard manual pins prevent exact area rescaling), ear/chord-safe DP corner selection dramatically boosts `Rectify` success rates on organic real meshes, and 3D Viewport sync-select (`use_uv_select_sync=True`, `uv_select_sync_valid=False`) falls back cleanly to selected mesh edges.
+- **Per-island self-overlap-only `Prevent overlaps` solving**: Scopes `Prevent overlaps` strictly to intra-island self-overlaps across Optimize, Circularize, Rectify, Quadrify, and Distribute Edges (ignoring cross-island overlaps so independent islands stay in place before downstream UV packing), tries clean exact-subspace projection first under strict `0`-flip / `0`-self-overlap validation, and starts guarded soft-contact continuation gently (`st=1.0`) with post-convergence exact-subspace polish.
+- **CPU / Reader / Python performance & UI polish**: Rebuilt `uvck_engine` (fused single-pass gradient eliminating `gu[4*nt]` traffic, dead-`sqrt` removal on reciprocal path, reusable contact-pair cache, `RecentTriangles`, `uvck_find_self_overlap_pair`, `uvck_filter_acyclic`, analytic CCD, `SoftMetric` up to `n <= 8192`) and stable-ABI `uvck_reader` (`PyObject_GetBuffer` raw `float[2]`/`double[2]` coordinate fast path + full batch read/write methods + Python fallback for `read_uv_select`), plus narrow-panel 2-row overlay controls in the sidebar.
+- **Collapsible pre-mark Solve Presets drawer & `Distribute Edges` (`uv.uvck_distribute_edges`)**: Default-collapsed **Solve presets** drawer (`Prevent overlaps`, `Fix boundary`, `Use density map`) wired into marking, optimizing, and F9 defaults without changing Pie Menu operator IDs, plus one-shot **Even** / **Geometry** edge chain redistribution followed by safe island relaxation.
+- **Blender 5.3.0 verification**: 49/49 member parity between `blender --command extension build` and `scripts/package.py --require-gpu --require-reader --require-numeric`. Passed 9/9 host tests (`test_v190_host.py` 11 cases covering UI/icon/i18n, poled Quadrify, self-overlap-only `Prevent overlaps`, stepped-border anti-foldback, `Distribute Edges`, free-hole `Circularize`/`Rectify`, ear-safe `Rectify`, 3D sync-select fallback, and pin-locked area fallback), 31-case (62-op) P2 quality gates (`hard_failures=0`, `soft_failures=0`, `0` overlaps/crossings/flips, `27/31` exact-zero mark residuals), 8-run CPU-0 pinned 12-op ABBA+BAAB (`determinism_ok=true`, `7.3209s` total median vs `1.7.62`'s `36.4286s` [`-79.90%`, `4.98x`] and `1.7.65`'s `29.8393s` [`-75.47%`]; `coastal mark` `2.3069s`, `coastal clear` `0.6371s`, `rocks mark` `2.5262s`, `rocks clear` `0.6060s`, `multi mark` `0.4167s`), and isolated `1.7.66 -> 1.9.0` upgrade/F9/CPU+GPU acceptance.
 
 ## Start with an existing UV layout
 
@@ -159,7 +160,19 @@ rejected without a partial write.
 
 ![Quad grid layout: before and after](docs/images/quadrify.svg)
 
-*Synthetic example: a compatible quad island is laid out as a grid.*
+*Synthetic example: a warped, rotated quad island containing interior poles is laid out cleanly via whole-island Quad-Flow DAG.*
+
+### Distribute Edges
+
+Select one or more UV edge chains and use **Distribute Edges** to redistribute
+vertices along each chain evenly (**Even**) or in proportion to 3D mesh edge
+lengths (**Geometry**), followed by safe relaxation of the rest of the island.
+This is a one-shot spacing tool: it preserves pins, existing constraints, and
+island area without adding persistent constraint overlays.
+
+![Distribute edges along a UV chain: before and after](docs/images/distribute-edges.svg)
+
+*Synthetic example: unevenly bunched vertices along the selected top chain are redistributed evenly while the interior relaxes.*
 
 ### Symmetry and live links
 
@@ -202,17 +215,18 @@ Rizom-Lab, Blender, or the authors of its dependencies. See
 ## Building from source
 
 Python handles Blender's interface, selection, undo and overlays; C++17 engines
-handle numeric solves. Version 1.9.0 rebuilds the CPU (`engine.cpp`), CUDA GPU
-host (`engine_gpu.cpp`, `gpu_driver.hpp`), stable-ABI reader (`mesh_reader.cpp`),
-and `numeric_stage` binaries while reusing the unchanged source-matched `1.7.66`
-CUDA PTX (`gpu_metric.cu`), and supports `scripts/build_native.py --numeric`
-and `scripts/package.py --require-numeric`. Native builds target
-**Windows x64 / MSVC**; host checks used Blender 5.3.0. Building the CUDA engine
-from source requires CUDA Toolkit / NVRTC 12.4; the prebuilt ZIP needs only a
-supported NVIDIA driver. The reader uses Blender's bundled Python at runtime.
-Neither Python nor CUDA runtime files are distributed.
-The commands below are a separate full-rebuild recipe; any rebuilt artifact must
-be re-validated with its own recorded identity.
+handle numeric solves. Version 1.9.0 freshly rebuilds all native binaries: the
+CPU engine (`engine.cpp`), CUDA GPU host and `compute_86` PTX (`engine_gpu.cpp`,
+`gpu_driver.hpp`, `gpu_metric.cu`, `build_gpu.py`), stable-ABI reader
+(`mesh_reader.cpp`), and `numeric_stage` (`numeric_stage.cpp`), supporting
+`scripts/build_native.py --numeric` and `scripts/package.py --require-numeric`.
+Native builds target **Windows x64 / MSVC**; host checks used Blender 5.3.0.
+Building the CUDA engine from source requires CUDA Toolkit / NVRTC 12.4; the
+prebuilt ZIP needs only a supported NVIDIA driver (SM 8.6+, CUDA 12.4+). The
+reader uses Blender's bundled Python at runtime. Neither Python nor CUDA
+runtime files are distributed. The commands below are a separate full-rebuild
+recipe; any rebuilt artifact must be re-validated with its own recorded
+identity.
 
 ```sh
 python scripts/build_native.py --build-dir build/native_gpu_reader --gpu --reader --numeric --python-include "$PYTHON_INCLUDE" --python-library "$PYTHON_LIBRARY" --cuda-include "$CUDA_PATH/include" --nvrtc-dir "$CUDA_PATH/bin"
@@ -260,7 +274,7 @@ execution is limited to eligible paths and does not guarantee a speedup.
 
 ## Versions
 
-- 1.9.0 is the current release; adds whole-island Quad-Flow DAG `Quadrify`, per-island self-overlap-only `Prevent overlaps` solving with exact-subspace polish, rebuilt CPU/GPU/Reader/Python performance optimizations (`-77.43%` / `4.43x` vs `1.7.62`), collapsible pre-mark solve presets, and `uv.uvck_distribute_edges`, passing 9/9 host tests, P2 62-op, ABBA+BAAB, and isolated Blender 5.3.0 upgrade checks.
+- 1.9.0 is the current release; adds full GPU-resident mixed-precision solving (`compute_86` SM 8.6+ PTX, `-79.90%` / `4.98x` vs `1.7.62`), whole-island Quad-Flow DAG `Quadrify`, upgraded holed/concave `Circularize` & `Rectify` (free inner holes, ear/chord-safe corners, 3D sync-select fallback), per-island self-overlap-only `Prevent overlaps` solving, rebuilt CPU/Reader/numeric binaries, collapsible pre-mark solve presets, and `uv.uvck_distribute_edges`, passing 9/9 host tests (`test_v190_host.py` 11 cases), P2 62-op, ABBA+BAAB, and isolated Blender 5.3.0 upgrade checks.
 - 1.7.66 is the previous milestone introducing P3-E/P3-A/P3-B speedups and `build_native.py --numeric`.
 - 1.7.65 is the previous published tag; its record is at the [v1.7.65 tag](https://github.com/goushi-1/uv-constraint-kit/blob/v1.7.65/release_checks.json).
 - Earlier results are recorded separately in [validation](docs/VALIDATION.md).
