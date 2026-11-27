@@ -2757,58 +2757,6 @@ def _island_pins(topo, faces, reference=None, *, _has_pins=None):
             if any(topo.loops[p][topo.uvl].pin_uv for p in topo.vgroup_loops[g])}
 
 
-def _nudge_clear_of_other_islands(topo, probe, target_positions, triangles):
-    """Minimally translate an unpinned island to resolve a cross-island overlap.
-
-    Pure rigid translation preserves all edge constraints, angles, flips, area,
-    and self-overlap status. Returns `(du, dv)` if a clean placement is found,
-    otherwise `None` without modifying UVs.
-    """
-    if not len(probe.static) or not len(triangles):
-        return None
-    pts = triangles.reshape(-1, 2)
-    tx0, ty0 = float(pts[:, 0].min()), float(pts[:, 1].min())
-    tx1, ty1 = float(pts[:, 0].max()), float(pts[:, 1].max())
-    span = max(tx1 - tx0, ty1 - ty0, 1e-4)
-    static_idx = np.asarray([pos for _fi, pos, _root in probe.static], dtype=np.intp).reshape(-1, 3)
-    all_uv = np.asarray(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64)
-    st = all_uv[static_idx]
-    sx0 = st[:, :, 0].min(axis=1)
-    sx1 = st[:, :, 0].max(axis=1)
-    sy0 = st[:, :, 1].min(axis=1)
-    sy1 = st[:, :, 1].max(axis=1)
-    near_mask = (sx1 >= tx0 - 1e-6) & (sx0 <= tx1 + 1e-6) & (sy1 >= ty0 - 1e-6) & (sy0 <= ty1 + 1e-6)
-    dirs = []
-    if np.any(near_mask):
-        near_pts = st[near_mask].reshape(-1, 2)
-        oxc, oyc = float(near_pts[:, 0].mean()), float(near_pts[:, 1].mean())
-        txc, tyc = 0.5 * (tx0 + tx1), 0.5 * (ty0 + ty1)
-        vx, vy = txc - oxc, tyc - oyc
-        vn = math.hypot(vx, vy)
-        if vn > 1e-9:
-            dirs.append((vx / vn, vy / vn))
-    dirs.extend([
-        (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0),
-        (-0.70710678, 0.70710678), (0.70710678, 0.70710678),
-        (-0.70710678, -0.70710678), (0.70710678, -0.70710678),
-    ])
-    for frac in (0.005, 0.015, 0.03, 0.06, 0.12, 0.25, 0.5, 1.0):
-        dist = frac * span
-        for dx, dy in dirs:
-            du, dv = dx * dist, dy * dist
-            shifted = triangles + np.array([du, dv], dtype=np.float64)
-            ov = probe.check_overlaps(topo, coordinates=probe._triangle_view(shifted))
-            if (ov.get('overlap_check_complete')
-                    and not ov.get('novel_self_overlaps')
-                    and not ov.get('novel_island_overlaps')):
-                uvl = topo.uvl
-                for p in target_positions:
-                    lp = topo.loops[p]
-                    lp[uvl].uv = (float(lp[uvl].uv.x) + du, float(lp[uvl].uv.y) + dv)
-                return (du, dv)
-    return None
-
-
 def _rebuild_islands(context, obj, faces, constraint_positions=(),
                     method="MINIMUM_STRETCH", margin=.001, iterations=150,
                     step=.7, mix=1., angle_distance_mix=1., keep_metric=False,
@@ -3026,8 +2974,10 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
     live_unwrap = context.scene.tool_settings.use_edge_path_live_unwrap
     # No UV write has occurred since UVTopology captured saved. Reuse that
     # immutable input only here; candidate checks always capture fresh values.
+    # Prevent overlaps guards self-overlaps within each island independently;
+    # separate islands are packed later by the user's packing workflow.
     probe = safety.AcceptanceProbe(module, topo, faces,
-                                  settings.get('prevent_overlap', False), coordinates=saved)
+                                  check_other_islands=False, coordinates=saved)
     before = probe.measure(topo, coordinates=probe._triangle_view(old_triangles), _triangles=old_triangles)
     _outside_state.setdefault('flips', before['flips'])
     # The GUI consumes elapsed time and probe health, not descriptive reports.
@@ -3213,8 +3163,6 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             health.update(probe.check_overlaps(topo, coordinates=coordinates))
             if health['novel_self_overlaps']:
                 reason = 'new_self_overlap'
-            elif health['novel_island_overlaps']:
-                reason = 'new_island_overlap'
         if reason is None and recovery_report is not None:
             for chart in recovery_report['repaired']:
                 chart_faces = set(chart['faces'])
@@ -3390,25 +3338,12 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
         warm_values = seed_values if seed_values is not None else saved
         warm_deviation = initial_deviation
         require_pos = bool(settings.get('prevent_flips', False) or healthy_input)
-        can_nudge_island = bool(settings.get('prevent_overlap', False) and not fixed_positions
-                                and len(input_islands) == 1)
 
         def fallback_values():
             return (seed_values if seed_values is not None else saved) if best_values is None else best_values
 
         def read_loop_tuples():
             return np.array(mesh_reader.read_uv(topo.loops, topo.uvl), dtype=np.float64, copy=True)
-
-        def validate_with_nudge(coordinates, health, triangles):
-            ok = valid(topo, health, coordinates, triangles)
-            if (not ok and can_nudge_island
-                    and health.get('rejection_reason') == 'new_island_overlap'
-                    and not health.get('novel_self_overlaps')):
-                nudged = _nudge_clear_of_other_islands(topo, probe, probe.target_positions, triangles)
-                if nudged is not None:
-                    coordinates, health, triangles = capture_health(topo)
-                    ok = valid(topo, health, coordinates, triangles)
-            return ok, coordinates, health, triangles
 
         def try_exact_subspace(override_contact=None, allow_polish=False,
                                override_overlap=None, override_require_pos=None):
@@ -3429,7 +3364,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     restore(warm_values, _skip_same_uv=True)
                 return False
             coordinates, health, triangles = capture_health(topo)
-            ok, coordinates, health, triangles = validate_with_nudge(coordinates, health, triangles)
+            ok = valid(topo, health, coordinates, triangles)
             if ok and (contact_faces or override_overlap is False):
                 overlap = probe.check_overlaps(topo, include_existing=True, coordinates=coordinates)
                 health.update(overlap)
@@ -3475,7 +3410,7 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
                     _quality_after=False, _geometry_cache=prepared_geometry,
                     _update_mesh=False, _has_pins=has_any_pins, **dict(settings, _contact_faces=contact_faces))
             coordinates, health, triangles = capture_health(topo)
-            ok, coordinates, health, triangles = validate_with_nudge(coordinates, health, triangles)
+            ok = valid(topo, health, coordinates, triangles)
             accepted = ok and health['max_deviation'] < best_deviation
             if accepted and contact_faces and (not health['constraints_limited'] or (medium_probe and stage == 0)):
                 # The distance barrier is best-effort, not continuous
@@ -3693,15 +3628,6 @@ def _checked_rebuild_body(context, obj, faces, constraint_positions=(),
             topo = UVTopology(bm, uv_layer(bm))
         coordinates, after, triangles = capture_health(topo)
         valid_after = valid(topo, after, coordinates, triangles)
-        if (not valid_after and settings.get('prevent_overlap', False)
-                and not fixed_positions and len(input_islands) == 1
-                and after.get('rejection_reason') == 'new_island_overlap'
-                and not after.get('novel_self_overlaps')):
-            nudged = _nudge_clear_of_other_islands(topo, probe, probe.target_positions, triangles)
-            if nudged is not None:
-                bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
-                coordinates, after, triangles = capture_health(topo)
-                valid_after = valid(topo, after, coordinates, triangles)
         if guarded_clean and not valid_after:
             restore()
             result = _rebuild_islands(context, obj, faces, constraint_positions,

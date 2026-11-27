@@ -42,7 +42,11 @@ class UVCK_OT_circularize(bpy.types.Operator):
     )
     iterations: IntProperty(name="Iterations", default=150, min=1, max=1000)
     respect_pins: BoolProperty(name="Respect Pins", default=True)
-    prevent_overlap: BoolProperty(name="Prevent Overlap", default=False)
+    prevent_overlap: BoolProperty(
+        name="Prevent Overlap",
+        description="Prevent self-overlaps within each UV island (ignores overlap between separate islands)",
+        default=False,
+    )
 
     @classmethod
     def poll(cls, context):

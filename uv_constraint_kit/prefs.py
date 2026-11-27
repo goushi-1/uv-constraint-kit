@@ -40,7 +40,7 @@ class UVCKPreferences(bpy.types.AddonPreferences):
 
     preset_prevent_overlap: BoolProperty(
         name="Prevent overlaps",
-        description="Default Prevent Overlaps setting applied before marking or optimizing",
+        description="Prevent self-overlaps within each UV island by default before marking or optimizing (cross-island overlap is ignored)",
         default=False,
     )
 

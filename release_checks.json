@@ -5,8 +5,8 @@
   "date": "2026-11-27",
   "package": {
     "filename": "uv_constraint_kit-1.9.0.zip",
-    "sha256": "f80b0e8e60f62cd876b9dfa94b7b69ecdcf052c0ac8266dd4370a9d6b845d7be",
-    "bytes": 643215,
+    "sha256": "d864e0c9eafc04c3b7f0a7a696ad347a8f3f30515f733b89cc8d447cb619dc24",
+    "bytes": 642553,
     "members": 49,
     "extension_build_and_package_script_parity": true
   },
@@ -89,14 +89,14 @@
       "determinism_ok": true,
       "hard_failures": 0,
       "soft_failures": 0,
-      "baseline_12op_median_s": 36.61277095,
-      "candidate_12op_median_s": 11.19356325,
-      "time_delta_pct_vs_1_7_62": -69.42716172647403,
-      "time_delta_pct_vs_1_7_65": -62.4872,
+      "baseline_12op_median_s": 35.61744255,
+      "candidate_12op_median_s": 11.7406156,
+      "time_delta_pct_vs_1_7_62": -67.03689327632537,
+      "time_delta_pct_vs_1_7_65": -60.6539,
       "eval_delta_pct_vs_1_7_62": -67.1137339055794,
       "gpu_energy_delta_pct_vs_1_7_62": -85.32231404958678,
-      "coastal_mark_median_s": 3.61740325,
-      "rocks_mark_median_s": 3.6650504
+      "coastal_mark_median_s": 3.6940611,
+      "rocks_mark_median_s": 3.87613365
     }
   }
 }

@@ -182,7 +182,7 @@ def _improve_one(core, context, obj, faces, settings):
             continue
         value = getattr(ts, prop.identifier)
         saved_tools[prop.identifier] = tuple(value) if getattr(prop, 'is_array', False) else value
-    probe = safety.AcceptanceProbe(core, topo, faces, check_other_islands=True)
+    probe = safety.AcceptanceProbe(core, topo, faces, check_other_islands=False)
     area = core.island_area(topo, faces)
     best, best_score, chosen = base.copy(), 1., 0.
     report = dict(faces=len(faces), before=baseline.tolist(), alpha=0.)
@@ -249,8 +249,7 @@ def _improve_one(core, context, obj, faces, settings):
                 if score >= best_score:
                     continue
                 overlap = probe.check_overlaps(topo)
-                if (not overlap['overlap_check_complete'] or overlap['novel_self_overlaps']
-                        or overlap['novel_island_overlaps']):
+                if not overlap['overlap_check_complete'] or overlap['novel_self_overlaps']:
                     continue
                 best, best_score, chosen = value.copy(), score, alpha
                 report['after'] = measured.tolist()

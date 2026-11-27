@@ -413,9 +413,10 @@ def test_whole_island_quad_flow_poled_island():
     assert res["islands"][0]["area_error"] <= 1e-5, res
 
 
-def test_prevent_overlap_neighbor_nudge():
-    # Straightening a tilted unpinned island whose corner grazes an adjacent island
-    # with prevent_overlap=True must nudge cleanly instead of returning SKIPPED.
+def test_prevent_overlap_self_only_ignores_neighbor_islands():
+    # Prevent overlaps guards self-overlap within each island independently and
+    # must never reject or shift an island just because it grazes a neighbor
+    # island — both for Optimize and for Circularize.
     verts = [(float(x), float(y), 0.0) for y in range(3) for x in range(3)]
     verts += [(5.0, 0.0, 0.0), (6.0, 0.0, 0.0), (6.0, 2.0, 0.0), (5.0, 2.0, 0.0)]
     faces = [(y * 3 + x, y * 3 + x + 1, y * 3 + x + 4, y * 3 + x + 3) for y in range(2) for x in range(2)]
@@ -450,6 +451,7 @@ def test_prevent_overlap_neighbor_nudge():
     t.bm.uv_select_sync_valid = True
     bpy.context.scene.tool_settings.use_uv_select_sync = True
     before_neighbor = uv_snapshot(obj)[-4:]
+    before_center_x = sum(uv[0] for uv in uv_snapshot(obj)[:-4]) / (len(uv_snapshot(obj)) - 4)
     del t
 
     res = bpy.ops.uv.uvck_optimize("EXEC_DEFAULT", prevent_overlap=True, prevent_flips=True, use_density_map=True)
@@ -457,10 +459,40 @@ def test_prevent_overlap_neighbor_nudge():
     last = ops.last_optimize_result
     assert last["status"] == "COMPLETED" and last["max_deviation"] <= 0.05, last
     assert uv_snapshot(obj)[-4:] == before_neighbor
+    after_center_x = sum(uv[0] for uv in uv_snapshot(obj)[:-4]) / (len(uv_snapshot(obj)) - 4)
+    assert abs(after_center_x - before_center_x) < 0.02, (before_center_x, after_center_x)
     t = topo_of(obj)
-    probe = safety.AcceptanceProbe(core, t, {0, 1, 2, 3}, check_other_islands=True)
+    probe = safety.AcceptanceProbe(core, t, {0, 1, 2, 3}, check_other_islands=False)
     ov = probe.check_overlaps(t, include_existing=True)
-    assert ov["self_overlaps"] == 0 and ov["island_overlaps"] == 0, ov
+    assert ov["self_overlaps"] == 0, ov
+    del t
+
+    # Circularize with prevent_overlap=True next to a neighbor island must also
+    # succeed in place without rejecting on cross-island overlap.
+    from uv_constraint_kit import circle
+    obj2 = make_mesh(verts, faces, uv_fn)
+    t = topo_of(obj2)
+    for lp in t.loops:
+        lp.uv_select_edge = lp.uv_select_vert = False
+    for p in core.selection_border_loops(t, {0, 1, 2, 3}):
+        lp = t.loops[p]
+        lp.edge.select = True
+        lp.uv_select_edge = lp.uv_select_vert = True
+        lp.link_loop_next.uv_select_vert = True
+    t.bm.uv_select_sync_valid = True
+    bpy.context.scene.tool_settings.use_uv_select_sync = True
+    bpy.context.scene.tool_settings.mesh_select_mode = (False, True, False)
+    before_neighbor2 = uv_snapshot(obj2)[-4:]
+    del t
+    cres = circle.circularize(bpy.context, obj2, {0, 1, 2, 3}, spacing="EVEN",
+                              iterations=150, respect_pins=True, prevent_overlap=True,
+                              selected_only=True)
+    assert cres["changed"] == 1 and not cres["skipped"], cres
+    assert uv_snapshot(obj2)[-4:] == before_neighbor2
+    t = topo_of(obj2)
+    probe2 = safety.AcceptanceProbe(core, t, {0, 1, 2, 3}, check_other_islands=False)
+    ov2 = probe2.check_overlaps(t, include_existing=True)
+    assert ov2["self_overlaps"] == 0, ov2
     del t
 
 
@@ -534,9 +566,9 @@ def test_stepped_border_prevent_overlap_no_foldback():
         p6 = v_uv[vid[(6, 6)]]
         step_len = math.hypot(p6[0] - p5[0], p6[1] - p5[1])
         assert p6[0] > p5[0] and step_len < 0.015, (prevent_flips, p5, p6, step_len)
-        probe = safety.AcceptanceProbe(core, t, set(range(len(faces))), check_other_islands=True)
+        probe = safety.AcceptanceProbe(core, t, set(range(len(faces))), check_other_islands=False)
         ov = probe.check_overlaps(t, include_existing=True)
-        assert ov["self_overlaps"] == 0 and ov["island_overlaps"] == 0, ov
+        assert ov["self_overlaps"] == 0, ov
         qm = core.quality_metrics(t, set(range(len(faces))))
         assert qm["flips"] == 0 and qm["edge_spread"] < 1.0, (prevent_flips, qm)
         del t
@@ -552,7 +584,7 @@ try:
         test_distribute_edges,
         test_partial_quad_strip_quadrify,
         test_whole_island_quad_flow_poled_island,
-        test_prevent_overlap_neighbor_nudge,
+        test_prevent_overlap_self_only_ignores_neighbor_islands,
         test_stepped_border_prevent_overlap_no_foldback,
     ):
         test()

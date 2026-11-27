@@ -300,7 +300,7 @@ def _reshape(context, obj, faces, boundary_builder, spacing='UV', iterations=150
             if any(bm.faces[fi].hide for fi in island):
                 raise ValueError('The island contains hidden faces')
             probe = safety.AcceptanceProbe(core, topo, island,
-                                           check_other_islands=prevent_overlap)
+                                           check_other_islands=False)
             before = probe.measure(topo)
             signs = _triangle_signs(topo, island)
             area_before = core.island_area(topo, island)
@@ -362,37 +362,42 @@ def _reshape(context, obj, faces, boundary_builder, spacing='UV', iterations=150
                 original = {g: tuple(topo.vgroup_uv(g)) for g in groups}
                 # Most edits can reach the target in one solve. If that trial
                 # cannot keep the input winding, restore it and use continuation.
-                for method, stages in (('displacement', 1), ('harmonic', 1),
-                                       ('displacement', 16), ('displacement', 64)):
-                    per_stage = max(4, int(math.ceil(max(1, int(iterations))/stages)))
-                    core.land_uv_groups(topo, original, island)
-                    complete = True
-                    for stage in range(1, stages+1):
-                        factor = stage/stages
-                        target = {g: (initial[g][0]+(uv[0]-initial[g][0])*factor,
-                                      initial[g][1]+(uv[1]-initial[g][1])*factor)
-                                  for g, uv in held.items()}
-                        current = {g: tuple(topo.vgroup_uv(g)) for g in groups}
-                        moved = (_harmonic(topo, island, target) if method=='harmonic' else
-                                 {g: (uv[0]+field[g][0]/stages,
-                                      uv[1]+field[g][1]/stages)
-                                  for g, uv in current.items()})
-                        moved.update(target)
-                        core.land_uv_groups(topo, moved, island)
-                        budget = max(1, int(iterations)) if stages==1 else per_stage
-                        metric.solve(core, topo, island, target, runs, budget,
-                                     angle_length=.5, auto=False, prevent_flips=True,
-                                     prevent_overlap=prevent_overlap, _geometry=geometry)
-                        current_signs = _triangle_signs(topo, island)
-                        if (not np.isfinite(current_signs).all() or
-                                np.any(signs*current_signs <= 0) or
-                                any(math.dist(tuple(topo.vgroup_uv(g)), uv) > 1e-5
-                                    for g, uv in target.items())):
-                            complete = False
+                completed = False
+                for step_ov in ((True, False) if prevent_overlap else (False,)):
+                    for method, stages in (('displacement', 1), ('harmonic', 1),
+                                           ('displacement', 16), ('displacement', 64)):
+                        per_stage = max(4, int(math.ceil(max(1, int(iterations))/stages)))
+                        core.land_uv_groups(topo, original, island)
+                        complete = True
+                        for stage in range(1, stages+1):
+                            factor = stage/stages
+                            target = {g: (initial[g][0]+(uv[0]-initial[g][0])*factor,
+                                          initial[g][1]+(uv[1]-initial[g][1])*factor)
+                                      for g, uv in held.items()}
+                            current = {g: tuple(topo.vgroup_uv(g)) for g in groups}
+                            moved = (_harmonic(topo, island, target) if method=='harmonic' else
+                                     {g: (uv[0]+field[g][0]/stages,
+                                          uv[1]+field[g][1]/stages)
+                                      for g, uv in current.items()})
+                            moved.update(target)
+                            core.land_uv_groups(topo, moved, island)
+                            budget = max(1, int(iterations)) if stages==1 else per_stage
+                            metric.solve(core, topo, island, target, runs, budget,
+                                         angle_length=.5, auto=False, prevent_flips=True,
+                                         prevent_overlap=step_ov, _geometry=geometry)
+                            current_signs = _triangle_signs(topo, island)
+                            if (not np.isfinite(current_signs).all() or
+                                    np.any(signs*current_signs <= 0) or
+                                    any(math.dist(tuple(topo.vgroup_uv(g)), uv) > 1e-5
+                                        for g, uv in target.items())):
+                                complete = False
+                                break
+                        if complete:
+                            completed = True
                             break
-                    if complete:
+                    if completed:
                         break
-                else:
+                if not completed:
                     raise ValueError('The target layout conflicts with pins or hole boundaries')
             else:
                 layout = _harmonic(topo, island, held)
@@ -421,8 +426,7 @@ def _reshape(context, obj, faces, boundary_builder, spacing='UV', iterations=150
                     not after['finite'] or after['zero_edges'] or
                     after['max_deviation'] > .05 or
                     after['degenerate'] > before['degenerate'] or
-                    after['novel_self_overlaps'] or
-                    (prevent_overlap and after['novel_island_overlaps'])):
+                    after['novel_self_overlaps']):
                 raise ValueError('The target shape conflicts with constraints or would overlap')
             if abs(core.island_area(topo, island)/area_before-1.) > 1e-5:
                 raise ValueError('The target shape could not preserve the island area')

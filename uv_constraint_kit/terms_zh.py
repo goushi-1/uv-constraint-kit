@@ -406,7 +406,10 @@ TERMS = {
     # -- 1.8.0 / 1.9.0 presets, distribute edges, partial quadrify, interactive --
     'Solve presets': '求解预设',
     'Show or hide pre-mark solver preset switches in the sidebar panel': '在侧边栏面板中展开或折叠标记前求解预设开关',
-    'Default Prevent Overlaps setting applied before marking or optimizing': '标记或优化前默认启用的防止重叠开关',
+    'Prevent self-overlaps within each UV island by default before marking or optimizing (cross-island overlap is ignored)':
+        '标记或优化前默认启用的防止重叠开关（仅防止单岛内部自重叠，不限制不同岛屿之间的重叠）',
+    'Prevent self-overlaps within each UV island (ignores overlap between separate islands)':
+        '仅防止单个 UV 岛内部自重叠（不限制不同岛屿之间的重叠）',
     'Default Fix Boundary setting applied before marking or optimizing': '标记或优化前默认启用的固定边界开关',
     'Default Use Density Map setting applied before marking or optimizing': '标记或优化前默认启用的密度贴图开关',
     'Distribute Edges': '边均匀分布',

@@ -156,7 +156,7 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
 
         # Combine temporary quad-flow H/V runs with any existing aligned runs.
         runs = list(q_runs) + [(k, ps) for k, ps in existing_runs if k == C_ALIGNED]
-        probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=prevent_overlap, coordinates=base_uv)
+        probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=False, coordinates=base_uv)
         from . import native_engine
         use_contact = bool(not held and native_engine.supports_contact(len(geometry['tri'])))
 
@@ -207,13 +207,6 @@ def _solve_whole_island_quad_flow(context, obj, island, seed, shape, average_sha
             ov = probe.check_overlaps(topo, include_existing=not prevent_overlap,
                                       coordinates=probe._triangle_view(tris))
             if ov.get('self_overlaps', 0) or ov.get('novel_self_overlaps', 0):
-                return None, float('inf'), float('inf'), float('inf'), ex_dev
-            if prevent_overlap and ov.get('novel_island_overlaps', 0):
-                if not held:
-                    nudged = core._nudge_clear_of_other_islands(topo, probe, probe.target_positions, tris)
-                    if nudged is not None:
-                        coords = np.asarray(core.mesh_reader.read_uv(topo.loops, uvl), dtype=np.float64)
-                        return coords, worst, p50, p90, ex_dev
                 return None, float('inf'), float('inf'), float('inf'), ex_dev
             return coords, worst, p50, p90, ex_dev
 
@@ -559,18 +552,17 @@ def _seed(bm, uvl, island):
                                   (sum(lp[uvl].uv.y for lp in f.loops)/4-center[1])**2)).index
 
 
-def _fast_island_quality(topo, island, check_other_islands, probe=None):
-    """Fast island quality & overlap summary via AcceptanceProbe (native C++ when loaded)."""
-    p = probe or safety.AcceptanceProbe(core, topo, island, check_other_islands=check_other_islands)
+def _fast_island_quality(topo, island, _check_other_islands=False, probe=None):
+    """Fast island quality & self-overlap summary via AcceptanceProbe (native C++ when loaded)."""
+    p = probe or safety.AcceptanceProbe(core, topo, island, check_other_islands=False)
     m = p.measure(topo)
     ov = p.check_overlaps(topo, include_existing=True)
     self_ov = int(ov.get('self_overlaps', 0))
-    isl_ov = int(ov.get('island_overlaps', 0))
     return dict(
         flips=int(m['flips']),
-        overlaps=self_ov + isl_ov,
+        overlaps=self_ov,
         self_overlaps=self_ov,
-        island_overlaps=isl_ov,
+        island_overlaps=0,
         degenerate=int(m['degenerate']),
         zero_edges=int(m['zero_edges']),
         max_deviation=float(m['max_deviation']),
@@ -593,8 +585,8 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
     if skip_non_quads and non_quads:
         return dict(faces=sorted(island), skipped=True, reason='Island contains non-quad faces')
     area, center = _pose(bm, uvl, island)
-    island_probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=prevent_overlap)
-    before_quality = _fast_island_quality(topo, island, prevent_overlap, probe=island_probe)
+    island_probe = safety.AcceptanceProbe(core, topo, island, check_other_islands=False)
+    before_quality = _fast_island_quality(topo, island, False, probe=island_probe)
     connections = _internal_uv_connections(bm, uvl, island)
     pin_groups = [(positions, state['uv'][next(p for p in positions if state['pins'][p])])
                   for positions in topo.vgroup_loops.values()
@@ -681,29 +673,20 @@ def _island(context, obj, island, shape, average_shape, skip_non_quads,
         if preserve_uv_connections and cuts:
             raise ValueError('Quadrification would split existing UV connections')
         after_topo = core.UVTopology(bm, uvl)
-        quality = _fast_island_quality(after_topo, island, prevent_overlap)
+        quality = _fast_island_quality(after_topo, island, False)
         novel_ov = (island_probe.check_overlaps(after_topo, include_existing=False)
                     if prevent_overlap else {})
-        if (prevent_overlap and not pin_groups
-                and not novel_ov.get('novel_self_overlaps', 0)
-                and novel_ov.get('novel_island_overlaps', 0)):
-            tris = island_probe._capture_triangles(after_topo)
-            if core._nudge_clear_of_other_islands(after_topo, island_probe, island_probe.target_positions, tris) is not None:
-                after_topo = core.UVTopology(bm, uvl)
-                quality = _fast_island_quality(after_topo, island, prevent_overlap)
-                novel_ov = island_probe.check_overlaps(after_topo, include_existing=False)
         if (not quality['finite'] or quality['degenerate'] > before_quality['degenerate'] or
                 quality['flips'] > before_quality['flips'] or quality['zero_edges'] or
                 (prevent_overlap and (not novel_ov.get('overlap_check_complete', True)
-                                      or novel_ov.get('novel_self_overlaps', 0)
-                                      or novel_ov.get('novel_island_overlaps', 0)))):
+                                      or novel_ov.get('novel_self_overlaps', 0)))):
             raise ValueError('Quadrification failed the UV safety check')
         if quality['max_deviation'] > 0.05:
             raise ValueError('Quadrification violates a marked constraint')
         after_area, after_center = _pose(bm, uvl, island)
         area_error = abs(after_area/area-1.0)
         center_error = math.dist(after_center, center)
-        if area_error > 1e-5 or (algorithm == 'INTEGER_GRID' and not prevent_overlap and center_error > 1e-7):
+        if area_error > 1e-5 or (algorithm == 'INTEGER_GRID' and center_error > 1e-7):
             raise ValueError('Area or centroid restoration failed')
         changed = any(math.dist(tuple(lp[uvl].uv), state['uv'][p]) > 1e-7
                       for p, lp in enumerate(loops) if lp.face.index in island)

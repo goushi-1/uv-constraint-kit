@@ -238,7 +238,11 @@ class UVCK_OT_distribute_edges(bpy.types.Operator):
     )
     iterations: IntProperty(name="Interior iterations", default=150, min=1, max=1000)
     respect_pins: BoolProperty(name="Respect pins", default=True)
-    prevent_overlap: BoolProperty(name="Prevent overlap", default=False)
+    prevent_overlap: BoolProperty(
+        name="Prevent overlap",
+        description="Prevent self-overlaps within each UV island (ignores overlap between separate islands)",
+        default=False,
+    )
 
     @classmethod
     def poll(cls, context):

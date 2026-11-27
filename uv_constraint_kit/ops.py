@@ -563,7 +563,11 @@ class UVCK_OT_optimize(bpy.types.Operator):
     angle_length: FloatProperty(name="Angles / Lengths", default=1.0, min=0, max=1)
     use_density_map: BoolProperty(name="Use density map", default=True)
     prevent_flips: BoolProperty(name="Prevent flips", default=False)
-    prevent_overlap: BoolProperty(name="Prevent overlaps", default=False)
+    prevent_overlap: BoolProperty(
+        name="Prevent overlaps",
+        description="Prevent self-overlaps within each UV island (ignores overlap between separate islands)",
+        default=False,
+    )
     overlap_space: FloatProperty(name="Overlap space", default=0.0, min=0, precision=4)
     align_borders: BoolProperty(name="Align borders", default=False)
     align_threshold: FloatProperty(name="Threshold", default=20.0, min=0, max=45)
